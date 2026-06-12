@@ -48,10 +48,16 @@ export default {
             this.loading = false
         },
         extractSource(line) {
-            const m = line.match(/\[(\w+)\]/)
-            return m ? m[1] : ''
+            const bracket = line.match(/\[(\w+)\]/)
+            if (bracket) return bracket[1]
+            const level = line.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+\|\s+([A-Z]+)\s+\|/)
+            return level ? level[1] : 'LOG'
         },
         extractMsg(line) {
+            const parts = line.split(' | ')
+            if (parts.length >= 3) {
+                return parts.slice(2).join(' | ')
+            }
             const idx = line.indexOf('] ')
             return idx > 0 ? line.slice(idx + 2) : line
         },
@@ -59,6 +65,9 @@ export default {
             if (line.includes('[DailyUpdater]')) return 'source-updater'
             if (line.includes('[ReplaceCN]')) return 'source-replace'
             if (line.includes('[Worker]')) return 'source-worker'
+            if (line.includes(' | ERROR |')) return 'source-error'
+            if (line.includes(' | WARNING |')) return 'source-warning'
+            if (line.includes(' | INFO |')) return 'source-info'
             return ''
         }
     }
@@ -207,6 +216,24 @@ export default {
   color: var(--warning-color);
   border-color: #ffe0ad;
   background: #fff9ed;
+}
+
+.source-error .log-source {
+  color: var(--danger-color);
+  border-color: #f4b8c4;
+  background: #fff3f5;
+}
+
+.source-warning .log-source {
+  color: var(--warning-color);
+  border-color: #ffe0ad;
+  background: #fff9ed;
+}
+
+.source-info .log-source {
+  color: var(--info-color);
+  border-color: #cfe7ff;
+  background: #f3f9ff;
 }
 
 @media (max-width: 720px) {

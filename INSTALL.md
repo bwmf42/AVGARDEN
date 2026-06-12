@@ -1,40 +1,56 @@
-# AV/GARDEN Docker Compose 安装指南
+# AV/GARDEN 安装指南
 
-这份指南面向把 AV/GARDEN 部署到 NAS、Linux 服务器或 Docker 主机的用户。分发和提交时不要附带真实 `.env`、`cfg/configs.json`、`db/`、`logs/` 或视频目录。
+这份文档按“先跑起来，再慢慢调”的顺序写。你只需要准备一台能跑 Docker 的 NAS、Linux 服务器或家用小主机。
 
-## 前置条件
+## 你需要先准备什么
 
-- Docker 与 Docker Compose
-- 一个可写的视频保存目录
-- 可访问的 qBittorrent Web UI
-- 可选：HTTP 代理、DeepSeek API key、飞书 webhook
+- Docker 和 Docker Compose
+- 一个视频保存目录，例如 `/volume1/media/av`
+- qBittorrent，并开启 Web UI
+- 可选：代理、DeepSeek API key、飞书 webhook
 
-## 快速开始
+最容易出错的地方只有一个：qBittorrent 的保存目录，必须和 AV/GARDEN 的视频目录指向同一份存储。
 
-1. 准备配置文件：
+## 1. 下载项目
+
+```bash
+git clone https://github.com/bwmf42/AVGARDEN.git
+cd AVGARDEN
+```
+
+如果你是直接下载 zip，也可以解压后进入项目目录。
+
+## 2. 复制配置文件
 
 ```bash
 cp .env.example .env
 cp cfg/configs.json.example cfg/configs.json
+mkdir -p db logs
 ```
 
-2. 编辑 `.env`：
+真实的 `.env`、`cfg/configs.json`、`db/` 和 `logs/` 不要上传到 GitHub。
 
-```bash
+## 3. 修改 `.env`
+
+先只改最关键的四项：
+
+```text
 AV_GARDEN_DATA_DIR=/absolute/path/to/your/video-library
 QBITTORRENT_URL=http://host.docker.internal:8080
 QBITTORRENT_USERNAME=admin
 QBITTORRENT_PASSWORD=your_password
-PROXY=
 ```
 
-如果 qBittorrent 不在 Docker 主机上，把 `QBITTORRENT_URL` 改成实际地址，例如 `http://192.168.1.10:8080`。
+说明：
 
-qBittorrent 的默认保存目录需要和 `AV_GARDEN_DATA_DIR` 指向同一份存储，否则 AV/GARDEN 可能能添加磁链，但无法在 `/data/<番号>` 下找到下载结果。
+- `AV_GARDEN_DATA_DIR` 必须是 Docker 主机上的绝对路径。
+- qBittorrent 跑在同一台机器上时，可以先试 `http://host.docker.internal:8080`。
+- qBittorrent 跑在另一台机器上时，改成它的局域网地址，例如 `http://192.168.1.10:8080`。
+- 需要代理时，再填 `PROXY=http://你的代理地址:端口`。
 
-3. 编辑 `cfg/configs.json`：
+## 4. 检查 `cfg/configs.json`
 
-容器部署时建议保留这些容器内路径：
+Docker 部署时建议保留这些容器内路径：
 
 ```json
 {
@@ -45,34 +61,45 @@ qBittorrent 的默认保存目录需要和 `AV_GARDEN_DATA_DIR` 指向同一份�
 }
 ```
 
-下载器域名、代理和 qBittorrent 账号按自己的环境调整。`.env` 里的 qBittorrent 配置会覆盖 `cfg/configs.json` 里的同名配置。
+下载器、JavBus 域名、代理等高级项可以以后再调。qBittorrent 账号密码优先读 `.env`。
 
-4. 创建本地目录并启动：
+## 5. 启动
 
 ```bash
-mkdir -p ./db ./logs
 docker compose -f docker-compose.example.yml --env-file .env up -d --build
 ```
 
-同时确认你已经创建了 `.env` 里 `AV_GARDEN_DATA_DIR` 指向的视频目录。
+第一次启动会构建镜像，时间会比较久。
 
-5. 打开网页：
+## 6. 打开网页
+
+默认地址：
 
 ```text
 http://<你的服务器地址>:31471
 ```
 
-如果修改了 `AV_GARDEN_HTTP_PORT`，使用你设置的端口。
+如果你修改了 `.env` 里的 `AV_GARDEN_HTTP_PORT`，就用你设置的端口。
 
-## 验证
+## 7. 确认是否正常
+
+查看容器：
 
 ```bash
 docker compose -f docker-compose.example.yml --env-file .env ps
-curl -sS http://127.0.0.1:31471/api/version
-curl -sS http://127.0.0.1:31471/api/queue-status
 ```
 
-如果修改了 `AV_GARDEN_HTTP_PORT`，把验证命令里的 `31471` 替换成你的端口。
+查看版本：
+
+```bash
+curl -sS http://127.0.0.1:31471/api/version
+```
+
+查看队列状态：
+
+```bash
+curl -sS http://127.0.0.1:31471/api/queue-status
+```
 
 查看日志：
 
@@ -81,46 +108,105 @@ docker compose -f docker-compose.example.yml --env-file .env logs -f server
 docker compose -f docker-compose.example.yml --env-file .env logs -f worker
 ```
 
-## 分发清单
+网页里的“日志”页会读取 `logs/` 目录里的最近日志。
 
-可以分享：
+## qBittorrent 怎么配
 
-- 源码
-- `Dockerfile.server`
-- `Dockerfile.worker`
-- `docker-compose.example.yml`
-- `.env.example`
-- `cfg/configs.json.example`
-- `INSTALL.md`
-- `README.md`
-- `AGENTS.md`
-- `LICENSE`
+在 qBittorrent 里确认：
 
-不要分享：
+- Web UI 已开启。
+- Web UI 地址、用户名、密码和 `.env` 一致。
+- 默认保存路径和 `AV_GARDEN_DATA_DIR` 是同一份目录。
+
+举个例子：
+
+```text
+AV_GARDEN_DATA_DIR=/volume1/media/av
+```
+
+那 qBittorrent 的默认保存路径也应该落到这份目录，或者是同一份目录在 qB 容器里的挂载路径。
+
+如果 qBittorrent 也跑在 Docker 里，两个容器最好挂载同一个宿主机目录。
+
+## 常见问题
+
+### 页面能打开，但添加任务失败
+
+先检查 qBittorrent Web UI 地址、用户名和密码。然后看：
+
+```bash
+docker compose -f docker-compose.example.yml --env-file .env logs -f worker
+```
+
+### qB 里有任务，但 AV/GARDEN 认为没完成
+
+通常是保存目录没对上。qB 下载到 A 目录，AV/GARDEN 在 B 目录找文件，就会一直找不到。
+
+### 日志页是空的
+
+先看宿主机项目目录下有没有 `logs/*.log`。如果有日志文件但页面空，重启服务：
+
+```bash
+docker compose -f docker-compose.example.yml --env-file .env restart
+```
+
+### 刮削慢或失败
+
+这通常和网络、代理、站点限制有关。可以先设置代理：
+
+```text
+PROXY=http://127.0.0.1:7890
+```
+
+如果代理在宿主机上，容器里可能需要写成宿主机局域网 IP 或 `host.docker.internal`。
+
+## 可选功能
+
+DeepSeek 翻译：
+
+```text
+DEEPSEEK_API_KEY=你的key
+DEEPSEEK_MODEL=deepseek-chat
+```
+
+飞书通知：
+
+```text
+FEISHU_WEBHOOK=你的飞书机器人 webhook
+```
+
+每日推荐限制：
+
+```text
+WEEKLY_MAX_PAGES=3
+WEEKLY_MAX_NEW=20
+WEEKLY_MAX_AGE=30
+```
+
+## 更新项目
+
+```bash
+git pull
+docker compose -f docker-compose.example.yml --env-file .env up -d --build
+```
+
+更新前建议备份：
+
+```text
+db/
+cfg/configs.json
+.env
+```
+
+## 数据安全
+
+这些文件不要分享：
 
 - `.env`
 - `cfg/configs.json`
 - `db/`
 - `logs/`
 - 视频目录
-- 任何包含账号、密码、Cookie、API key 的文件
+- 任何账号、密码、Cookie、API key、webhook
 
-## 常见问题
-
-### qBittorrent 连接不上
-
-先确认 Web UI 地址、账号和密码正确。Linux Docker 主机上，模板已配置 `host.docker.internal:host-gateway`；如果你的 Docker 版本不支持它，改用主机局域网 IP。
-
-再确认 qBittorrent 的保存路径和 `AV_GARDEN_DATA_DIR` 是同一份目录，尤其是 qBittorrent 也跑在容器里时，需要给它挂载同一个宿主机视频目录。
-
-### 页面能打开，但下载队列不可用
-
-模板里 Go 后端会通过 Docker 内部服务名 `http://worker:31473` 访问 Queue API。确认 `worker` 容器正在运行：
-
-```bash
-docker compose -f docker-compose.example.yml --env-file .env ps worker
-```
-
-### 不想本地构建镜像
-
-第一版模板默认本地构建。后续可以把 `server` 和 `worker` 镜像推到 Docker Hub 或 GHCR，再把 `build` 改成 `image`，用户就能直接拉取镜像运行。
+建议定期备份 `db/` 和 `cfg/`。

@@ -66,7 +66,7 @@ func videoDetailHandler(w http.ResponseWriter, r *http.Request) {
 	title, date, err := parseTitleAndDate(videoID)
 	if err != nil {
 		logger.Printf("NFO parse for %s failed: %v", videoID, err)
-			detail.Title = cleanID
+		detail.Title = cleanID
 		detail.ReleaseDate = "Unknown"
 	} else {
 		detail.Title = title
@@ -1098,27 +1098,108 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	logFile := filepath.Join(basePath, "__weekly__", "..", "..", "logs", "av-garden.log")
-	// 使用 /logs/av-garden.log 路径（通过 volume 挂载）
-	logFile = "/logs/av-garden.log"
-	data, err := ioutil.ReadFile(logFile)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Write([]byte(`{"lines":[]}`))
-		return
+	logDir := getEnv("LOG_DIR", "/logs")
+	logFiles := discoverLogFiles(logDir)
+	if len(logFiles) == 0 && logDir != "/logs" {
+		logFiles = discoverLogFiles("/logs")
 	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	// 只返回最近 500 行，倒序
-	start := 0
+
+	type logLine struct {
+		text string
+		ts   time.Time
+		seq  int
+	}
+
+	lines := make([]logLine, 0)
+	seq := 0
+	for _, logFile := range logFiles {
+		data, err := ioutil.ReadFile(logFile)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimRight(line, "\r")
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			lines = append(lines, logLine{
+				text: line,
+				ts:   parseLogLineTime(line),
+				seq:  seq,
+			})
+			seq++
+		}
+	}
+
+	sort.SliceStable(lines, func(i, j int) bool {
+		if !lines[i].ts.Equal(lines[j].ts) {
+			return lines[i].ts.After(lines[j].ts)
+		}
+		return lines[i].seq > lines[j].seq
+	})
+
 	if len(lines) > 500 {
-		start = len(lines) - 500
+		lines = lines[:500]
 	}
-	reversed := make([]string, 0)
-	for i := len(lines) - 1; i >= start; i-- {
-		reversed = append(reversed, lines[i])
+
+	recent := make([]string, 0, len(lines))
+	for _, line := range lines {
+		recent = append(recent, line.text)
 	}
+
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	json.NewEncoder(w).Encode(map[string]interface{}{"lines": reversed})
+	json.NewEncoder(w).Encode(map[string]interface{}{"lines": recent})
+}
+
+func discoverLogFiles(logDir string) []string {
+	entries, err := ioutil.ReadDir(logDir)
+	if err != nil {
+		return nil
+	}
+
+	type logFile struct {
+		path    string
+		modTime time.Time
+	}
+
+	files := make([]logFile, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		files = append(files, logFile{
+			path:    filepath.Join(logDir, entry.Name()),
+			modTime: entry.ModTime(),
+		})
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		if !files[i].modTime.Equal(files[j].modTime) {
+			return files[i].modTime.Before(files[j].modTime)
+		}
+		return files[i].path < files[j].path
+	})
+
+	if len(files) > 14 {
+		files = files[len(files)-14:]
+	}
+
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.path)
+	}
+	return paths
+}
+
+func parseLogLineTime(line string) time.Time {
+	if len(line) < 19 {
+		return time.Time{}
+	}
+	ts, err := time.ParseInLocation("2006-01-02 15:04:05", line[:19], time.Local)
+	if err != nil {
+		return time.Time{}
+	}
+	return ts
 }
 
 func versionHandler(w http.ResponseWriter, r *http.Request) {
