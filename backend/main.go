@@ -614,7 +614,7 @@ func cleanTitleCandidate(title, videoID string) string {
 	if strings.Contains(lower, "an error occurred") || strings.Contains(lower, `"success":false`) {
 		return ""
 	}
-	if cleanVideoID(title) == cleanVideoID(videoID) {
+	if strings.EqualFold(title, cleanVideoID(videoID)) {
 		return ""
 	}
 	return title
