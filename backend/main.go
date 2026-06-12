@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"html"
 	"io"
 	"io/ioutil"
 	"log"
@@ -135,6 +136,10 @@ var (
 	cacheRebuilding  sync.Mutex
 	lastCacheRebuild time.Time
 	logger           = log.New(os.Stdout, "[AV/GARDEN] ", log.LstdFlags|log.Lshortfile)
+
+	weeklyTitleMutex sync.Mutex
+	weeklyTitleCache map[string]string
+	weeklyTitleMod   time.Time
 )
 
 // VideoItem 表示视频列表项
@@ -159,6 +164,15 @@ type NfoFile struct {
 	Title       string   `xml:"title"`
 	ReleaseDate string   `xml:"releasedate"`
 	Premiered   string   `xml:"premiered"`
+}
+
+type MetadataTitleFile struct {
+	Title         string `json:"title"`
+	TitleZh       string `json:"titleZh"`
+	TitleZhSnake  string `json:"title_zh"`
+	TitleJp       string `json:"titleJp"`
+	TitleJpSnake  string `json:"title_jp"`
+	OriginalTitle string `json:"originaltitle"`
 }
 
 func hasPoster(base, dirName string) bool {
@@ -444,35 +458,166 @@ func findFileInDir(base, dirName, suffix string) string {
 
 func parseTitleAndDate(videoID string) (title, releaseDate string, err error) {
 	nfoPath := findFileInDir(basePath, videoID, ".nfo")
-	if nfoPath == "" {
-		return "", "", fmt.Errorf("no nfo file found")
+	if nfoPath != "" {
+		file, err := os.Open(nfoPath)
+		if err != nil {
+			return "", "", fmt.Errorf("open file failed: %w", err)
+		}
+		defer file.Close()
+
+		decoder := xml.NewDecoder(file)
+		decoder.CharsetReader = func(charset string, input io.Reader) (io.Reader, error) {
+			return input, nil
+		}
+
+		var nfo NfoFile
+		if err := decoder.Decode(&nfo); err != nil {
+			return "", "", fmt.Errorf("xml decode failed: %w", err)
+		}
+
+		date := nfo.ReleaseDate
+		if date == "" {
+			date = nfo.Premiered
+		}
+		if nfo.Title != "" {
+			return nfo.Title, date, nil
+		}
+		if fallback := fallbackTitleForVideo(videoID); fallback != "" {
+			return fallback, date, nil
+		}
+		return cleanVideoID(videoID), date, nil
 	}
 
-	file, err := os.Open(nfoPath)
+	if fallback := fallbackTitleForVideo(videoID); fallback != "" {
+		return fallback, "", nil
+	}
+	return "", "", fmt.Errorf("no title metadata found")
+}
+
+func fallbackTitleForVideo(videoID string) string {
+	if title := weeklyTitleForVideo(videoID); title != "" {
+		return title
+	}
+	if title := jsonTitleForVideo(videoID); title != "" {
+		return title
+	}
+	if title := htmlTitleForVideo(videoID); title != "" {
+		return title
+	}
+	return ""
+}
+
+func weeklyTitleForVideo(videoID string) string {
+	weeklyTitleMutex.Lock()
+	defer weeklyTitleMutex.Unlock()
+
+	weeklyPath := filepath.Join(basePath, "__weekly__", "weekly.json")
+	info, err := os.Stat(weeklyPath)
 	if err != nil {
-		return "", "", fmt.Errorf("open file failed: %w", err)
-	}
-	defer file.Close()
-
-	decoder := xml.NewDecoder(file)
-	decoder.CharsetReader = func(charset string, input io.Reader) (io.Reader, error) {
-		return input, nil
+		return ""
 	}
 
-	var nfo NfoFile
-	if err := decoder.Decode(&nfo); err != nil {
-		return "", "", fmt.Errorf("xml decode failed: %w", err)
+	if weeklyTitleCache == nil || !info.ModTime().Equal(weeklyTitleMod) {
+		data, err := ioutil.ReadFile(weeklyPath)
+		if err != nil {
+			return ""
+		}
+		var items []map[string]interface{}
+		if err := json.Unmarshal(data, &items); err != nil {
+			return ""
+		}
+
+		next := make(map[string]string, len(items))
+		for _, item := range items {
+			id, _ := item["id"].(string)
+			id = cleanVideoID(id)
+			if id == "" {
+				continue
+			}
+			for _, key := range []string{"titleZh", "title", "titleJp"} {
+				if title, ok := item[key].(string); ok {
+					if clean := cleanTitleCandidate(title, id); clean != "" {
+						next[id] = clean
+						break
+					}
+				}
+			}
+		}
+
+		weeklyTitleCache = next
+		weeklyTitleMod = info.ModTime()
 	}
 
-	date := nfo.ReleaseDate
-	if date == "" {
-		date = nfo.Premiered
-	}
-	if nfo.Title == "" {
-		nfo.Title = videoID
-	}
+	return weeklyTitleCache[cleanVideoID(videoID)]
+}
 
-	return nfo.Title, date, nil
+func jsonTitleForVideo(videoID string) string {
+	for _, filename := range []string{"download_info.json", "metadata.json"} {
+		path := filepath.Join(basePath, videoID, filename)
+		data, err := ioutil.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var item MetadataTitleFile
+		if err := json.Unmarshal(data, &item); err != nil {
+			continue
+		}
+		for _, title := range []string{item.TitleZh, item.TitleZhSnake, item.Title, item.TitleJp, item.TitleJpSnake, item.OriginalTitle} {
+			if clean := cleanTitleCandidate(title, videoID); clean != "" {
+				return clean
+			}
+		}
+	}
+	return ""
+}
+
+func htmlTitleForVideo(videoID string) string {
+	htmlPath := findFileInDir(basePath, videoID, ".html")
+	if htmlPath == "" {
+		return ""
+	}
+	data, err := ioutil.ReadFile(htmlPath)
+	if err != nil {
+		return ""
+	}
+	if len(data) > 1024*1024 {
+		data = data[:1024*1024]
+	}
+	content := string(data)
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?is)<meta\s+(?:property|name)=["']og:title["'][^>]*content=["']([^"']+)["']`),
+		regexp.MustCompile(`(?is)<meta\s+[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["']og:title["']`),
+		regexp.MustCompile(`(?is)<title>(.*?)</title>`),
+	}
+	for _, pattern := range patterns {
+		if match := pattern.FindStringSubmatch(content); len(match) > 1 {
+			if clean := cleanTitleCandidate(match[1], videoID); clean != "" {
+				return clean
+			}
+		}
+	}
+	return ""
+}
+
+func cleanTitleCandidate(title, videoID string) string {
+	title = html.UnescapeString(title)
+	title = regexp.MustCompile(`(?is)<[^>]+>`).ReplaceAllString(title, "")
+	title = strings.TrimSpace(title)
+	title = strings.Join(strings.Fields(title), " ")
+	for _, suffix := range []string{" - JavBus", " - MissAV", " | MissAV", " - Jable.TV", " - Jable"} {
+		title = strings.TrimSuffix(title, suffix)
+	}
+	if title == "" {
+		return ""
+	}
+	lower := strings.ToLower(title)
+	if strings.Contains(lower, "an error occurred") || strings.Contains(lower, `"success":false`) {
+		return ""
+	}
+	if cleanVideoID(title) == cleanVideoID(videoID) {
+		return ""
+	}
+	return title
 }
 
 // listVideosHandler 获取视频列表（触发异步缓存刷新）
