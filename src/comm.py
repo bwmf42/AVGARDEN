@@ -11,7 +11,7 @@ project_root = os.path.dirname(os.path.dirname(current_file_path))
 # 获取配置
 with open(project_root+'/cfg/configs.json', 'r', encoding='utf-8') as file:
     configs = json.load(file)
-logger.info(configs)
+logger.info("configs loaded")
 
 # 初始化日志
 logger.add(
@@ -19,7 +19,7 @@ logger.add(
     rotation="00:00",            
     retention="7 days", 
     enqueue=False,
-    level="DEBUG",
+    level="INFO",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
 )
 

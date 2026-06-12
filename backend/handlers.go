@@ -1103,6 +1103,7 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 	if len(logFiles) == 0 && logDir != "/logs" {
 		logFiles = discoverLogFiles("/logs")
 	}
+	includeDebug := r.URL.Query().Get("debug") == "1"
 
 	type logLine struct {
 		text string
@@ -1120,6 +1121,9 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimRight(line, "\r")
 			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if !includeDebug && isDebugLogLine(line) {
 				continue
 			}
 			lines = append(lines, logLine{
@@ -1189,6 +1193,10 @@ func discoverLogFiles(logDir string) []string {
 		paths = append(paths, file.path)
 	}
 	return paths
+}
+
+func isDebugLogLine(line string) bool {
+	return strings.Contains(line, " | DEBUG |") || strings.Contains(line, "[DEBUG]")
 }
 
 func parseLogLineTime(line string) time.Time {
