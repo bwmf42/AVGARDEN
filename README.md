@@ -289,6 +289,10 @@ db/weekly_watched.json    每日推荐已看状态
 - 建议定期备份 `db/` 和 `cfg/`。
 - 请遵守当地法律法规，仅在合法范围内使用。
 
+## 致谢
+
+AV/GARDEN 基于 [Satoing/NASSAV](https://github.com/Satoing/NASSAV) 的源码继续整理和演进。感谢原作者提供的项目基础、下载流程和 NAS 部署思路。
+
 ## 许可证
 
 本项目采用 MIT 许可证。详见 [LICENSE](LICENSE) 文件。
