@@ -1,5 +1,5 @@
 <div align="center">
-  <img style="max-width:50%;" src="pic/logo.png" alt="AV/GARDEN" />
+  <img style="max-width:50%;" src="pic/avgarden-logo.svg" alt="AV/GARDEN" />
   <br>
   <strong>给 NAS 和家庭服务器用的媒体下载、刮削、整理小站</strong>
   <br>
