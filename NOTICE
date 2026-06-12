@@ -1,0 +1,24 @@
+AV/GARDEN
+=========
+
+AV/GARDEN is based on and continues work from:
+
+  NASSAV
+  https://github.com/Satoing/NASSAV
+  Copyright (c) 2025 satoing
+  Licensed under the MIT License
+
+The original NASSAV project provides the foundation for the downloader,
+metadata scraping flow, queue-oriented operation, and NAS deployment ideas.
+
+AV/GARDEN keeps the upstream MIT license notice and evolves the project with
+additional Web UI, qBittorrent-first download handling, weekly recommendations,
+download management, search, status visibility, and deployment documentation.
+
+Additional acknowledgement:
+
+  m3u8-Downloader-Go
+  https://github.com/Greyh4t/m3u8-Downloader-Go
+
+This notice is provided to make the upstream source and acknowledgements clear
+for users, contributors, and automated agents reading this repository.
