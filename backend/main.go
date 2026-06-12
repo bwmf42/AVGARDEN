@@ -1,0 +1,478 @@
+package main
+
+import (
+	"encoding/json"
+	"encoding/xml"
+	"fmt"
+	"io"
+	"io/ioutil"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+// =============================================
+// 环境变量配置（替代硬编码）
+// =============================================
+var (
+	basePath             = getEnv("SAVE_PATH", "/data")
+	serverPort           = getEnv("SERVER_PORT", ":31471")
+	apiKey               = getEnv("API_KEY", "")
+	dbPath               = getEnv("DB_PATH", "/db/downloaded.db")
+	queuePath            = getEnv("QUEUE_PATH", "/db/download_queue.txt")
+	queueAPI             = getEnv("QUEUE_API_URL", "http://127.0.0.1:31473")
+	qbAPI                = getEnv("QBITTORRENT_URL", "http://127.0.0.1:8880")
+	qbUser               = getEnv("QBITTORRENT_USERNAME", "admin")
+	qbPass               = getEnv("QBITTORRENT_PASSWORD", "adminadmin")
+	blockedActressesFile = getEnv("BLOCKED_ACTRESSES_FILE", "/db/blocked_actresses.txt")
+	blockedGenresFile    = getEnv("BLOCKED_GENRES_FILE", "/db/blocked_genres.txt")
+	favActressesFile     = getEnv("FAV_ACTRESSES_FILE", "/db/favorite_actresses.txt")
+	blockedKeywordsFile  = getEnv("BLOCKED_KEYWORDS_FILE", "/db/blocked_keywords.txt")
+	actressAgesFile      = getEnv("ACTRESS_AGES_FILE", "/db/actress_ages.json")
+	weeklyWatchedFile    = getEnv("WEEKLY_WATCHED_FILE", "/db/weekly_watched.json")
+	blockedActresses     map[string]bool
+	blockedGenres        map[string]bool
+	blockedKeywords      map[string]bool
+	favActresses         map[string]bool
+	actressAges          map[string]int
+	actressAgeLimit      = 45
+)
+
+func loadBlockedLists() {
+	blockedActresses = make(map[string]bool)
+	blockedGenres = make(map[string]bool)
+	// 1. 从环境变量加载
+	for _, name := range strings.Split(os.Getenv("BLOCKED_ACTRESSES"), ",") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			blockedActresses[name] = true
+		}
+	}
+	for _, g := range strings.Split(os.Getenv("BLOCKED_GENRES"), ",") {
+		g = strings.TrimSpace(g)
+		if g != "" {
+			blockedGenres[g] = true
+		}
+	}
+	// 2. 从文件加载
+	loadBlockedFromFile(blockedActressesFile, blockedActresses)
+	loadBlockedFromFile(blockedGenresFile, blockedGenres)
+	favActresses = make(map[string]bool)
+	blockedKeywords = make(map[string]bool)
+	loadBlockedFromFile(favActressesFile, favActresses)
+	loadBlockedFromFile(blockedKeywordsFile, blockedKeywords)
+	actressAges = make(map[string]int)
+	loadActressAges()
+}
+
+func loadActressAges() {
+	actressAges = make(map[string]int)
+	data, err := ioutil.ReadFile(actressAgesFile)
+	if err != nil {
+		return
+	}
+	var ages map[string]int
+	if json.Unmarshal(data, &ages) == nil {
+		actressAges = ages
+	}
+}
+
+func hasOldActress(actresses []interface{}) bool {
+	if len(actressAges) == 0 {
+		return false
+	}
+	for _, a := range actresses {
+		if name, ok := a.(string); ok {
+			if year, exists := actressAges[name]; exists {
+				if (2026 - year) > actressAgeLimit {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func loadBlockedFromFile(path string, m map[string]bool) {
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		val := strings.TrimSpace(line)
+		if val != "" {
+			m[val] = true
+		}
+	}
+}
+
+func appendBlockedActress(name string) error {
+	f, err := os.OpenFile(blockedActressesFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(name + "\n")
+	return err
+}
+
+// 前端静态文件目录
+const frontendDir = "/app/frontend/dist"
+
+// 全局缓存
+var (
+	videoListCache   []VideoItem
+	cacheMutex       sync.RWMutex
+	cacheRebuilding  sync.Mutex
+	lastCacheRebuild time.Time
+	logger           = log.New(os.Stdout, "[AV/GARDEN] ", log.LstdFlags|log.Lshortfile)
+)
+
+// VideoItem 表示视频列表项
+type VideoItem struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Poster string `json:"poster"`
+}
+
+// VideoDetail 视频详细信息
+type VideoDetail struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	ReleaseDate string   `json:"releaseDate"`
+	Fanarts     []string `json:"fanarts"`
+	VideoFile   string   `json:"videoFile,omitempty"`
+}
+
+// NfoFile NFO文件结构
+type NfoFile struct {
+	XMLName     xml.Name `xml:"movie"`
+	Title       string   `xml:"title"`
+	ReleaseDate string   `xml:"releasedate"`
+	Premiered   string   `xml:"premiered"`
+}
+
+func hasPoster(base, dirName string) bool {
+	return getPosterFile(base, dirName) != ""
+}
+
+func getPosterFile(base, dirName string) string {
+	dirPath := filepath.Join(base, dirName)
+	// 先试精确匹配
+	exact := dirName + "-poster.jpg"
+	if _, err := os.Stat(filepath.Join(dirPath, exact)); err == nil {
+		return exact
+	}
+	// 再找任意 *-poster.jpg
+	entries, err := ioutil.ReadDir(dirPath)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), "-poster.jpg") {
+			return e.Name()
+		}
+	}
+	return ""
+}
+
+func getEnv(key, defaultVal string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return defaultVal
+}
+
+func containsBlockedActress(actresses []string) bool {
+	for _, actress := range actresses {
+		if blockedActresses[actress] {
+			return true
+		}
+	}
+	return false
+}
+
+var avidPattern = regexp.MustCompile(`(?i)([A-Z]{2,}\d*)-(\d+)`)
+
+func cleanVideoID(name string) string {
+	name = strings.TrimSpace(name)
+	matches := avidPattern.FindStringSubmatch(name)
+	if len(matches) >= 3 {
+		return strings.ToUpper(matches[1] + "-" + matches[2])
+	}
+	return strings.ToUpper(name)
+}
+
+func resolveVideoDir(videoID string) (string, string) {
+	videoID = strings.TrimSpace(videoID)
+	if videoID == "" {
+		return "", ""
+	}
+	exact := filepath.Join(basePath, videoID)
+	if info, err := os.Stat(exact); err == nil && info.IsDir() {
+		return videoID, cleanVideoID(videoID)
+	}
+
+	target := cleanVideoID(videoID)
+	entries, err := os.ReadDir(basePath)
+	if err != nil {
+		return videoID, target
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && cleanVideoID(entry.Name()) == target {
+			return entry.Name(), target
+		}
+	}
+	return videoID, target
+}
+
+func enableCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func main() {
+	logger.Println("Starting AV/GARDEN server...")
+	logger.Printf("basePath=%s port=%s db=%s queue=%s", basePath, serverPort, dbPath, queuePath)
+
+	// 加载屏蔽演员列表
+	loadBlockedLists()
+
+	// 初始化缓存
+	if err := buildVideoListCache(); err != nil {
+		logger.Printf("Warning: initial cache build failed: %v", err)
+	}
+
+	// 启动定时缓存更新
+	go startCacheUpdater(10 * time.Minute)
+
+	// 设置路由
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/videos", listVideosHandler)
+	mux.HandleFunc("/api/videos/", videoDetailHandler)
+	mux.HandleFunc("/api/addvideo/", addVideoHandler)
+	mux.HandleFunc("/file/", imageHandler)
+	mux.HandleFunc("/api/weekly", weeklyHandler)
+	mux.HandleFunc("/api/weekly-watched", weeklyWatchedHandler)
+	mux.HandleFunc("/api/queue/", queueHandler)
+	mux.HandleFunc("/api/failed-ack/", failedAckHandler)
+	mux.HandleFunc("/api/failed-ack", failedAckHandler)
+	mux.HandleFunc("/api/block-actress/", blockActressHandler)
+	mux.HandleFunc("/api/block-genre/", blockGenreHandler)
+	mux.HandleFunc("/api/video-status/", videoStatusHandler)
+	mux.HandleFunc("/api/fav-actress/", favActressHandler)
+	mux.HandleFunc("/api/block-keyword/", blockKeywordHandler)
+	mux.HandleFunc("/api/logs", logsHandler)
+	mux.HandleFunc("/api/queue-status", queueStatusHandler)
+	mux.HandleFunc("/api/version", versionHandler)
+	mux.HandleFunc("/api/weekly/scrape", weeklyScrapeHandler)
+
+	// 前端静态文件 — 如果存在则 serve SPA (with Vue Router fallback)
+	if _, err := os.Stat(frontendDir); err == nil {
+		fs := http.FileServer(http.Dir(frontendDir))
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			// Try to serve the requested file
+			if r.URL.Path == "/" {
+				w.Header().Set("Cache-Control", "no-cache")
+				fs.ServeHTTP(w, r)
+				return
+			}
+			path := filepath.Join(frontendDir, r.URL.Path)
+			if _, err := os.Stat(path); err == nil {
+				fs.ServeHTTP(w, r)
+				return
+			}
+			// SPA fallback: serve index.html for all non-file routes
+			w.Header().Set("Cache-Control", "no-cache")
+			http.ServeFile(w, r, filepath.Join(frontendDir, "index.html"))
+		})
+		logger.Printf("Frontend static files served from %s (SPA mode)", frontendDir)
+	} else {
+		logger.Printf("Frontend dir not found (%s), API only mode", frontendDir)
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("AV/GARDEN Server API is running.\nFrontend not available — build the Vue project first."))
+		})
+	}
+
+	// CORS 中间件
+	handler := enableCORS(mux)
+
+	port := strings.TrimPrefix(serverPort, ":")
+
+	// 双栈监听（IPv4 + IPv6）
+	listener4, err4 := net.Listen("tcp4", "0.0.0.0:"+port)
+	listener6, err6 := net.Listen("tcp6", "[::]:"+port)
+
+	if err4 != nil && err6 != nil {
+		logger.Fatalf("Failed to listen on any interface: %v / %v", err4, err6)
+	}
+
+	if err4 == nil {
+		go func() {
+			logger.Printf("Serving on IPv4 :%s", port)
+			logger.Fatal(http.Serve(listener4, handler))
+		}()
+	}
+	if err6 == nil {
+		logger.Printf("Serving on IPv6 :%s", port)
+		logger.Fatal(http.Serve(listener6, handler))
+	}
+
+	select {}
+}
+
+// startCacheUpdater 定时更新缓存
+func startCacheUpdater(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		logger.Println("Starting scheduled cache update...")
+		if err := buildVideoListCache(); err != nil {
+			logger.Printf("Cache update failed: %v", err)
+		} else {
+			logger.Println("Cache updated successfully")
+		}
+	}
+}
+
+// buildVideoListCache 构建视频列表缓存
+func buildVideoListCache() error {
+	cacheMutex.Lock()
+	defer cacheMutex.Unlock()
+
+	startTime := time.Now()
+	logger.Println("Building video list cache...")
+
+	files, err := os.ReadDir(basePath)
+	if err != nil {
+		logger.Printf("Error reading directory %s: %v", basePath, err)
+		return fmt.Errorf("read directory failed: %w", err)
+	}
+
+	type dirEntryWithInfo struct {
+		entry os.DirEntry
+		info  os.FileInfo
+	}
+
+	var dirs []dirEntryWithInfo
+	for _, file := range files {
+		if !file.IsDir() {
+			continue
+		}
+		info, err := file.Info()
+		if err != nil {
+			logger.Printf("Error getting info for %s: %v", file.Name(), err)
+			continue
+		}
+		dirs = append(dirs, dirEntryWithInfo{entry: file, info: info})
+	}
+
+	sort.Slice(dirs, func(i, j int) bool {
+		return dirs[i].info.ModTime().After(dirs[j].info.ModTime())
+	})
+
+	videoListCache = nil
+
+	var count int
+	for _, dir := range dirs {
+		dirName := dir.entry.Name()
+		videoID := cleanVideoID(dirName)
+		posterFile := getPosterFile(basePath, dirName)
+		if posterFile == "" {
+			logger.Printf("Poster not found for %s", dirName)
+			continue
+		}
+
+		title, _, err := parseTitleAndDate(dirName)
+		if err != nil {
+			logger.Printf("Failed to parse NFO for %s: %v", dirName, err)
+			title = videoID
+		}
+
+		videoListCache = append(videoListCache, VideoItem{
+			ID:     videoID,
+			Title:  title,
+			Poster: fmt.Sprintf("/file/%s/%s", videoID, posterFile),
+		})
+		count++
+	}
+
+	logger.Printf("Cache built successfully. Items: %d, Duration: %v",
+		count, time.Since(startTime))
+	return nil
+}
+
+// parseTitleAndDate 解析NFO文件获取标题和日期
+func findFileInDir(base, dirName, suffix string) string {
+	// 先试精确匹配
+	exact := filepath.Join(base, dirName, dirName+suffix)
+	if _, err := os.Stat(exact); err == nil {
+		return exact
+	}
+	// 再找任意以 suffix 结尾的文件
+	entries, err := ioutil.ReadDir(filepath.Join(base, dirName))
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), suffix) {
+			return filepath.Join(base, dirName, e.Name())
+		}
+	}
+	return ""
+}
+
+func parseTitleAndDate(videoID string) (title, releaseDate string, err error) {
+	nfoPath := findFileInDir(basePath, videoID, ".nfo")
+	if nfoPath == "" {
+		return "", "", fmt.Errorf("no nfo file found")
+	}
+
+	file, err := os.Open(nfoPath)
+	if err != nil {
+		return "", "", fmt.Errorf("open file failed: %w", err)
+	}
+	defer file.Close()
+
+	decoder := xml.NewDecoder(file)
+	decoder.CharsetReader = func(charset string, input io.Reader) (io.Reader, error) {
+		return input, nil
+	}
+
+	var nfo NfoFile
+	if err := decoder.Decode(&nfo); err != nil {
+		return "", "", fmt.Errorf("xml decode failed: %w", err)
+	}
+
+	date := nfo.ReleaseDate
+	if date == "" {
+		date = nfo.Premiered
+	}
+	if nfo.Title == "" {
+		nfo.Title = videoID
+	}
+
+	return nfo.Title, date, nil
+}
+
+// listVideosHandler 获取视频列表（触发异步缓存刷新）

@@ -1,0 +1,72 @@
+services:
+  server:
+    container_name: av-garden-server
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    ports:
+      - "${AV_GARDEN_HTTP_PORT:-31471}:31471"
+    volumes:
+      - "${AV_GARDEN_DATA_DIR:?Set AV_GARDEN_DATA_DIR in .env}:/data"
+      - "${AV_GARDEN_DB_DIR:-./db}:/db"
+      - "${AV_GARDEN_CFG_DIR:-./cfg}:/cfg:ro"
+      - "${AV_GARDEN_LOG_DIR:-./logs}:/logs"
+    environment:
+      SAVE_PATH: /data
+      SERVER_PORT: ":31471"
+      DB_PATH: /db/downloaded.db
+      QUEUE_PATH: /db/download_queue.txt
+      QUEUE_API_URL: http://worker:31473
+      QBITTORRENT_URL: ${QBITTORRENT_URL:-http://host.docker.internal:8080}
+      QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:-admin}
+      QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD:-adminadmin}
+      API_KEY: ${API_KEY:-}
+      BLOCKED_ACTRESSES_FILE: /db/blocked_actresses.txt
+      BLOCKED_GENRES_FILE: /db/blocked_genres.txt
+      FAV_ACTRESSES_FILE: /db/favorite_actresses.txt
+      BLOCKED_KEYWORDS_FILE: /db/blocked_keywords.txt
+      ACTRESS_AGES_FILE: /db/actress_ages.json
+      WEEKLY_WATCHED_FILE: /db/weekly_watched.json
+      TZ: ${TZ:-Asia/Shanghai}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - worker
+    restart: unless-stopped
+
+  worker:
+    container_name: av-garden-worker
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    expose:
+      - "31473"
+    volumes:
+      - "${AV_GARDEN_DATA_DIR:?Set AV_GARDEN_DATA_DIR in .env}:/data"
+      - "${AV_GARDEN_DB_DIR:-./db}:/db"
+      - "${AV_GARDEN_CFG_DIR:-./cfg}:/app/cfg:ro"
+      - "${AV_GARDEN_LOG_DIR:-./logs}:/app/logs"
+    environment:
+      SAVE_PATH: /data
+      DB_PATH: /db/downloaded.db
+      QUEUE_PATH: /db/download_queue.txt
+      STATE_PATH: /db/queue_state.json
+      CURRENT_PATH: /db/current_download.txt
+      HISTORY_PATH: /db/download_history.json
+      QUEUE_PORT: "31473"
+      LOG_DIR: /app/logs
+      PROXY: ${PROXY:-}
+      QBITTORRENT_URL: ${QBITTORRENT_URL:-http://host.docker.internal:8080}
+      QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:-admin}
+      QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD:-adminadmin}
+      FEISHU_WEBHOOK: ${FEISHU_WEBHOOK:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      WEEKLY_MAX_PAGES: ${WEEKLY_MAX_PAGES:-3}
+      WEEKLY_MAX_NEW: ${WEEKLY_MAX_NEW:-20}
+      WEEKLY_MAX_AGE: ${WEEKLY_MAX_AGE:-30}
+      PYTHONUNBUFFERED: "1"
+      TZ: ${TZ:-Asia/Shanghai}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

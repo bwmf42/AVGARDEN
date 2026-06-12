@@ -1,0 +1,55 @@
+{
+    "LogPath": "/app/logs",
+    "SavePath": "/data",
+    "DBPath": "/db/downloaded.db",
+    "QueuePath": "/db/download_queue.txt",
+    "Proxy": "",
+    "IsNeedVideoProxy": false,
+    "FeishuWebhook": "",
+    "ScraperDomain": [
+        "https://www.javbus.com"
+    ],
+    "BlockedActresses": [],
+    "QBittorrent": {
+        "url": "http://host.docker.internal:8080",
+        "username": "admin",
+        "password": "your_password"
+    },
+    "Downloader": [
+        {
+            "downloaderName": "MissAV",
+            "domain": "missav.ai",
+            "weight": 300
+        },
+        {
+            "downloaderName": "Jable",
+            "domain": "jable.tv",
+            "weight": 500
+        },
+        {
+            "downloaderName": "HohoJ",
+            "domain": "hohoj.tv",
+            "weight": 400
+        },
+        {
+            "downloaderName": "Memo",
+            "domain": "memojav.com",
+            "weight": 600
+        },
+        {
+            "downloaderName": "AvToday",
+            "domain": "avtoday.io",
+            "weight": 0
+        },
+        {
+            "downloaderName": "NetFlav",
+            "domain": "netflav.com",
+            "weight": 0
+        },
+        {
+            "downloaderName": "KissAv",
+            "domain": "f15.bzraizy.cc",
+            "weight": 0
+        }
+    ]
+}
