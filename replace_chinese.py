@@ -57,6 +57,56 @@ def text_has_avid(text, avid):
     variants = code_variants(avid)
     return any(v and (v in up or v.replace("-", "") in compact) for v in variants)
 
+
+def format_size(size):
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.1f}{unit}" if unit != "B" else f"{int(size)}B"
+        size /= 1024
+
+
+def collect_mp4_candidates(full_path, avid):
+    candidates = []
+
+    def add_candidate(path, rel_name):
+        filename = os.path.basename(path)
+        if filename.startswith("._") or not filename.lower().endswith(".mp4"):
+            return
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        probe = " ".join([filename, rel_name])
+        candidates.append({
+            "path": path,
+            "name": filename,
+            "rel": rel_name,
+            "size": size,
+            "has_avid": text_has_avid(probe, avid),
+        })
+
+    if os.path.isdir(full_path):
+        for root, dirs, files in os.walk(full_path):
+            dirs[:] = [d for d in dirs if not d.startswith("._")]
+            for filename in files:
+                path = os.path.join(root, filename)
+                add_candidate(path, os.path.relpath(path, full_path))
+    elif os.path.isfile(full_path):
+        add_candidate(full_path, os.path.basename(full_path))
+
+    return candidates
+
+
+def select_main_mp4(full_path, avid):
+    candidates = collect_mp4_candidates(full_path, avid)
+    if not candidates:
+        return None, []
+    code_candidates = [item for item in candidates if item["has_avid"]]
+    pool = code_candidates or candidates
+    selected = max(pool, key=lambda item: item["size"])
+    skipped = [item for item in candidates if item["path"] != selected["path"]]
+    return selected, skipped
+
 def qb_login():
     import urllib.request, http.cookiejar
     cookie_jar = http.cookiejar.CookieJar()
@@ -206,28 +256,30 @@ def merge_completed_chinese():
 
         log(f"  Merging {avid}: torrent={t_info.get('name','')} from {full_path}")
 
-        # 先清理原文件夹的旧非中文文件
-        cleanup_original(avid)
-
-        target_dir = os.path.join(SAVE_PATH, avid)
-        os.makedirs(target_dir, exist_ok=True)
-
         try:
-            # 移动 mp4 文件到原文件夹
+            # 只移动中文字幕种子中的主视频，广告/花絮留在临时目录随 qB 删除。
             moved_files = []
-            if os.path.isdir(full_path):
-                for f in os.listdir(full_path):
-                    if f.endswith(".mp4") and not f.startswith("._"):
-                        src = os.path.join(full_path, f)
-                        dst = os.path.join(target_dir, f)
-                        shutil.move(src, dst)
-                        moved_files.append(f)
-                        log(f"  Moved {f} -> {target_dir}")
-            elif os.path.isfile(full_path) and full_path.endswith(".mp4"):
-                dst = os.path.join(target_dir, os.path.basename(full_path))
-                shutil.move(full_path, dst)
-                moved_files.append(os.path.basename(full_path))
-                log(f"  Moved {os.path.basename(full_path)} -> {target_dir}")
+            selected, skipped = select_main_mp4(full_path, avid)
+            if selected:
+                cleanup_original(avid)
+                target_dir = os.path.join(SAVE_PATH, avid)
+                os.makedirs(target_dir, exist_ok=True)
+                src = selected["path"]
+                dst = os.path.join(target_dir, selected["name"])
+                log(f"  Selected Chinese video: {selected['rel']} ({format_size(selected['size'])})")
+                shutil.move(src, dst)
+                moved_files.append(selected["name"])
+                log(f"  Moved {selected['name']} -> {target_dir}")
+                if skipped:
+                    preview = ", ".join(
+                        f"{item['rel']} ({format_size(item['size'])})"
+                        for item in sorted(skipped, key=lambda x: x["size"], reverse=True)[:5]
+                    )
+                    suffix = " ..." if len(skipped) > 5 else ""
+                    log(f"  Skipped extra video(s): {preview}{suffix}")
+            else:
+                log(f"  No mp4 found for {avid}, skip merge")
+                continue
 
             if moved_files:
                 marker_path = os.path.join(target_dir, ".av_garden_chinese")

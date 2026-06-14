@@ -62,7 +62,7 @@ export default {
             watchedSet: new Set(),
             watchedOrder: [],
             queueSet: new Set(),
-            showWatched: localStorage.getItem('weekly_show_watched') === 'true'
+            showWatched: false
         }
     },
     computed: {
@@ -97,14 +97,24 @@ export default {
         watchedInListCount() { return this.watchedInList.length },
     },
     async created() {
+        this.applyRouteTab()
         await this.syncWatched()
         await this.loadData()
     },
     async activated() {
+        this.applyRouteTab()
         await this.syncWatched()
         await this.loadData()
     },
+    watch: {
+        '$route.query.tab'() {
+            this.applyRouteTab()
+        }
+    },
     methods: {
+        applyRouteTab() {
+            this.showWatched = this.$route.query.tab === 'watched'
+        },
         applyWatchedIDs(ids) {
             const normalized = normalizeWatchedIDs(ids)
             this.watchedSet = new Set(normalized)
@@ -183,7 +193,8 @@ export default {
         },
         setWatchedTab(val) {
             this.showWatched = val
-            localStorage.setItem('weekly_show_watched', val)
+            const tab = val ? 'watched' : undefined
+            this.$router.replace({ name: 'weekly', query: tab ? { tab } : {} })
         },
         markWatched(id) {
             if (!this.watchedSet.has(id)) {
