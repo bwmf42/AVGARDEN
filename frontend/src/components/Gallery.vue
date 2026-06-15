@@ -69,6 +69,10 @@ export default {
       currentIndex: 0
     }
   },
+  beforeUnmount() {
+    this.unlockPageScroll()
+    document.removeEventListener('keydown', this.handleKeydown)
+  },
   methods: {
     openLightbox(index) {
       this.currentIndex = index
@@ -78,8 +82,12 @@ export default {
     },
     closeLightbox() {
       this.showLightbox = false
-      document.body.style.overflow = ''
+      this.unlockPageScroll()
       document.removeEventListener('keydown', this.handleKeydown)
+    },
+    unlockPageScroll() {
+      document.body.style.overflow = ''
+      document.documentElement.style.overflow = ''
     },
     prevImage() {
       this.currentIndex = (this.currentIndex - 1 + this.images.length) % this.images.length

@@ -249,8 +249,11 @@ export default {
         this.syncQueueState(window.avGardenQueueStatus || [])
         window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
         document.addEventListener('keydown', this.handlePageKeydown)
+        this.unlockPageScroll()
     },
     async beforeRouteUpdate(to, from, next) {
+        this.closeLightbox()
+        this.unlockPageScroll()
         next()
         await this.syncWatched()
         await this.loadDetail(to.params.id)
@@ -262,10 +265,12 @@ export default {
     beforeUnmount() {
         document.removeEventListener('keydown', this.handlePageKeydown)
         window.removeEventListener('av-garden-status', this.handleGlobalStatus)
+        this.unlockPageScroll()
         if (this.genreHoverTimer) clearTimeout(this.genreHoverTimer)
     },
     beforeRouteLeave(to, from, next) {
         if (to.name !== 'weekly-detail') this.clearBrowseState()
+        this.unlockPageScroll()
         next()
     },
     methods: {
@@ -535,8 +540,12 @@ export default {
         },
         closeLightbox() {
             this.showLightbox = false
-            document.body.style.overflow = ''
+            this.unlockPageScroll()
             document.removeEventListener('keydown', this.handleKeydown)
+        },
+        unlockPageScroll() {
+            document.body.style.overflow = ''
+            document.documentElement.style.overflow = ''
         },
         prevImage() {
             this.lightboxIndex = (this.lightboxIndex - 1 + this.fanartList.length) % this.fanartList.length
