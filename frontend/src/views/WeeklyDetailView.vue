@@ -3,8 +3,8 @@
         <!-- 左右翻页按钮 -->
         <button
             class="page-nav prev"
-            :class="{ disabled: currentIndex <= 0 }"
-            :disabled="currentIndex <= 0"
+            :class="{ disabled: routeLoading || navInFlight || currentIndex <= 0 }"
+            :disabled="routeLoading || navInFlight || currentIndex <= 0"
             @click="goPrev"
             aria-label="上一页"
         >
@@ -14,8 +14,8 @@
         </button>
         <button
             class="page-nav next"
-            :class="{ disabled: currentIndex >= allVideos.length - 1 }"
-            :disabled="currentIndex >= allVideos.length - 1"
+            :class="{ disabled: routeLoading || navInFlight || currentIndex >= allVideos.length - 1 }"
+            :disabled="routeLoading || navInFlight || currentIndex >= allVideos.length - 1"
             @click="goNext"
             aria-label="下一页"
         >
@@ -30,9 +30,9 @@
                     <div class="header-top">
                         <button class="back-btn" @click="goBackToWeekly">返回</button>
                         <div class="pagination top-pagination" v-if="allVideos.length > 1">
-                            <button class="page-btn" :disabled="currentIndex <= 0" @click="goPrev">上一页</button>
+                            <button class="page-btn" :disabled="routeLoading || navInFlight || currentIndex <= 0" @click="goPrev">上一页</button>
                             <span class="page-info">{{ currentIndex + 1 }} / {{ allVideos.length }}</span>
-                            <button v-if="currentIndex < allVideos.length - 1" class="page-btn" @click="goNext">下一页</button>
+                            <button v-if="currentIndex < allVideos.length - 1" class="page-btn" :disabled="routeLoading || navInFlight" @click="goNext">下一页</button>
                             <span v-else class="page-end">最后一页</span>
                         </div>
                     </div>
@@ -223,7 +223,10 @@ export default {
             lightboxIndex: 0,
             watchedSet: new Set(),
             markedVisible: false,
-            detailMissing: false
+            detailMissing: false,
+            routeLoadToken: 0,
+            routeLoading: false,
+            navInFlight: false
         }
     },
     computed: {
@@ -240,27 +243,17 @@ export default {
         }
     },
     async created() {
-        await this.syncWatched()
         window.addEventListener('av-garden-status', this.handleGlobalStatus)
-        await this.loadDetail(this.id)
-        this.trackView(this.id)
-        await this.markWatched(this.id)
-        this.loadFavActresses()
-        this.syncQueueState(window.avGardenQueueStatus || [])
         window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
         document.addEventListener('keydown', this.handlePageKeydown)
         this.unlockPageScroll()
+        await this.loadRoute(this.id)
     },
     async beforeRouteUpdate(to, from, next) {
         this.closeLightbox()
         this.unlockPageScroll()
         next()
-        await this.syncWatched()
-        await this.loadDetail(to.params.id)
-        this.trackView(to.params.id)
-        await this.markWatched(to.params.id)
-        this.loadFavActresses()
-        this.syncQueueState(window.avGardenQueueStatus || [], to.params.id)
+        await this.loadRoute(to.params.id)
     },
     beforeUnmount() {
         document.removeEventListener('keydown', this.handlePageKeydown)
@@ -274,6 +267,29 @@ export default {
         next()
     },
     methods: {
+        async loadRoute(targetId) {
+            const token = ++this.routeLoadToken
+            this.routeLoading = true
+            try {
+                await this.syncWatched()
+                if (token !== this.routeLoadToken) return
+
+                const loaded = await this.loadDetail(targetId, token)
+                if (!loaded || token !== this.routeLoadToken) return
+
+                this.trackView(targetId)
+                await this.markWatched(targetId)
+                if (token !== this.routeLoadToken) return
+
+                this.loadFavActresses()
+                this.syncQueueState(window.avGardenQueueStatus || [], targetId)
+            } finally {
+                if (token === this.routeLoadToken) {
+                    this.routeLoading = false
+                    this.navInFlight = false
+                }
+            }
+        },
         trackView(id) {
             try {
                 const raw = sessionStorage.getItem('weekly_viewed_session') || '[]'
@@ -284,7 +300,7 @@ export default {
                 }
             } catch(e) {}
         },
-        async loadDetail(targetId) {
+        async loadDetail(targetId, token = this.routeLoadToken) {
             const normalizedTarget = normalizeVideoID(targetId)
             const canonicalTarget = canonicalVideoID(targetId)
             this.video = null
@@ -295,9 +311,9 @@ export default {
                 const resp = await fetch('/api/weekly')
                 if (resp.ok) {
                     const all = await resp.json()
+                    if (token !== this.routeLoadToken) return false
                     const allById = new Map(all.map(v => [normalizeVideoID(v.id), v]))
                     const undownloaded = all.filter(v => !v.downloaded)
-                    const byId = new Map(undownloaded.map(v => [normalizeVideoID(v.id), v]))
                     const tab = this.$route.query.tab || 'unwatched'
                     const savedIds = this.readBrowseState(tab, canonicalTarget)
                     if (savedIds) {
@@ -322,11 +338,15 @@ export default {
                         this.video = this.allVideos[this.currentIndex]
                     }
                 }
+                if (token !== this.routeLoadToken) return false
                 this.syncQueueState(window.avGardenQueueStatus || [], targetId)
                 this.detailMissing = !this.video
+                return true
             } catch (e) {
+                if (token !== this.routeLoadToken) return false
                 console.error(e)
                 this.detailMissing = true
+                return false
             }
         },
         loadWatched() {
@@ -395,18 +415,23 @@ export default {
             }
         },
         goPrev() {
+            if (this.routeLoading || this.navInFlight) return
             if (this.currentIndex > 0) {
                 const prev = this.allVideos[this.currentIndex - 1]
+                this.navInFlight = true
                 this.$router.push({ name: 'weekly-detail', params: { id: prev.id }, query: { tab: this.$route.query.tab || 'unwatched' } })
             }
         },
         goNext() {
+            if (this.routeLoading || this.navInFlight) return
             if (this.currentIndex < this.allVideos.length - 1) {
                 const next = this.allVideos[this.currentIndex + 1]
+                this.navInFlight = true
                 this.$router.push({ name: 'weekly-detail', params: { id: next.id }, query: { tab: this.$route.query.tab || 'unwatched' } })
             }
         },
         handlePageKeydown(e) {
+            if (e.repeat) return
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
             if (e.key === 'ArrowLeft') this.goPrev()
             if (e.key === 'ArrowRight') this.goNext()
