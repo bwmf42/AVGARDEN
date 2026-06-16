@@ -300,8 +300,6 @@ type WeeklyWatchedStore struct {
 
 var weeklyWatchedMtx sync.Mutex
 
-const weeklyWatchedTTL = 7 * 24 * time.Hour
-
 type queueStatusItem struct {
 	ID       string `json:"id"`
 	Status   string `json:"status"`
@@ -380,10 +378,7 @@ func loadWeeklyWatchedRecords() map[string]time.Time {
 			if id == "" {
 				continue
 			}
-			watchedAt := parseWeeklyWatchedTime(item.WatchedAt, now)
-			if now.Sub(watchedAt) <= weeklyWatchedTTL {
-				records[id] = watchedAt
-			}
+			records[id] = parseWeeklyWatchedTime(item.WatchedAt, now)
 		}
 	}
 
@@ -436,10 +431,6 @@ func weeklyWatchedHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodGet {
 		ids := loadWeeklyWatchedIDs()
-		if err := saveWeeklyWatchedIDs(ids); err != nil {
-			httpError(w, "Failed to save watched list", http.StatusInternalServerError)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(ids)
 		return

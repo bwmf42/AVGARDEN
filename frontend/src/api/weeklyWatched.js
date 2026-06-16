@@ -142,17 +142,16 @@ export async function syncWatchedIDs() {
         }
     }
 
-    const shouldMigrateLocal = localStorage.getItem(MIGRATED_KEY) !== 'true' && localIDs.length > 0
     const mergedIDs = normalizeWatchedIDs([
         ...serverIDs,
-        ...(shouldMigrateLocal ? localIDs : []),
+        ...localIDs,
         ...sessionIDs
     ])
 
     writeLocalWatchedIDs(mergedIDs)
 
     try {
-        if (shouldMigrateLocal || sessionIDs.length > 0 || !sameIDs(serverIDs, mergedIDs)) {
+        if (sessionIDs.length > 0 || !sameIDs(serverIDs, mergedIDs)) {
             await putServerWatchedIDs(mergedIDs)
         }
         localStorage.setItem(MIGRATED_KEY, 'true')
