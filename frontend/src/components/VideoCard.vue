@@ -59,7 +59,8 @@ export default {
 .poster-container {
     position: relative;
     width: 100%;
-    padding-top: 137.78%;
+    aspect-ratio: 3 / 4.2;
+    padding-top: 0;
     overflow: hidden;
     background: #f6edf2;
 }
@@ -106,6 +107,7 @@ export default {
 }
 
 .info {
+    min-height: 94px;
     padding: 12px;
     background: var(--surface);
     border-top: 1px solid var(--line);

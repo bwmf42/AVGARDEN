@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AV/GARDEN Redesign Preview 01 - Editorial Operations</title>
+  <!--
+    Assumptions:
+    - This is a preview only. It does not replace the Vue app.
+    - Real video titles, covers, counts, queue rows, actresses, and log lines should come from existing APIs.
+    - Placeholders are intentionally honest so the design does not invent media data.
+
+    Logic:
+    - Huashu roulette: date seconds % 20 + 1 = 1.
+    - Style #1: Editorial Brutalism, adapted to AV/GARDEN's required pink-white identity.
+    - Goal: make the app feel like an operations desk: strong hierarchy, compact density, direct actions.
+  -->
+  <style>
+    :root {
+      --paper: #fff8fb;
+      --paper-2: #fff;
+      --ink: #24171d;
+      --muted: #745b66;
+      --rose: #e84d7a;
+      --rose-dark: #ba2f5d;
+      --line: #2b1f25;
+      --soft-line: #f0c9d6;
+      --blue: #2563eb;
+      --green: #287a43;
+      --amber: #a15c00;
+      --red: #b42318;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(rgba(232, 77, 122, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(232, 77, 122, 0.05) 1px, transparent 1px),
+        var(--paper);
+      background-size: 28px 28px;
+      font-family: "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+      letter-spacing: 0;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: 280px 1fr auto;
+      align-items: stretch;
+      border-bottom: 2px solid var(--line);
+      background: rgba(255, 255, 255, 0.94);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      backdrop-filter: blur(12px);
+    }
+
+    .brand {
+      padding: 16px 22px;
+      border-right: 2px solid var(--line);
+      color: var(--rose-dark);
+      font-size: 24px;
+      line-height: 1;
+      font-weight: 900;
+      text-decoration: none;
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      overflow-x: auto;
+    }
+
+    .nav a {
+      color: var(--ink);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 800;
+      padding: 20px 18px;
+      border-right: 1px solid var(--soft-line);
+      white-space: nowrap;
+    }
+
+    .nav a.active {
+      background: var(--rose);
+      color: white;
+    }
+
+    .search {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-left: 2px solid var(--line);
+      background: #fff;
+    }
+
+    .search input {
+      width: 210px;
+      height: 38px;
+      border: 2px solid var(--line);
+      border-radius: 0;
+      padding: 0 12px;
+      color: var(--ink);
+      background: var(--paper);
+      font-size: 14px;
+      outline: none;
+    }
+
+    .btn {
+      min-height: 38px;
+      border: 2px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 900;
+      padding: 0 14px;
+      cursor: default;
+      box-shadow: 3px 3px 0 var(--line);
+    }
+
+    .btn.primary {
+      background: var(--rose);
+      color: white;
+    }
+
+    .status-strip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 7px 22px;
+      border-bottom: 2px solid var(--line);
+      background: #fff;
+      font: 12px/1.2 "SF Mono", Monaco, Consolas, monospace;
+      overflow-x: auto;
+    }
+
+    .status-strip strong {
+      color: var(--rose-dark);
+      margin-right: 8px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 9px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--blue);
+    }
+
+    .dot.amber { background: var(--amber); }
+    .dot.red { background: var(--red); }
+
+    main {
+      width: min(1480px, 100%);
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(360px, 1.12fr) minmax(340px, 0.88fr);
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .headline {
+      background: #fff;
+      border: 2px solid var(--line);
+      padding: 22px;
+      min-height: 330px;
+      display: grid;
+      align-content: space-between;
+    }
+
+    .eyebrow {
+      font: 12px/1.2 "SF Mono", Monaco, Consolas, monospace;
+      color: var(--rose-dark);
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 16px 0;
+      max-width: 780px;
+      font-size: clamp(52px, 7.5vw, 116px);
+      line-height: 0.9;
+      font-weight: 950;
+      text-wrap: balance;
+    }
+
+    .summary {
+      max-width: 620px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    .ops-panel {
+      border: 2px solid var(--line);
+      background: var(--paper-2);
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    .panel-title {
+      padding: 13px 16px;
+      border-bottom: 2px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: 900;
+    }
+
+    .panel-title span {
+      font: 12px "SF Mono", Monaco, Consolas, monospace;
+      color: var(--muted);
+    }
+
+    .ops-list {
+      display: grid;
+      gap: 0;
+    }
+
+    .ops-row {
+      display: grid;
+      grid-template-columns: 96px 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--soft-line);
+    }
+
+    .ops-row:last-child { border-bottom: 0; }
+
+    .tag {
+      width: max-content;
+      padding: 5px 8px;
+      border: 1px solid currentColor;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .tag.blue { color: var(--blue); background: #f4f9ff; }
+    .tag.amber { color: var(--amber); background: #fff9ed; }
+    .tag.green { color: var(--green); background: #f4fbf5; }
+    .tag.red { color: var(--red); background: #fff5f4; }
+
+    .ops-copy {
+      min-width: 0;
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .ops-copy small {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-weight: 600;
+      line-height: 1.4;
+    }
+
+    .ghost-action {
+      border: 1px solid var(--soft-line);
+      background: #fff;
+      color: var(--rose-dark);
+      border-radius: 0;
+      padding: 7px 10px;
+      font-weight: 900;
+      font-size: 12px;
+    }
+
+    .content {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 330px;
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .section {
+      border: 2px solid var(--line);
+      background: #fff;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 13px 16px;
+      border-bottom: 2px solid var(--line);
+    }
+
+    .section-head h2 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 6px;
+    }
+
+    .tabs button {
+      border: 1px solid var(--soft-line);
+      background: #fff;
+      color: var(--muted);
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .tabs button.active {
+      color: #fff;
+      background: var(--rose-dark);
+      border-color: var(--rose-dark);
+    }
+
+    .shelf {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border-top: 0;
+    }
+
+    .card {
+      min-width: 0;
+      border-right: 1px solid var(--soft-line);
+      border-bottom: 1px solid var(--soft-line);
+      padding: 12px;
+    }
+
+    .card:nth-child(4n) { border-right: 0; }
+
+    .poster {
+      aspect-ratio: 3 / 4.1;
+      border: 2px solid var(--line);
+      background:
+        linear-gradient(135deg, rgba(232,77,122,.14), rgba(255,255,255,.8)),
+        repeating-linear-gradient(45deg, transparent 0 12px, rgba(186,47,93,.08) 12px 13px);
+      display: grid;
+      place-items: center;
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      padding: 12px;
+    }
+
+    .card h3 {
+      margin: 10px 0 6px;
+      font-size: 14px;
+      line-height: 1.35;
+      min-height: 38px;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .side-stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    .compact-list {
+      padding: 8px 0;
+    }
+
+    .compact-item {
+      display: grid;
+      grid-template-columns: 88px 1fr;
+      gap: 12px;
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--soft-line);
+      font-size: 13px;
+    }
+
+    .compact-item:last-child { border-bottom: 0; }
+
+    .mono {
+      font-family: "SF Mono", Monaco, Consolas, monospace;
+      color: var(--rose-dark);
+      font-weight: 800;
+    }
+
+    .log-preview {
+      font: 12px/1.55 "SF Mono", Monaco, Consolas, monospace;
+      padding: 12px 14px;
+      color: var(--ink);
+    }
+
+    .log-line {
+      border-bottom: 1px solid var(--soft-line);
+      padding: 6px 0;
+      word-break: break-all;
+    }
+
+    @media (max-width: 1080px) {
+      .topbar { grid-template-columns: 1fr; }
+      .brand, .search { border: 0; border-bottom: 2px solid var(--line); }
+      .hero-grid, .content { grid-template-columns: 1fr; }
+      .shelf { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .card:nth-child(2n) { border-right: 0; }
+      .card:nth-child(4n) { border-right: 1px solid var(--soft-line); }
+    }
+
+    @media (max-width: 620px) {
+      main { padding: 14px; }
+      .search { flex-wrap: wrap; }
+      .search input { width: 100%; }
+      .ops-row { grid-template-columns: 1fr; }
+      .shelf { grid-template-columns: 1fr; }
+      .card { border-right: 0; }
+      h1 { font-size: 46px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <a class="brand" href="#">AV/GARDEN</a>
+      <nav class="nav" aria-label="main">
+        <a class="active" href="#">工作台</a>
+        <a href="#">每日推荐</a>
+        <a href="#">媒体库</a>
+        <a href="#">下载管理</a>
+        <a href="#">设置</a>
+        <a href="#">日志</a>
+      </nav>
+      <form class="search">
+        <input value="" placeholder="输入番号或标题关键词">
+        <button class="btn" type="button">搜索</button>
+        <button class="btn primary" type="button">添加</button>
+      </form>
+    </header>
+
+    <div class="status-strip">
+      <strong>队列状态</strong>
+      <span class="pill"><span class="dot"></span>下载中: 来自 /api/queue-status</span>
+      <span class="pill"><span class="dot amber"></span>等待: 实时数量</span>
+      <span class="pill"><span class="dot red"></span>失败: 最近一周</span>
+    </div>
+
+    <main>
+      <section class="hero-grid" aria-label="overview">
+        <div class="headline">
+          <div>
+            <div class="eyebrow">Preview 01 / Editorial Operations</div>
+            <h1>先处理今天，再回到片库。</h1>
+            <p class="summary">把「每日推荐」「下载队列」「需要处理的失败项」合成一个高密度入口。视觉上保留粉白身份，但用粗规则线和强标题把操作优先级拉清楚。</p>
+          </div>
+          <div class="tabs">
+            <button class="active">未看</button>
+            <button>已看</button>
+            <button>已下载</button>
+          </div>
+        </div>
+
+        <aside class="ops-panel">
+          <div class="panel-title">现在要看的事 <span>实时接口填充</span></div>
+          <div class="ops-list">
+            <div class="ops-row">
+              <span class="tag blue">qB</span>
+              <div class="ops-copy">下载中的条目<small>显示速度、进度、大小和 ETA，不展示成功项。</small></div>
+              <button class="ghost-action">打开</button>
+            </div>
+            <div class="ops-row">
+              <span class="tag amber">推荐</span>
+              <div class="ops-copy">未看列表<small>按现有 /api/weekly 和本地已看记录过滤。</small></div>
+              <button class="ghost-action">筛选</button>
+            </div>
+            <div class="ops-row">
+              <span class="tag red">失败</span>
+              <div class="ops-copy">最近一周失败<small>保留 JavBus 和忽略操作，不删除视频文件。</small></div>
+              <button class="ghost-action">处理</button>
+            </div>
+            <div class="ops-row">
+              <span class="tag green">整理</span>
+              <div class="ops-copy">元数据与中文替换<small>用日志和状态说明正在发生什么。</small></div>
+              <button class="ghost-action">日志</button>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="content">
+        <div class="section">
+          <div class="section-head">
+            <h2>每日推荐</h2>
+            <div class="tabs">
+              <button class="active">未看</button>
+              <button>已看</button>
+            </div>
+          </div>
+          <div class="shelf">
+            <article class="card">
+              <div class="poster">封面来自 weekly.cover 或 DMM fallback</div>
+              <h3>影片标题由接口填充</h3>
+              <div class="meta">女优 / 标签 / 中文状态</div>
+            </article>
+            <article class="card">
+              <div class="poster">封面占位</div>
+              <h3>不在样稿里编造真实番号</h3>
+              <div class="meta">点击进入推荐详情</div>
+            </article>
+            <article class="card">
+              <div class="poster">封面占位</div>
+              <h3>已看按钮保持轻量</h3>
+              <div class="meta">状态写回 weeklyWatched</div>
+            </article>
+            <article class="card">
+              <div class="poster">封面占位</div>
+              <h3>加入下载队列</h3>
+              <div class="meta">有磁链交给 qB</div>
+            </article>
+          </div>
+        </div>
+
+        <div class="side-stack">
+          <div class="section">
+            <div class="section-head"><h2>下载管理</h2></div>
+            <div class="compact-list">
+              <div class="compact-item"><span class="mono">QUEUE</span><span>等待项列表, 可移出记录</span></div>
+              <div class="compact-item"><span class="mono">DOWN</span><span>进度条和速度, 三秒轮询</span></div>
+              <div class="compact-item"><span class="mono">DONE</span><span>最近一周完成历史折叠显示</span></div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-head"><h2>系统日志</h2></div>
+            <div class="log-preview">
+              <div class="log-line">时间 | Worker | 下载流程状态</div>
+              <div class="log-line">时间 | DailyUpdater | 周推荐刮削</div>
+              <div class="log-line">时间 | ReplaceCN | 中文替换结果</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

@@ -7,7 +7,8 @@ const API_KEY = import.meta.env.VITE_API_KEY || ''
 export default {
     async getVideoList() {
         const response = await axios.get(`${API_BASE}/api/videos`)
-        return response.data.map(video => ({
+        const videos = Array.isArray(response.data) ? response.data : []
+        return videos.map(video => ({
             ...video,
             poster: `${API_BASE}${video.poster}` // 拼接完整URL
         }))

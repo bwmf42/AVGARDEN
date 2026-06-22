@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AV/GARDEN AI Direction 05 - Cinema Library</title>
+  <!--
+    AI design direction:
+    - Reference research: media libraries are strongest when the library feels curated,
+      not merely listed. This direction borrows the "personal cinema" mental model
+      from mature media servers without copying any brand UI.
+    - Fit for AV/GARDEN: user opens the app to decide "what should I watch or download now?"
+    - No fake titles, actresses, IDs, or counts. Placeholders mark API-backed content.
+  -->
+  <style>
+    :root {
+      --bg: #11100f;
+      --panel: #1b1917;
+      --panel-2: #24211e;
+      --ink: #fff8ee;
+      --muted: #b8afa2;
+      --line: rgba(255,248,238,.16);
+      --gold: #d7a646;
+      --rust: #c4572e;
+      --blue: #4d8dff;
+      --green: #55b56a;
+      --red: #e0584f;
+      --shadow: 0 24px 80px rgba(0,0,0,.34);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 72% 12%, rgba(215,166,70,.16), transparent 34%),
+        radial-gradient(circle at 18% 0%, rgba(196,87,46,.16), transparent 32%),
+        var(--bg);
+      font-family: Inter, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+      letter-spacing: 0;
+    }
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr) 340px;
+    }
+    .rail {
+      border-right: 1px solid var(--line);
+      background: rgba(20,18,16,.88);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 22px;
+      padding: 18px 12px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      backdrop-filter: blur(16px);
+    }
+    .mark {
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      color: var(--gold);
+      font-weight: 900;
+      letter-spacing: .14em;
+      justify-self: center;
+      text-decoration: none;
+    }
+    .rail nav {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+      justify-items: center;
+    }
+    .nav-dot {
+      width: 44px;
+      height: 44px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      background: rgba(255,255,255,.04);
+    }
+    .nav-dot.active {
+      color: #17120d;
+      background: var(--gold);
+      border-color: var(--gold);
+    }
+    .main {
+      min-width: 0;
+      padding: 24px;
+    }
+    .top {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .search {
+      height: 44px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,.06);
+      padding: 0 14px;
+      color: var(--muted);
+    }
+    .search input {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--ink);
+      font-size: 14px;
+    }
+    .actions { display: flex; gap: 8px; }
+    button {
+      height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0 14px;
+      background: rgba(255,255,255,.06);
+      color: var(--ink);
+      font-weight: 800;
+    }
+    button.primary {
+      background: var(--gold);
+      color: #17120d;
+      border-color: var(--gold);
+    }
+    .hero {
+      min-height: 360px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      background:
+        linear-gradient(90deg, rgba(17,16,15,.95), rgba(17,16,15,.72) 48%, rgba(17,16,15,.24)),
+        linear-gradient(135deg, rgba(215,166,70,.18), rgba(196,87,46,.20)),
+        var(--panel);
+      box-shadow: var(--shadow);
+      position: relative;
+      padding: 30px;
+      display: grid;
+      align-content: end;
+    }
+    .poster-wall {
+      position: absolute;
+      inset: 24px 26px 24px auto;
+      width: 48%;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      opacity: .56;
+      transform: perspective(900px) rotateY(-10deg);
+      transform-origin: right center;
+    }
+    .poster-tile {
+      border: 1px solid rgba(255,255,255,.24);
+      border-radius: 6px;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.12), rgba(255,255,255,.02)),
+        repeating-linear-gradient(45deg, transparent 0 12px, rgba(215,166,70,.15) 12px 13px);
+      min-height: 118px;
+    }
+    .hero-copy { position: relative; z-index: 1; max-width: 680px; }
+    .eyebrow {
+      color: var(--gold);
+      font-size: 12px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      font-weight: 900;
+    }
+    h1 {
+      margin: 12px 0 12px;
+      font-size: clamp(44px, 6.6vw, 86px);
+      line-height: .98;
+      max-width: 720px;
+      text-wrap: balance;
+    }
+    .hero p {
+      color: var(--muted);
+      margin: 0;
+      line-height: 1.75;
+      max-width: 610px;
+      font-size: 15px;
+    }
+    .shelves { margin-top: 22px; display: grid; gap: 22px; }
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    .section-head h2 { margin: 0; font-size: 18px; }
+    .section-head small { color: var(--muted); }
+    .shelf {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: minmax(170px, 1fr);
+      gap: 14px;
+      overflow-x: auto;
+      padding-bottom: 6px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,.045);
+      overflow: hidden;
+    }
+    .cover {
+      aspect-ratio: 3/4.1;
+      display: grid;
+      place-items: center;
+      padding: 12px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      background:
+        linear-gradient(160deg, rgba(215,166,70,.20), transparent 46%),
+        linear-gradient(0deg, rgba(255,255,255,.08), rgba(255,255,255,.02));
+    }
+    .card-copy { padding: 11px; border-top: 1px solid var(--line); }
+    .card h3 { margin: 0 0 6px; font-size: 13px; line-height: 1.35; }
+    .card p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .activity {
+      border-left: 1px solid var(--line);
+      background: rgba(23,21,19,.88);
+      padding: 22px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+    }
+    .activity h2 { margin: 0 0 16px; font-size: 20px; }
+    .activity-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,.045);
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .activity-card strong { display: block; margin-bottom: 8px; }
+    .progress { height: 7px; border-radius: 999px; overflow: hidden; background: rgba(255,255,255,.10); margin: 10px 0; }
+    .progress span { display: block; width: 62%; height: 100%; background: linear-gradient(90deg, var(--blue), var(--gold), var(--green)); }
+    .row {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      gap: 10px;
+      padding: 9px 0;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .code { color: var(--gold); font: 800 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    @media (max-width: 1160px) {
+      .shell { grid-template-columns: 72px minmax(0, 1fr); }
+      .activity { grid-column: 1 / -1; height: auto; position: static; border-left: 0; border-top: 1px solid var(--line); }
+    }
+    @media (max-width: 760px) {
+      .shell { grid-template-columns: 1fr; }
+      .rail { position: static; height: auto; grid-template-columns: auto 1fr; grid-template-rows: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      .mark { writing-mode: initial; }
+      .rail nav { display: flex; overflow-x: auto; }
+      .rail,
+      .main,
+      .activity,
+      .shelf,
+      .top,
+      .search,
+      .actions {
+        min-width: 0;
+      }
+      .main { padding: 14px; }
+      .top { grid-template-columns: 1fr; }
+      .search {
+        width: 100%;
+      }
+      .poster-wall { display: none; }
+      .hero { min-height: 320px; padding: 22px; }
+      h1 { font-size: 42px; }
+      .actions { flex-wrap: wrap; }
+      .shelf {
+        grid-auto-columns: minmax(0, 76vw);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <a class="mark" href="#">AV/GARDEN</a>
+      <nav>
+        <div class="nav-dot active">今</div>
+        <div class="nav-dot">荐</div>
+        <div class="nav-dot">库</div>
+        <div class="nav-dot">列</div>
+        <div class="nav-dot">志</div>
+      </nav>
+      <div></div>
+    </aside>
+    <main class="main">
+      <div class="top">
+        <label class="search"><span>Search</span><input placeholder="番号、标题、演员、标签"></label>
+        <div class="actions"><button>搜索</button><button class="primary">添加番号</button></div>
+      </div>
+      <section class="hero">
+        <div class="poster-wall" aria-hidden="true">
+          <div class="poster-tile"></div><div class="poster-tile"></div><div class="poster-tile"></div><div class="poster-tile"></div>
+          <div class="poster-tile"></div><div class="poster-tile"></div><div class="poster-tile"></div><div class="poster-tile"></div>
+        </div>
+        <div class="hero-copy">
+          <div class="eyebrow">AI Direction 05 / Cinema Library</div>
+          <h1>让每日推荐像一排私人放映片单。</h1>
+          <p>这一版借鉴成熟媒体库的“影院感”：先让用户看见内容，再把下载、失败、日志放在右侧持续可见。适合你每天打开后快速决定看什么、下什么。</p>
+        </div>
+      </section>
+      <section class="shelves">
+        <div>
+          <div class="section-head"><h2>未看推荐</h2><small>/api/weekly + watched IDs</small></div>
+          <div class="shelf">
+            <article class="card"><div class="cover">cover from weekly.cover</div><div class="card-copy"><h3>标题由接口填充</h3><p>中文、演员、标签状态</p></div></article>
+            <article class="card"><div class="cover">cover placeholder</div><div class="card-copy"><h3>加入下载队列</h3><p>有磁链优先交给 qB</p></div></article>
+            <article class="card"><div class="cover">cover placeholder</div><div class="card-copy"><h3>标记已看</h3><p>同步 watched IDs</p></div></article>
+            <article class="card"><div class="cover">cover placeholder</div><div class="card-copy"><h3>详情页</h3><p>元数据、封面、预览图</p></div></article>
+          </div>
+        </div>
+        <div>
+          <div class="section-head"><h2>媒体库</h2><small>/api/videos</small></div>
+          <div class="shelf">
+            <article class="card"><div class="cover">local poster</div><div class="card-copy"><h3>本地影片</h3><p>poster / cover / metadata</p></div></article>
+            <article class="card"><div class="cover">NFO</div><div class="card-copy"><h3>Jellyfin NFO 信息</h3><p>封面和预览图</p></div></article>
+          </div>
+        </div>
+      </section>
+    </main>
+    <aside class="activity">
+      <h2>活动</h2>
+      <section class="activity-card"><strong>下载中</strong><div class="progress"><span></span></div><div class="row"><span class="code">qB</span><span>进度、速度、大小、ETA。</span></div></section>
+      <section class="activity-card"><strong>队列</strong><div class="row"><span class="code">WAIT</span><span>等待磁链或 qB 接手。</span></div><div class="row"><span class="code">DONE</span><span>完成历史只展示最近一周。</span></div><div class="row"><span class="code">FAIL</span><span>最近一周失败，可忽略，不删除文件。</span></div></section>
+      <section class="activity-card"><strong>日志</strong><div class="row"><span class="code">Worker</span><span>下载流程状态。</span></div><div class="row"><span class="code">Daily</span><span>推荐刮削结果。</span></div></section>
+    </aside>
+  </div>
+</body>
+</html>
