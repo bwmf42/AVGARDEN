@@ -1,15 +1,15 @@
-# AV/GARDEN 安装指南
+# A/GARDEN 安装指南
 
 这份文档按“先跑起来，再慢慢调”的顺序写。你只需要准备一台能跑 Docker 的 NAS、Linux 服务器或家用小主机。
 
 ## 你需要先准备什么
 
 - Docker 和 Docker Compose
-- 一个视频保存目录，例如 `/volume1/media/av`
+- 一个媒体保存目录，例如 `/volume1/media/library`
 - qBittorrent，并开启 Web UI
 - 可选：代理、DeepSeek API key、飞书 webhook
 
-最容易出错的地方只有一个：qBittorrent 的保存目录，必须和 AV/GARDEN 的视频目录指向同一份存储。
+最容易出错的地方只有一个：qBittorrent 的保存目录，必须和 A/GARDEN 的媒体目录指向同一份存储。
 
 ## 1. 下载项目
 
@@ -61,7 +61,7 @@ Docker 部署时建议保留这些容器内路径：
 }
 ```
 
-下载器、JavBus 域名、代理等高级项可以以后再调。qBittorrent 账号密码优先读 `.env`。
+下载器、来源域名、代理等高级项可以以后再调。qBittorrent 账号密码优先读 `.env`。
 
 ## 5. 启动
 
@@ -138,9 +138,9 @@ AV_GARDEN_DATA_DIR=/volume1/media/av
 docker compose -f docker-compose.example.yml --env-file .env logs -f worker
 ```
 
-### qB 里有任务，但 AV/GARDEN 认为没完成
+### qB 里有任务，但 A/GARDEN 认为没完成
 
-通常是保存目录没对上。qB 下载到 A 目录，AV/GARDEN 在 B 目录找文件，就会一直找不到。
+通常是保存目录没对上。qB 下载到 A 目录，A/GARDEN 在 B 目录找文件，就会一直找不到。
 
 ### 日志页是空的
 
@@ -206,7 +206,7 @@ cfg/configs.json
 - `cfg/configs.json`
 - `db/`
 - `logs/`
-- 视频目录
+- 媒体目录
 - 任何账号、密码、Cookie、API key、webhook
 
 建议定期备份 `db/` 和 `cfg/`。

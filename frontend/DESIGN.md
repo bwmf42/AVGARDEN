@@ -1,8 +1,8 @@
-# AV/GARDEN Pink Grid
+# A/GARDEN Pink Grid
 
 ## Direction
 
-AV/GARDEN is a NAS media download manager. The UI should feel quiet, fast, and operational while keeping the existing pink-white identity. The direction is **Pink Grid**: a white/petal surface system, fine rose hairlines, compact cards, tabular status chips, and restrained motion.
+A/GARDEN is a NAS media library manager. The UI should feel quiet, fast, and operational while keeping the existing pink-white identity. The direction is **Pink Grid**: a white/petal surface system, fine rose hairlines, compact cards, tabular status chips, and restrained motion.
 
 This is informed by the installed `frontend-design` workflow and `huashu-design` anti-slop rules. It is not a strict copy of any external anchor because the project constraint is to keep pink-white as the signature.
 
