@@ -13,6 +13,7 @@
 
 ### Changed
 
+- Replaced remaining project-visible legacy naming with `AVGARDEN`, including local deployment references and archived package naming.
 - Restyled the Vue frontend toward the 02 media-hub layout with a left navigation rail, central media workspace, and right activity rail.
 - Updated public-facing documentation wording to use more neutral media-library language.
 

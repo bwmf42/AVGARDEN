@@ -235,7 +235,7 @@ A/GARDEN 会优先读 NFO 标题。如果没有 NFO，会尝试从每日推荐�
 
 ## 来源与致谢
 
-A/GARDEN 基于 [Satoing/NASSAV](https://github.com/Satoing/NASSAV) 的源码继续整理和演进。感谢原作者提供的项目基础、下载流程和 NAS 部署思路。
+AVGARDEN 基于 Satoing 的上游源码继续整理和演进。感谢原作者提供的项目基础、下载流程和 NAS 部署思路。
 
 本项目保留上游 MIT 许可证和版权声明，详细来源说明见 [NOTICE](NOTICE)。
 

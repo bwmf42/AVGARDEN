@@ -1,14 +1,12 @@
 AV/GARDEN
 =========
 
-AV/GARDEN is based on and continues work from:
+AV/GARDEN is based on and continues work from the upstream project by Satoing:
 
-  NASSAV
-  https://github.com/Satoing/NASSAV
   Copyright (c) 2025 satoing
   Licensed under the MIT License
 
-The original NASSAV project provides the foundation for the downloader,
+The upstream project provides the foundation for the downloader,
 metadata scraping flow, queue-oriented operation, and NAS deployment ideas.
 
 AV/GARDEN keeps the upstream MIT license notice and evolves the project with
