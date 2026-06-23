@@ -226,7 +226,8 @@ export default {
             detailMissing: false,
             routeLoadToken: 0,
             routeLoading: false,
-            navInFlight: false
+            navInFlight: false,
+            keyNavPressed: null
         }
     },
     computed: {
@@ -245,7 +246,8 @@ export default {
     async created() {
         window.addEventListener('av-garden-status', this.handleGlobalStatus)
         window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
-        document.addEventListener('keydown', this.handlePageKeydown)
+        window.addEventListener('keydown', this.handlePageKeydown, true)
+        window.addEventListener('keyup', this.handlePageKeyup, true)
         this.unlockPageScroll()
         await this.loadRoute(this.id)
     },
@@ -256,7 +258,8 @@ export default {
         await this.loadRoute(to.params.id)
     },
     beforeUnmount() {
-        document.removeEventListener('keydown', this.handlePageKeydown)
+        window.removeEventListener('keydown', this.handlePageKeydown, true)
+        window.removeEventListener('keyup', this.handlePageKeyup, true)
         window.removeEventListener('av-garden-status', this.handleGlobalStatus)
         this.unlockPageScroll()
         if (this.genreHoverTimer) clearTimeout(this.genreHoverTimer)
@@ -414,25 +417,51 @@ export default {
                 }
             }
         },
-        goPrev() {
+        navigateRelative(delta) {
             if (this.routeLoading || this.navInFlight) return
-            if (this.currentIndex > 0) {
-                const prev = this.allVideos[this.currentIndex - 1]
-                this.navInFlight = true
-                this.$router.push({ name: 'weekly-detail', params: { id: prev.id }, query: { tab: this.$route.query.tab || 'unwatched' } })
-            }
+            const targetIndex = this.currentIndex + delta
+            if (targetIndex < 0 || targetIndex >= this.allVideos.length) return
+
+            const target = this.allVideos[targetIndex]
+            if (!target?.id) return
+
+            this.navInFlight = true
+            this.$router.push({
+                name: 'weekly-detail',
+                params: { id: target.id },
+                query: { tab: this.$route.query.tab || 'unwatched' }
+            }).catch(() => {
+                this.navInFlight = false
+            })
+        },
+        goPrev() {
+            this.navigateRelative(-1)
         },
         goNext() {
-            if (this.routeLoading || this.navInFlight) return
-            if (this.currentIndex < this.allVideos.length - 1) {
-                const next = this.allVideos[this.currentIndex + 1]
-                this.navInFlight = true
-                this.$router.push({ name: 'weekly-detail', params: { id: next.id }, query: { tab: this.$route.query.tab || 'unwatched' } })
-            }
+            this.navigateRelative(1)
+        },
+        shouldHandlePageKey(e) {
+            if (this.showLightbox || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return false
+            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return false
+            const tag = e.target?.tagName
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target?.isContentEditable) return false
+            return true
+        },
+        claimPageKey(e) {
+            e.preventDefault()
+            e.stopPropagation()
+            if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation()
         },
         handlePageKeydown(e) {
-            if (e.repeat) return
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
+            if (!this.shouldHandlePageKey(e)) return
+            this.claimPageKey(e)
+            if (!e.repeat) this.keyNavPressed = e.key
+        },
+        handlePageKeyup(e) {
+            if (!this.shouldHandlePageKey(e)) return
+            this.claimPageKey(e)
+            if (this.keyNavPressed !== e.key) return
+            this.keyNavPressed = null
             if (e.key === 'ArrowLeft') this.goPrev()
             if (e.key === 'ArrowRight') this.goNext()
         },
@@ -579,6 +608,8 @@ export default {
             this.lightboxIndex = (this.lightboxIndex + 1) % this.fanartList.length
         },
         handleKeydown(e) {
+            e.preventDefault()
+            e.stopPropagation()
             if (e.key === 'Escape') this.closeLightbox()
             if (e.key === 'ArrowLeft') this.prevImage()
             if (e.key === 'ArrowRight') this.nextImage()

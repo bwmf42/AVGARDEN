@@ -19,4 +19,5 @@
 
 ### Fixed
 
+- Fixed weekly detail keyboard navigation so arrow-key paging only fires once per press and does not conflict with image lightbox navigation.
 - Made local no-backend preview safer by handling non-array `/api/videos` responses and non-JSON weekly/queue preview responses.
