@@ -46,7 +46,7 @@
 
                 <div class="detail-hero">
                     <div class="poster-section">
-                        <img class="poster" :src="video.poster || video.cover" :alt="video.title">
+                        <img class="poster" :src="video.cover || video.poster" :alt="video.title">
                     </div>
 
                     <aside class="detail-side">
@@ -754,19 +754,21 @@ export default {
 .poster-section {
   min-width: 0;
   display: flex;
-  align-items: flex-start;
-  justify-content: flex-start;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
   background: #f7eef3;
+  min-height: 360px;
 }
 
 .poster {
-  max-width: 100%;
-  max-height: 560px;
+  width: 100%;
+  height: auto;
+  max-height: 640px;
   object-fit: contain;
-  object-position: left top;
+  object-position: center center;
   display: block;
   background: #f7eef3;
 }
@@ -1271,7 +1273,7 @@ export default {
 
   .poster {
     width: 100%;
-    max-height: 520px;
+    max-height: none;
   }
 }
 

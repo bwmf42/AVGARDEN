@@ -13,7 +13,7 @@
 
 ### Changed
 
-- Made weekly recommendation cards use local portrait posters when available, matching the media-library card crop.
+- Kept weekly recommendation artwork on full weekly covers instead of generated portrait crops.
 - Ordered blocked actresses by newest addition first in settings.
 - Replaced remaining project-visible legacy naming with `AVGARDEN`, including local deployment references and archived package naming.
 - Restyled the Vue frontend toward the 02 media-hub layout with a left navigation rail, central media workspace, and right activity rail.
@@ -21,6 +21,7 @@
 
 ### Fixed
 
+- Fixed weekly detail artwork so it uses the full weekly cover instead of generated portrait poster crops that can cut artwork in half.
 - Fixed source-prefixed codes such as `857OMG-032` so metadata scraping and Chinese-subtitle replacement search with `OMG-032` while keeping the original media folder.
 - Fixed weekly detail keyboard navigation so arrow-key paging only fires once per press and does not conflict with image lightbox navigation.
 - Made local no-backend preview safer by handling non-array `/api/videos` responses and non-JSON weekly/queue preview responses.

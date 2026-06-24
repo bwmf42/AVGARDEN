@@ -654,11 +654,6 @@ func weeklyHandler(w http.ResponseWriter, r *http.Request) {
 		if id, ok := item["id"].(string); ok {
 			mp4Path := findFileInDir(basePath, id, ".mp4")
 			posterPath := filepath.Join(basePath, id, id+"-poster.jpg")
-			weeklyID := strings.ToUpper(id)
-			weeklyPosterPath := filepath.Join(basePath, "__weekly__", weeklyID, weeklyID+"-poster.jpg")
-			if _, err := os.Stat(weeklyPosterPath); err == nil {
-				item["poster"] = fmt.Sprintf("/file/__weekly__/%s/%s-poster.jpg", weeklyID, weeklyID)
-			}
 			if _, err := os.Stat(mp4Path); err == nil {
 				item["downloaded"] = true
 			} else if _, err := os.Stat(posterPath); os.IsNotExist(err) {

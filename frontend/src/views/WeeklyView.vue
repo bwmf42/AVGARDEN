@@ -24,7 +24,7 @@
             <template v-for="video in filteredVideos" :key="video.id">
                 <div class="video-card" @click="openVideo(video)">
                     <div class="cover-container" :class="{ watched: isWatched(video.id) }">
-                        <img class="cover" :src="video.poster || video.cover || getDmmFallback(video)" :alt="video.title" loading="lazy">
+                        <img class="cover" :src="video.cover || video.poster || getDmmFallback(video)" :alt="video.title" loading="lazy">
                         <div v-if="isWatched(video.id)" class="watched-overlay">已看</div>
                         <div v-if="video.hasChinese" class="badge chinese">中文</div>
                         <button class="watch-toggle" @click.stop="toggleWatch(video.id)" :title="isWatched(video.id) ? '标记未看' : '标记已看'">

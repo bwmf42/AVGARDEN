@@ -1,7 +1,6 @@
 """JavBus 个体页刮削：元数据 + 封面下载"""
 import re, os, time
 from curl_cffi import requests
-from PIL import Image
 
 DOMAIN = "www.javbus.com"
 PROXY = None
@@ -26,40 +25,7 @@ def _cover_paths(avid, save_dir):
     code = avid.upper()
     local_dir = os.path.join(save_dir, code)
     cover_name = f"{code}-cover.jpg"
-    poster_name = f"{code}-poster.jpg"
-    return (
-        local_dir,
-        cover_name,
-        poster_name,
-        os.path.join(local_dir, cover_name),
-        os.path.join(local_dir, poster_name),
-    )
-
-def crop_weekly_poster(cover_path, poster_path):
-    try:
-        img = Image.open(cover_path)
-        width, height = img.size
-        if height <= 0 or width <= 0:
-            return False
-        if height > width:
-            img.save(poster_path)
-            return True
-        target_width = int(height * 565 / 800)
-        left = max(0, width - target_width)
-        img.crop((left, 0, width, height)).save(poster_path)
-        return True
-    except Exception as e:
-        print(f"[JavBus] Poster crop failed: {e}")
-        return False
-
-def ensure_poster(avid, save_dir):
-    """确保 weekly 本地竖版 poster 存在，返回前端可访问路径。"""
-    _, _, poster_name, cover_path, poster_path = _cover_paths(avid, save_dir)
-    if os.path.exists(poster_path):
-        return _weekly_file_url(avid, poster_name)
-    if os.path.exists(cover_path) and crop_weekly_poster(cover_path, poster_path):
-        return _weekly_file_url(avid, poster_name)
-    return ""
+    return local_dir, cover_name, os.path.join(local_dir, cover_name)
 
 def fetch_page(avid):
     """获取 JavBus 个体页 HTML"""
@@ -121,9 +87,8 @@ def download_cover(avid, url, save_dir):
     """下载封面到本地，返回本地路径"""
     if not url:
         return url
-    local_dir, cover_name, _, local_path, _ = _cover_paths(avid, save_dir)
+    local_dir, cover_name, local_path = _cover_paths(avid, save_dir)
     if os.path.exists(local_path):
-        ensure_poster(avid, save_dir)
         return _weekly_file_url(avid, cover_name)
     try:
         os.makedirs(local_dir, exist_ok=True)
@@ -133,7 +98,6 @@ def download_cover(avid, url, save_dir):
                         impersonate="chrome110", timeout=15)
         with open(local_path, "wb") as f:
             f.write(r.content)
-        ensure_poster(avid, save_dir)
         return _weekly_file_url(avid, cover_name)
     except Exception as e:
         print(f"[JavBus] Cover {avid}: {e}")
