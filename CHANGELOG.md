@@ -13,6 +13,7 @@
 
 ### Changed
 
+- Limited weekly scraping to JavBus cards marked today or yesterday new, with runtime max pages set back to 3.
 - Kept weekly recommendation artwork on full weekly covers instead of generated portrait crops.
 - Ordered blocked actresses by newest addition first in settings.
 - Replaced remaining project-visible legacy naming with `AVGARDEN`, including local deployment references and archived package naming.
@@ -21,6 +22,7 @@
 
 ### Fixed
 
+- Added explicit manual weekly scrape start and finish/failure records to system logs.
 - Fixed weekly detail artwork so it uses the full weekly cover instead of generated portrait poster crops that can cut artwork in half.
 - Fixed source-prefixed codes such as `857OMG-032` so metadata scraping and Chinese-subtitle replacement search with `OMG-032` while keeping the original media folder.
 - Fixed weekly detail keyboard navigation so arrow-key paging only fires once per press and does not conflict with image lightbox navigation.

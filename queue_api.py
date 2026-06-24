@@ -4,7 +4,7 @@ AV/GARDEN Queue API v7 —
 下载管理（完整声明周期：排队→下载中→已完成，保留展示）
 完成后自动更新 weekly.json + 写入 AV/GARDEN SQLite（让主页也可见）
 """
-import os, sys, json, signal, time, subprocess, re, shutil
+import os, sys, json, signal, time, subprocess, re, shutil, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
@@ -52,6 +52,20 @@ QB_PASSWORD = os.environ.get("QBITTORRENT_PASSWORD", "adminadmin")
 
 def log(msg):
     print(f"[QueueAPI] {msg}", flush=True)
+
+
+def log_write(source, message):
+    """写入 av-garden.log，与 launcher 的 log_write 保持一致"""
+    from datetime import datetime
+    log_dir = os.environ.get("LOG_DIR", "/logs")
+    log_file = os.path.join(log_dir, "av-garden.log")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_file, "a") as f:
+            f.write(f"{ts} [{source}] {message}\n")
+    except Exception:
+        pass
 
 
 def qb_api(endpoint):
@@ -171,15 +185,39 @@ def is_weekly_scrape_running():
     weekly_scrape_proc = None
     return False
 
+def _watch_weekly_scrape(proc):
+    """后台等待 weekly_updater 子进程结束，写完成/失败日志"""
+    try:
+        proc.wait(timeout=7200)
+        rc = proc.returncode
+        if rc == 0:
+            log("Manual weekly scrape finished successfully")
+            log_write("ManualScrape", "刮削完成 (weekly_updater)")
+        else:
+            log(f"Manual weekly scrape failed (exit {rc})")
+            log_write("ManualScrape", f"刮削失败 (exit {rc})")
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        log("Manual weekly scrape timed out, killed")
+        log_write("ManualScrape", "刮削超时，已终止")
+    except Exception as e:
+        log(f"Manual weekly scrape watcher error: {e}")
+        log_write("ManualScrape", f"刮削异常: {e}")
+
+
 def start_weekly_scrape():
     global weekly_scrape_proc
     if is_weekly_scrape_running():
         return False
+    log_write("ManualScrape", "刮削开始 (weekly_updater)")
     weekly_scrape_proc = subprocess.Popen(
         ["/app/venv/bin/python3", "/app/weekly_updater.py"],
         stdout=sys.stdout,
         stderr=sys.stderr,
     )
+    # 后台监控子进程，结束后写日志
+    t = threading.Thread(target=_watch_weekly_scrape, args=(weekly_scrape_proc,), daemon=True)
+    t.start()
     return True
 
 def clear_failure_record(code):

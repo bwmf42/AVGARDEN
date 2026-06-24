@@ -1,5 +1,5 @@
 """数据源：JavBus 主页获取最新番号 + 封面 + 标题"""
-import re, time, urllib.parse, random
+import os, re, time, urllib.parse, random
 from curl_cffi import requests
 
 DOMAIN = "www.javbus.com"
@@ -10,6 +10,7 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
     "Cookie": "age=verified; existmag=mag",
 }
+DEFAULT_FRESHNESS_MARKERS = ("今日新種", "昨日新種")
 
 def set_proxy(proxy):
     global PROXY
@@ -18,9 +19,23 @@ def set_proxy(proxy):
 def _proxies():
     return {"http": PROXY, "https": PROXY} if PROXY else None
 
+def _freshness_markers():
+    raw = os.environ.get("WEEKLY_FRESHNESS_MARKERS", "")
+    markers = [m.strip() for m in raw.split(",") if m.strip()]
+    return markers or list(DEFAULT_FRESHNESS_MARKERS)
+
+def _card_freshness(body, markers):
+    text = re.sub(r"<[^>]+>", " ", body)
+    text = re.sub(r"\s+", "", text)
+    for marker in markers:
+        if marker in text:
+            return marker
+    return ""
+
 def get_recent(max_pages=1):
     """从 JavBus 主页/翻页获取最新番号列表，附带标题和封面"""
     items = []
+    markers = _freshness_markers()
     for page in range(1, max_pages + 1):
         url = f"https://{DOMAIN}/page/{page}" if page > 1 else f"https://{DOMAIN}/"
         try:
@@ -38,6 +53,9 @@ def get_recent(max_pages=1):
                 r'(.*?)</a>', r.text, re.DOTALL
             )
             for avid, body in cards:
+                freshness = _card_freshness(body, markers)
+                if not freshness:
+                    continue
                 title_m = re.search(r'<img[^>]*title="([^"]*)"', body)
                 title = title_m.group(1).strip() if title_m else avid
                 cover_m = re.search(r'<img[^>]*src="([^"]*)"', body)
@@ -50,6 +68,7 @@ def get_recent(max_pages=1):
                     "title": title,
                     "cover": cover,
                     "releaseDate": date_m.group(1) if date_m else "",
+                    "freshness": freshness,
                 })
             if not cards:
                 break

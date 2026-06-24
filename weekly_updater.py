@@ -70,7 +70,11 @@ def main():
 
     # 2. JavBus 主页获取番号+封面+标题（一步到位）
     recent = sources.get_recent(MAX_PAGES)
-    log(f"JavBus homepage: {len(recent)} avids")
+    freshness_counts = {}
+    for item in recent:
+        marker = item.get("freshness") or "unknown"
+        freshness_counts[marker] = freshness_counts.get(marker, 0) + 1
+    log(f"JavBus homepage fresh items: {len(recent)} ({freshness_counts})")
 
     new_items = []
     for item in recent:
