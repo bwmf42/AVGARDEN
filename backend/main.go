@@ -116,6 +116,32 @@ func loadBlockedFromFile(path string, m map[string]bool) {
 	}
 }
 
+func orderedActiveValuesNewestFirst(path string, active map[string]bool) []string {
+	data, err := ioutil.ReadFile(path)
+	result := make([]string, 0, len(active))
+	seen := make(map[string]bool)
+	if err == nil {
+		lines := strings.Split(string(data), "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			val := strings.TrimSpace(lines[i])
+			if val == "" || seen[val] || !active[val] {
+				continue
+			}
+			seen[val] = true
+			result = append(result, val)
+		}
+	}
+
+	extras := make([]string, 0)
+	for val, ok := range active {
+		if ok && !seen[val] {
+			extras = append(extras, val)
+		}
+	}
+	sort.Strings(extras)
+	return append(result, extras...)
+}
+
 func appendBlockedActress(name string) error {
 	f, err := os.OpenFile(blockedActressesFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {

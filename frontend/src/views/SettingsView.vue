@@ -94,7 +94,13 @@ export default {
             const url = ENDPOINTS[this.activeTab]
             try {
                 await fetch(url + encodeURIComponent(v), { method: 'POST' })
-                if (!this.currentList.includes(v)) this.currentList.push(v)
+                if (this.activeTab === 'actresses') {
+                    const idx = this.actresses.indexOf(v)
+                    if (idx >= 0) this.actresses.splice(idx, 1)
+                    this.actresses.unshift(v)
+                } else if (!this.currentList.includes(v)) {
+                    this.currentList.push(v)
+                }
                 this.newItem = ''
             } catch (e) { }
         },

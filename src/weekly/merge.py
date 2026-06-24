@@ -42,4 +42,8 @@ def fill_covers(items, save_dir):
         avid = item["id"]
         item["cover"] = javbus.download_cover(avid, item.get("cover", ""), save_dir)
         time.sleep(random.uniform(5, 10))
+    for item in items:
+        avid = item.get("id", "")
+        if avid and (not item.get("poster") or item["poster"].startswith("http")):
+            item["poster"] = javbus.ensure_poster(avid, save_dir)
     return len(remote)
