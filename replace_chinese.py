@@ -58,6 +58,22 @@ def text_has_avid(text, avid):
     return any(v and (v in up or v.replace("-", "") in compact) for v in variants)
 
 
+def clean_avid(name):
+    """Extract the searchable code from folder/torrent names like 857OMG-032."""
+    up = (name or "").strip().upper()
+    source_prefixed = re.match(r"^\d+([A-Z]{2,}\d*-\d+)", up)
+    if source_prefixed:
+        return source_prefixed.group(1)
+    for pat in [r"-C$", r"CH$", r"-中文字幕$", r"_FHD_CH$", r"_CH$", r"\(\d+\)$", r"\.MP4$"]:
+        c = re.sub(pat, "", up)
+        if re.match(r"^[A-Z0-9]+-\d+$", c):
+            return c
+    search = re.search(r"([A-Z]{2,}\d*)-(\d+)", up)
+    if search:
+        return f"{search.group(1)}-{search.group(2)}"
+    return up
+
+
 def format_size(size):
     for unit in ("B", "KB", "MB", "GB"):
         if size < 1024 or unit == "GB":
@@ -200,17 +216,18 @@ def log(msg):
     print(f"[ReplaceCN] {msg}", flush=True)
 
 
-def dir_has_cn_video(dpath, dirname, mp4_files):
-    if has_cn_marker_for_avid(dirname, dirname):
+def dir_has_cn_video(dpath, dirname, mp4_files, avid=None):
+    avid = avid or clean_avid(dirname)
+    if has_cn_marker_for_avid(dirname, avid):
         return True
     for filename in mp4_files:
-        if has_cn_marker_for_avid(filename, dirname):
+        if has_cn_marker_for_avid(filename, avid):
             return True
     for filename in os.listdir(dpath):
         if filename.lower().endswith(".nfo"):
             try:
                 with open(os.path.join(dpath, filename), encoding="utf-8", errors="ignore") as f:
-                    if has_cn_marker_for_avid(f.read(), dirname):
+                    if has_cn_marker_for_avid(f.read(), avid):
                         return True
             except:
                 pass
@@ -231,7 +248,13 @@ def merge_completed_chinese():
         return
 
     merged = 0
-    for hash_str, avid in list(pending.items()):
+    for hash_str, pending_info in list(pending.items()):
+        if isinstance(pending_info, dict):
+            avid = pending_info.get("avid", "")
+            target_dirname = pending_info.get("target_dir", avid)
+        else:
+            avid = pending_info
+            target_dirname = pending_info
         # 找到对应的 qB 种子
         t_info = None
         for t in torrents:
@@ -261,8 +284,8 @@ def merge_completed_chinese():
             moved_files = []
             selected, skipped = select_main_mp4(full_path, avid)
             if selected:
-                cleanup_original(avid)
-                target_dir = os.path.join(SAVE_PATH, avid)
+                cleanup_original(avid, target_dirname)
+                target_dir = os.path.join(SAVE_PATH, target_dirname)
                 os.makedirs(target_dir, exist_ok=True)
                 src = selected["path"]
                 dst = os.path.join(target_dir, selected["name"])
@@ -316,10 +339,11 @@ def merge_completed_chinese():
     if merged:
         log(f"  Merged {merged} Chinese torrent(s)")
 
-def cleanup_original(avid):
+def cleanup_original(avid, target_dirname=None):
     """删除原文件夹里非中文字幕的 mp4，保留 NFO/封面等元数据。"""
     import shutil
-    dpath = os.path.join(SAVE_PATH, avid)
+    target_dirname = target_dirname or avid
+    dpath = os.path.join(SAVE_PATH, target_dirname)
     if not os.path.isdir(dpath):
         return
     d_up = dpath.upper()
@@ -363,15 +387,17 @@ def main():
         mp4_files = [f for f in os.listdir(dpath) if f.endswith(".mp4")]
         if not mp4_files:
             continue
+        search_avid = clean_avid(d)
         # 跳过已有中文字幕标记的目录、视频或 sidecar 标记。
-        if dir_has_cn_video(dpath, d, mp4_files):
+        if dir_has_cn_video(dpath, d, mp4_files, search_avid):
             existing_cn += 1
             continue
         mtime = os.path.getmtime(os.path.join(dpath, mp4_files[0]))
         mdt = datetime.fromtimestamp(mtime)
         if mdt > cutoff:
-            candidates.append((d, mdt))
-            log(f"  Candidate: {d} ({mdt.strftime('%Y-%m-%d')})")
+            candidates.append({"target_dir": d, "avid": search_avid, "mtime": mdt})
+            label = f"{d} -> {search_avid}" if d.upper() != search_avid else d
+            log(f"  Candidate: {label} ({mdt.strftime('%Y-%m-%d')})")
 
     log(f"Found {len(candidates)} candidates")
 
@@ -380,7 +406,9 @@ def main():
     existing_qb = 0
     add_failed = 0
     no_magnet = 0
-    for avid, mdt in sorted(candidates, key=lambda x: x[1], reverse=True):
+    for candidate in sorted(candidates, key=lambda x: x["mtime"], reverse=True):
+        avid = candidate["avid"]
+        target_dirname = candidate["target_dir"]
         # 跳过 qB 里已有的
         if qb_has_cn_avid(avid):
             existing_qb += 1
@@ -400,7 +428,7 @@ def main():
             log(f"  {avid}: added Chinese magnet to qB ({torrent_hash[:12]})")
             update_weekly_magnet(avid, magnet)
             pending = load_pending()
-            pending[torrent_hash] = avid
+            pending[torrent_hash] = {"avid": avid, "target_dir": target_dirname}
             save_pending(pending)
             added += 1
         elif torrent_hash is None:

@@ -28,6 +28,9 @@ weekly_scrape_proc = None
 def clean_avid(name):
     """从文件夹/种子名中提取标准车牌号（去掉 -C, ch, 中文字幕 等后缀）"""
     name = name.strip().upper()
+    source_prefixed = re.match(r'^\d+([A-Z]{2,}\d*-\d+)', name)
+    if source_prefixed:
+        return source_prefixed.group(1)
     m = re.match(r'^([A-Z0-9]+-\d+)', name)
     if m:
         return m.group(1)

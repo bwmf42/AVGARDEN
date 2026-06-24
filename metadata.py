@@ -14,6 +14,11 @@ def clean_avid(folder_name):
     if folder_name in _cleaned_cache:
         return _cleaned_cache[folder_name]
     name = folder_name.strip()
+    source_prefixed = re.match(r'^\d+([A-Za-z]{2,}\d*-\d+)', name)
+    if source_prefixed:
+        c = source_prefixed.group(1).upper()
+        _cleaned_cache[folder_name] = c
+        return c
     # 先直接匹配标准番号 A-Z0-9 + 连字符 + 数字
     m = re.match(r'^([A-Za-z0-9]+(?:-\d+)?)', name)
     if m:

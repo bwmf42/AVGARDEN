@@ -19,5 +19,6 @@
 
 ### Fixed
 
+- Fixed source-prefixed codes such as `857OMG-032` so metadata scraping and Chinese-subtitle replacement search with `OMG-032` while keeping the original media folder.
 - Fixed weekly detail keyboard navigation so arrow-key paging only fires once per press and does not conflict with image lightbox navigation.
 - Made local no-backend preview safer by handling non-array `/api/videos` responses and non-JSON weekly/queue preview responses.
