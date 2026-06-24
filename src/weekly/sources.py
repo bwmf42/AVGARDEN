@@ -10,7 +10,7 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
     "Cookie": "age=verified; existmag=mag",
 }
-DEFAULT_FRESHNESS_MARKERS = ("今日新種", "昨日新種")
+DEFAULT_FRESHNESS_MARKERS = ("今日新種",)
 
 def set_proxy(proxy):
     global PROXY

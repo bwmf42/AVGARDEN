@@ -13,7 +13,7 @@
 
 ### Changed
 
-- Limited weekly scraping to JavBus cards marked today or yesterday new, with runtime max pages set back to 3.
+- Limited normal weekly scraping to JavBus cards marked 今日新種; 昨日新種 can still be included via `WEEKLY_FRESHNESS_MARKERS` for one-off recovery runs.
 - Kept weekly recommendation artwork on full weekly covers instead of generated portrait crops.
 - Ordered blocked actresses by newest addition first in settings.
 - Replaced remaining project-visible legacy naming with `AVGARDEN`, including local deployment references and archived package naming.
