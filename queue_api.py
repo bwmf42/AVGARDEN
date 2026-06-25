@@ -5,7 +5,7 @@ AV/GARDEN Queue API v7 —
 完成后自动更新 weekly.json + 写入 AV/GARDEN SQLite（让主页也可见）
 """
 import os, sys, json, signal, time, subprocess, re, shutil, threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 QUEUE_PATH = os.environ.get("QUEUE_PATH", "/db/download_queue.txt")
@@ -24,6 +24,7 @@ BLOCKED_ACTRESSES = set(
     name.strip() for name in os.environ.get("BLOCKED_ACTRESSES", "").split(",") if name.strip()
 )
 weekly_scrape_proc = None
+weekly_scrape_lock = threading.Lock()
 
 def clean_avid(name):
     """从文件夹/种子名中提取标准车牌号（去掉 -C, ch, 中文字幕 等后缀）"""
@@ -44,6 +45,7 @@ def clean_avid(name):
     return name
 
 _speed_cache = {}
+_speed_cache_lock = threading.Lock()
 
 # qBittorrent 配置
 QB_URL = os.environ.get("QBITTORRENT_URL", "http://127.0.0.1:8080")
@@ -57,7 +59,7 @@ def log(msg):
 def log_write(source, message):
     """写入 av-garden.log，与 launcher 的 log_write 保持一致"""
     from datetime import datetime
-    log_dir = os.environ.get("LOG_DIR", "/logs")
+    log_dir = os.environ.get("LOG_DIR", "/app/logs")
     log_file = os.path.join(log_dir, "av-garden.log")
     try:
         os.makedirs(log_dir, exist_ok=True)
@@ -207,18 +209,19 @@ def _watch_weekly_scrape(proc):
 
 def start_weekly_scrape():
     global weekly_scrape_proc
-    if is_weekly_scrape_running():
-        return False
-    log_write("ManualScrape", "刮削开始 (weekly_updater)")
-    weekly_scrape_proc = subprocess.Popen(
-        ["/app/venv/bin/python3", "/app/weekly_updater.py"],
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-    )
-    # 后台监控子进程，结束后写日志
-    t = threading.Thread(target=_watch_weekly_scrape, args=(weekly_scrape_proc,), daemon=True)
-    t.start()
-    return True
+    with weekly_scrape_lock:
+        if is_weekly_scrape_running():
+            return False
+        log_write("ManualScrape", "刮削开始 (weekly_updater)")
+        weekly_scrape_proc = subprocess.Popen(
+            ["/app/venv/bin/python3", "/app/weekly_updater.py"],
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+        # 后台监控子进程，结束后写日志
+        t = threading.Thread(target=_watch_weekly_scrape, args=(weekly_scrape_proc,), daemon=True)
+        t.start()
+        return True
 
 def clear_failure_record(code):
     """重新入队时清理旧失败/重试记录，避免刚添加就显示失败。"""
@@ -496,11 +499,7 @@ def get_download_info(code):
         current = get_file_size(ts_path)
         current_sec = get_ts_duration_seconds(ts_path)
     else:
-        # 没有 .ts 文件，尝试从 qBittorrent API 获取进度
-        save_dir = get_code_dir(code)
-        qb_progress = get_qb_progress(save_dir)
-        if qb_progress:
-            return qb_progress
+        # 没有 .ts 文件，qB 已经在函数开头查过了，直接看磁盘
         if os.path.isdir(save_dir):
             current = get_dir_size(save_dir)
             current_sec = None
@@ -510,12 +509,13 @@ def get_download_info(code):
 
     now = time.time()
     speed = 0
-    if code in _speed_cache:
-        prev_bytes, prev_time = _speed_cache[code]
-        elapsed = now - prev_time
-        if elapsed > 0 and current >= prev_bytes:
-            speed = (current - prev_bytes) / elapsed
-    _speed_cache[code] = (current, now)
+    with _speed_cache_lock:
+        if code in _speed_cache:
+            prev_bytes, prev_time = _speed_cache[code]
+            elapsed = now - prev_time
+            if elapsed > 0 and current >= prev_bytes:
+                speed = (current - prev_bytes) / elapsed
+        _speed_cache[code] = (current, now)
 
     progress_pct = 0
     if current_sec and current_sec > 0:
@@ -850,7 +850,7 @@ def main():
     # 启动自检：恢复残留锁、扫描未完成下载
     startup_recovery()
     
-    server = HTTPServer(("0.0.0.0", port), QueueHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", port), QueueHandler)
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
     try:
         server.serve_forever()

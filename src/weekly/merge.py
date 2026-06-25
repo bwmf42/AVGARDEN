@@ -1,16 +1,44 @@
-import time, random
+import time, random, re
 from datetime import datetime, timedelta
+
+_DATE_FORMATS = [
+    "%Y-%m-%d",       # 2026-06-20
+    "%Y/%m/%d",       # 2026/06/20
+    "%Y.%m.%d",       # 2026.06.20
+    "%Y年%m月%d日",    # 2026年6月20日
+    "%Y%m%d",         # 20260620
+    "%Y-%m-%d %H:%M", # 2026-06-20 14:30
+    "%Y/%m/%d %H:%M", # 2026/06/20 14:30
+]
+
+def _parse_date(d):
+    """兼容多种日期格式，返回 datetime 或 None"""
+    d = d.strip()
+    if not d:
+        return None
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(d, fmt)
+        except ValueError:
+            continue
+    # 兜底：从字符串里提取 YYYY-MM-DD 片段
+    m = re.search(r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})", d)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+    return None
 
 def is_recent(item, days=30):
     """判断是否为最近 N 天内的新片"""
     d = item.get("releaseDate", "")
     if not d:
         return False
-    try:
-        rd = datetime.strptime(d, "%Y-%m-%d")
-        return rd >= datetime.now() - timedelta(days=days)
-    except:
-        return True
+    rd = _parse_date(d)
+    if rd is None:
+        return False
+    return rd >= datetime.now() - timedelta(days=days)
 
 def merge(existing, new_items, max_days=30):
     """合并：保留未下载的 + 新片，去重，按日期排序"""

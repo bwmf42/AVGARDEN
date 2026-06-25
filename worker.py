@@ -238,7 +238,12 @@ def has_active_qb_task(avid):
         ]
         for field in fields:
             value = str(field).upper()
-            if value == target or target in value or value.endswith(target):
+            # 精确匹配，或作为路径/文件名的一段（前后有分隔符）
+            if value == target:
+                return True
+            # 用分隔符边界匹配，避免 ABF-361 误匹配 ABF-3612
+            import re as _re
+            if _re.search(r'(?:^|[/\s\-_.,])' + _re.escape(target) + r'(?:[/\s\-_.,]|$)', value):
                 return True
     return False
 

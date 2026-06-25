@@ -61,7 +61,7 @@ def main():
     existing = json.load(open(WEEKLY_JSON)) if os.path.exists(WEEKLY_JSON) else []
     if not existing:
         existing = []
-    existing_ids = {i["id"].upper() for i in existing}
+    existing_ids = {i["id"].upper() for i in existing if i.get("id")}
     log(f"Existing: {len(existing)}")
 
     # 1. 补封面
