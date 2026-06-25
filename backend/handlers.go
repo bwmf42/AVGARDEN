@@ -283,6 +283,12 @@ var (
 	weeklyCacheMtx  sync.RWMutex
 	weeklyCacheTime time.Time
 	weeklyCacheMod  time.Time // weekly.json 的修改时间
+
+	// mp4/poster 目录索引缓存，避免每条条目都扫磁盘
+	mediaIndex       map[string]bool
+	mediaIndexMtx    sync.RWMutex
+	mediaIndexTime   time.Time
+	mediaIndexTTL    = 30 * time.Second
 )
 
 type WeeklyWatchedPayload struct {
@@ -386,11 +392,22 @@ func loadWeeklyWatchedRecords() map[string]time.Time {
 }
 
 func weeklyWatchedIDsFromRecords(records map[string]time.Time) []string {
-	ids := make([]string, 0, len(records))
-	for id := range records {
-		ids = append(ids, id)
+	// 按 watched_at 降序排（最近看的排前面）
+	type kv struct {
+		id string
+		ts time.Time
 	}
-	sort.Strings(ids)
+	list := make([]kv, 0, len(records))
+	for id, ts := range records {
+		list = append(list, kv{id, ts})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].ts.After(list[j].ts)
+	})
+	ids := make([]string, 0, len(list))
+	for _, item := range list {
+		ids = append(ids, item.id)
+	}
 	return ids
 }
 
@@ -552,6 +569,55 @@ func mapKeys(m map[string]bool) []string {
 	return keys
 }
 
+// buildMediaIndex 扫描 basePath 下的目录，记录哪些番号有 .mp4
+// 一次扫描代替每条条目单独 stat，大幅减少磁盘 IO
+func buildMediaIndex() map[string]bool {
+	index := make(map[string]bool)
+	entries, err := ioutil.ReadDir(basePath)
+	if err != nil {
+		return index
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), "__") || entry.Name() == "thumb" {
+			continue
+		}
+		code := strings.ToUpper(entry.Name())
+		subEntries, err := ioutil.ReadDir(filepath.Join(basePath, entry.Name()))
+		if err != nil {
+			continue
+		}
+		for _, f := range subEntries {
+			name := f.Name()
+			if strings.HasSuffix(name, ".mp4") && f.Size() > 10*1024*1024 {
+				index[code] = true
+				break
+			}
+		}
+	}
+	return index
+}
+
+// getMediaIndex 获取缓存的媒体索引，TTL 内复用
+func getMediaIndex() map[string]bool {
+	mediaIndexMtx.RLock()
+	if mediaIndex != nil && time.Since(mediaIndexTime) < mediaIndexTTL {
+		idx := mediaIndex
+		mediaIndexMtx.RUnlock()
+		return idx
+	}
+	mediaIndexMtx.RUnlock()
+
+	mediaIndexMtx.Lock()
+	defer mediaIndexMtx.Unlock()
+	// double check
+	if mediaIndex != nil && time.Since(mediaIndexTime) < mediaIndexTTL {
+		return mediaIndex
+	}
+	mediaIndex = buildMediaIndex()
+	mediaIndexTime = time.Now()
+	return mediaIndex
+}
+
 // weeklyHandler 读取 weekly.json 并返回 (过滤屏蔽演员 + 清理失效 downloaded)
 func weeklyHandler(w http.ResponseWriter, r *http.Request) {
 	loadBlockedLists()
@@ -584,6 +650,9 @@ func weeklyHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(data, &items); err != nil || items == nil {
 		items = []map[string]interface{}{}
 	}
+
+	// 一次性构建 mp4 索引，避免逐条扫磁盘
+	mp4Index := getMediaIndex()
 
 	filtered := make([]map[string]interface{}, 0)
 	for _, item := range items {
@@ -650,13 +719,12 @@ func weeklyHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// 同步 downloaded：磁盘有 mp4 就 true，无 poster 就 false
+		// 同步 downloaded：用媒体索引缓存查 mp4，避免逐条扫磁盘
 		if id, ok := item["id"].(string); ok {
-			mp4Path := findFileInDir(basePath, id, ".mp4")
-			posterPath := filepath.Join(basePath, id, id+"-poster.jpg")
-			if _, err := os.Stat(mp4Path); err == nil {
+			code := strings.ToUpper(id)
+			if mp4Index[code] {
 				item["downloaded"] = true
-			} else if _, err := os.Stat(posterPath); os.IsNotExist(err) {
+			} else {
 				item["downloaded"] = false
 			}
 		}
