@@ -108,8 +108,16 @@ export default {
     },
     async activated() {
         this.applyRouteTab()
-        await this.syncWatched()
-        await this.loadData()
+        // 只在首次进入或数据为空时重新加载，切标签不重新 fetch
+        if (this.weeklyItems.length === 0) {
+            await this.syncWatched()
+            await this.loadData()
+        } else {
+            // 数据已有，只同步已看列表（不触发 loading）
+            this.syncWatched().then(result => {
+                this.applyWatchedIDs(result.ids)
+            })
+        }
     },
     watch: {
         '$route.query.tab'() {
@@ -123,7 +131,14 @@ export default {
         applyWatchedIDs(ids) {
             const normalized = normalizeWatchedIDs(ids)
             this.watchedSet = new Set(normalized)
-            this.watchedOrder = writeWatchedOrderIDs(readWatchedOrderIDs(), normalized)
+            // 服务器返回的是 watched_at 降序（最近看的在前）
+            // watchedOrder 约定：最近看的在末尾（recordWatchedOrderID 追加到末尾）
+            // 所以反转服务器顺序，再合并本地已有的 order
+            const serverOrder = [...normalized].reverse()
+            const existingOrder = readWatchedOrderIDs()
+            const existingSet = new Set(existingOrder)
+            const newIds = serverOrder.filter(id => !existingSet.has(id))
+            this.watchedOrder = writeWatchedOrderIDs([...newIds, ...existingOrder], normalized)
         },
         loadWatched() {
             this.applyWatchedIDs(readLocalWatchedIDs())

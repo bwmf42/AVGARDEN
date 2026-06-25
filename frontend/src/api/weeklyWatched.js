@@ -15,7 +15,7 @@ export function normalizeWatchedIDs(ids) {
         result.push(id)
     }
 
-    return result.sort()
+    return result
 }
 
 function normalizeWatchedOrder(ids) {
