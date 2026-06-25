@@ -27,3 +27,14 @@
 - Fixed source-prefixed codes such as `857OMG-032` so metadata scraping and Chinese-subtitle replacement search with `OMG-032` while keeping the original media folder.
 - Fixed weekly detail keyboard navigation so arrow-key paging only fires once per press and does not conflict with image lightbox navigation.
 - Made local no-backend preview safer by handling non-array `/api/videos` responses and non-JSON weekly/queue preview responses.
+- Fixed manual weekly scrape leaving no completion record: `queue_api.py` now spawns a watcher thread that writes `[ManualScrape] 刮削完成/失败/超时` to `av-garden.log`.
+- Fixed race condition in `start_weekly_scrape` by adding a lock to prevent concurrent scrape launches.
+- Removed redundant qBittorrent API call in `get_download_info` (dead code in else branch).
+- Unified `log_write` default `LOG_DIR` to `/app/logs` to match launcher and docker-compose.
+- Guarded `existing_ids` in `weekly_updater.py` against missing `id` field (KeyError crash).
+- Made `is_recent` in `merge.py` handle multiple date formats (`2026-06-20`, `2026/06/20`, `2026年6月20日`, etc.) instead of crashing; invalid dates now return `False` so stale entries get cleaned.
+- Switched Queue API from single-threaded `HTTPServer` to `ThreadingHTTPServer` with a lock on `_speed_cache` to prevent download management page from blocking.
+- Tightened `has_active_qb_task` matching to use delimiter boundaries instead of substring containment, preventing false matches like `ABF-361` matching `ABF-3612`.
+- Optimized weekly page loading: replaced per-item disk stat with a cached media index (30s TTL), reducing cold-cache load from minutes to ~4s.
+- Fixed weekly page re-fetching on tab switch: `activated()` now only loads data on first entry, tab switches use cached items.
+- Fixed watched list ordering: server now returns watched IDs sorted by `watched_at` descending; frontend preserves this order instead of falling back to alphabetical sort.
