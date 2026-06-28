@@ -12,6 +12,7 @@ PROXY = os.environ.get("PROXY", "") or None
 MAX_NEW = int(os.environ.get("WEEKLY_MAX_NEW", "20"))
 MAX_AGE = int(os.environ.get("WEEKLY_MAX_AGE", "30"))
 MAX_PAGES = int(os.environ.get("WEEKLY_MAX_PAGES", "3"))
+LIST_ONLY = os.environ.get("WEEKLY_LIST_ONLY", "").strip().lower() in ("1", "true", "yes", "on")
 DS_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 DS_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 
@@ -65,8 +66,10 @@ def main():
     log(f"Existing: {len(existing)}")
 
     # 1. 补封面
-    n = merge.fill_covers(existing, WEEKLY_DIR)
-    if n: log(f"Filled {n} covers")
+    if not LIST_ONLY:
+        n = merge.fill_covers(existing, WEEKLY_DIR)
+        if n:
+            log(f"Filled {n} covers")
 
     # 2. JavBus 主页获取番号+封面+标题（一步到位）
     recent = sources.get_recent(MAX_PAGES)
@@ -82,19 +85,32 @@ def main():
         if avid in existing_ids:
             continue
 
-        # 个体页补充演员/标签/时长
-        html = javbus.fetch_page(avid)
-        detail = javbus.parse_page(html) if html else {}
-        item.update({k: v for k, v in detail.items() if v})
-        if not item.get("title"): item["title"] = avid
+        if LIST_ONLY:
+            item.setdefault("title", avid)
+            item.setdefault("titleZh", "")
+            item.setdefault("titleJp", "")
+            item.setdefault("poster", item.get("cover", ""))
+            item.setdefault("duration", "")
+            item.setdefault("size", "")
+            item.setdefault("magnet", "")
+            item.setdefault("actresses", [])
+            item.setdefault("genres", [])
+            item.setdefault("fanarts", [])
+        else:
+            # 个体页补充演员/标签/时长
+            html = javbus.fetch_page(avid)
+            detail = javbus.parse_page(html) if html else {}
+            item.update({k: v for k, v in detail.items() if v})
+            if not item.get("title"):
+                item["title"] = avid
 
-        item["cover"] = javbus.download_cover(avid, item.get("cover", ""), WEEKLY_DIR)
-        item["magnet"] = sukebei.search(avid)
-        # 补齐缺失字段
-        for k in ["titleZh","titleJp","poster","duration","actresses","genres","fanarts","size"]:
-            item.setdefault(k, "")
-        for k in ["actresses","genres","fanarts"]:
-            item.setdefault(k, [])
+            item["cover"] = javbus.download_cover(avid, item.get("cover", ""), WEEKLY_DIR)
+            item["magnet"] = sukebei.search(avid)
+            # 补齐缺失字段
+            for k in ["titleZh", "titleJp", "poster", "duration", "actresses", "genres", "fanarts", "size"]:
+                item.setdefault(k, "")
+            for k in ["actresses", "genres", "fanarts"]:
+                item.setdefault(k, [])
         item.setdefault("hasChinese", False)
         item.setdefault("downloaded", False)
 
@@ -102,7 +118,8 @@ def main():
         log(f"  + {avid}: {item.get('title','')[:50]} ({item.get('releaseDate','')})")
         if len(new_items) >= MAX_NEW:
             break
-        time.sleep(random.uniform(5, 10))
+        if not LIST_ONLY:
+            time.sleep(random.uniform(5, 10))
 
     merged = merge.merge(existing, new_items, MAX_AGE) if new_items else existing
 
@@ -116,7 +133,8 @@ def main():
         if not isinstance(item.get("fanarts"), list): item["fanarts"] = []
 
     # 3. DeepSeek 批量翻译缺少 titleZh 的 items
-    batch_translate(merged)
+    if not LIST_ONLY:
+        batch_translate(merged)
 
     os.makedirs(WEEKLY_DIR, exist_ok=True)
     tmp = WEEKLY_JSON + ".tmp"
