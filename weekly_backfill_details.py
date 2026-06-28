@@ -85,12 +85,30 @@ def needs_backfill(item):
     return (
         not item.get("magnet")
         or not item.get("duration")
-        or not item.get("actresses")
         or not item.get("genres")
+        or not item.get("fanarts")
         or not item.get("titleZh")
         or not cover
         or cover.startswith("http")
     )
+
+
+def missing_fields(item):
+    missing = []
+    cover = str(item.get("cover") or "")
+    if not item.get("duration"):
+        missing.append("duration")
+    if not item.get("genres"):
+        missing.append("genres")
+    if not item.get("fanarts"):
+        missing.append("fanarts")
+    if not item.get("magnet"):
+        missing.append("magnet")
+    if not item.get("titleZh"):
+        missing.append("titleZh")
+    if not cover or cover.startswith("http"):
+        missing.append("cover")
+    return missing
 
 
 def translate_title(item):
@@ -126,7 +144,7 @@ def translate_title(item):
 def backfill_item(item):
     avid = normalize_id(item.get("id"))
     changed = False
-    need_detail = not item.get("duration") or not item.get("actresses") or not item.get("genres")
+    need_detail = not item.get("duration") or not item.get("genres") or not item.get("fanarts")
     need_cover = not item.get("cover") or str(item.get("cover")).startswith("http")
 
     if need_detail or need_cover:
@@ -181,7 +199,14 @@ def main():
             if changed:
                 updated += 1
                 save_weekly(items)
-            log(f"{index}/{len(targets)} {avid} {'updated' if changed else 'unchanged'}")
+            missing = missing_fields(item)
+            if changed:
+                status = "updated"
+            elif missing:
+                status = "still_missing=" + ",".join(missing)
+            else:
+                status = "complete"
+            log(f"{index}/{len(targets)} {avid} {status}")
         except Exception as e:
             log(f"{index}/{len(targets)} {avid} failed: {e}")
         if index < len(targets):

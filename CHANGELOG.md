@@ -27,6 +27,7 @@
 - Added explicit manual weekly scrape start and finish/failure records to system logs.
 - Added a one-off page-scan override for weekly scraping so missed recent JavBus cards can be backfilled from deeper paginated pages without changing the daily default.
 - Added a `WEEKLY_LIST_ONLY` fast backfill mode so page-based weekly recovery can skip per-title detail fetch, magnet lookup, and translation when only the list-page cards are needed.
+- Made weekly detail backfill treat empty actress lists as valid for omnibus/amateur items and report remaining missing fields instead of a vague `unchanged`.
 - Fixed weekly detail artwork so it uses the full weekly cover instead of generated portrait poster crops that can cut artwork in half.
 - Fixed source-prefixed codes such as `857OMG-032` so metadata scraping and Chinese-subtitle replacement search with `OMG-032` while keeping the original media folder.
 - Fixed weekly detail keyboard navigation so arrow-key paging only fires once per press and does not conflict with image lightbox navigation.
