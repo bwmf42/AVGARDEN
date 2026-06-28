@@ -147,17 +147,18 @@ def backfill_item(item):
     html = ""
     need_detail = not item.get("duration") or not item.get("genres") or not item.get("fanarts")
     need_cover = not item.get("cover") or str(item.get("cover")).startswith("http")
+    refresh_cover = not need_cover and javbus.cover_needs_refresh(avid, WEEKLY_DIR)
 
-    if need_detail or need_cover:
+    if need_detail or need_cover or refresh_cover:
         html = javbus.fetch_page(avid)
         detail = javbus.parse_page(html) if html else {}
         for key, value in detail.items():
-            if value and (not item.get(key) or key in ("actresses", "genres", "fanarts")):
+            if value and (not item.get(key) or key in ("actresses", "genres", "fanarts") or (key == "cover" and refresh_cover)):
                 item[key] = value
                 changed = True
 
-    if need_cover:
-        cover = javbus.download_cover(avid, item.get("cover", ""), WEEKLY_DIR)
+    if need_cover or refresh_cover:
+        cover = javbus.download_cover(avid, item.get("cover", ""), WEEKLY_DIR, force=refresh_cover)
         if cover and cover != item.get("cover"):
             item["cover"] = cover
             changed = True

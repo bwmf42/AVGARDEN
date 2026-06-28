@@ -62,9 +62,20 @@ def merge(existing, new_items, max_days=30):
 def fill_covers(items, save_dir):
     """给远程 URL 或无封面的项目下载封面到本地"""
     from . import javbus
-    remote = [i for i in items if not i.get("cover") or i["cover"].startswith("http")]
+    remote = [
+        i for i in items
+        if not i.get("cover")
+        or i["cover"].startswith("http")
+        or javbus.cover_needs_refresh(i.get("id", ""), save_dir)
+    ]
     for item in remote:
         avid = item["id"]
-        item["cover"] = javbus.download_cover(avid, item.get("cover", ""), save_dir)
+        force = bool(item.get("cover")) and not item["cover"].startswith("http")
+        if force:
+            html = javbus.fetch_page(avid)
+            detail = javbus.parse_page(html) if html else {}
+            if detail.get("cover"):
+                item["cover"] = detail["cover"]
+        item["cover"] = javbus.download_cover(avid, item.get("cover", ""), save_dir, force=force)
         time.sleep(random.uniform(5, 10))
     return len(remote)

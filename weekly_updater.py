@@ -104,7 +104,7 @@ def main():
             if not item.get("title"):
                 item["title"] = avid
 
-            item["cover"] = javbus.download_cover(avid, item.get("cover", ""), WEEKLY_DIR)
+            item["cover"] = javbus.download_cover(avid, item.get("cover", ""), WEEKLY_DIR, force=javbus.cover_needs_refresh(avid, WEEKLY_DIR))
             item["magnet"] = sukebei.search(avid, html)
             # 补齐缺失字段
             for k in ["titleZh", "titleJp", "poster", "duration", "actresses", "genres", "fanarts", "size"]:

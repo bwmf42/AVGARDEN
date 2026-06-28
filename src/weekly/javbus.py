@@ -27,6 +27,50 @@ def _cover_paths(avid, save_dir):
     cover_name = f"{code}-cover.jpg"
     return local_dir, cover_name, os.path.join(local_dir, cover_name)
 
+def cover_needs_refresh(avid, save_dir, min_width=300, min_height=400, min_bytes=50 * 1024):
+    """低清列表页缩略图需要用详情页 bigImage 刷新。"""
+    _, _, local_path = _cover_paths(avid, save_dir)
+    if not os.path.exists(local_path):
+        return False
+    try:
+        if os.path.getsize(local_path) < min_bytes:
+            return True
+        size = _image_size(local_path)
+        return bool(size and (size[0] < min_width or size[1] < min_height))
+    except OSError:
+        return False
+
+def _image_size(path):
+    with open(path, "rb") as f:
+        head = f.read(24)
+        if head.startswith(b"\x89PNG\r\n\x1a\n") and len(head) >= 24:
+            return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+        if not head.startswith(b"\xff\xd8"):
+            return None
+        f.seek(2)
+        while True:
+            marker = f.read(1)
+            while marker and marker != b"\xff":
+                marker = f.read(1)
+            marker = f.read(1)
+            if not marker:
+                return None
+            while marker == b"\xff":
+                marker = f.read(1)
+            if marker in (b"\xd8", b"\xd9"):
+                continue
+            length_data = f.read(2)
+            if len(length_data) < 2:
+                return None
+            length = int.from_bytes(length_data, "big")
+            code = marker[0]
+            if 0xC0 <= code <= 0xCF and code not in (0xC4, 0xC8, 0xCC):
+                data = f.read(5)
+                if len(data) < 5:
+                    return None
+                return int.from_bytes(data[3:5], "big"), int.from_bytes(data[1:3], "big")
+            f.seek(length - 2, os.SEEK_CUR)
+
 def fetch_page(avid):
     """获取 JavBus 个体页 HTML"""
     try:
@@ -148,12 +192,12 @@ def _javbus_magnet_score(avid, text):
             size_score /= 1024
     return (cn_score, code_score, size_score)
 
-def download_cover(avid, url, save_dir):
+def download_cover(avid, url, save_dir, force=False):
     """下载封面到本地，返回本地路径"""
     if not url:
         return url
     local_dir, cover_name, local_path = _cover_paths(avid, save_dir)
-    if os.path.exists(local_path):
+    if os.path.exists(local_path) and not force:
         return _weekly_file_url(avid, cover_name)
     try:
         os.makedirs(local_dir, exist_ok=True)
