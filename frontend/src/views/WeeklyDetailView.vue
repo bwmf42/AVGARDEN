@@ -46,7 +46,7 @@
 
                 <div class="detail-hero">
                     <div class="poster-section">
-                        <img class="poster" :src="video.cover || video.poster" :alt="video.title">
+                        <img class="poster" :key="`poster-${mediaKey}`" :src="video.cover || video.poster" :alt="video.title">
                     </div>
 
                     <aside class="detail-side">
@@ -133,10 +133,10 @@
                 </div>
 
                 <!-- Fanarts Gallery (AV/GARDEN style) -->
-                <div v-if="fanartList.length" class="section preview-section">
+                <div v-if="fanartList.length" :key="`fanarts-${mediaKey}`" class="section preview-section">
                     <h3>预览图</h3>
                     <div class="fanarts-grid">
-                        <div v-for="(img, i) in fanartList" :key="i" class="fanart-item" @click="openLightbox(i)">
+                        <div v-for="(img, i) in fanartList" :key="`${video.id}-${i}-${img}`" class="fanart-item" @click="openLightbox(i)">
                             <img :src="img" loading="lazy" class="fanart-img">
                         </div>
                     </div>
@@ -145,7 +145,7 @@
                         <div class="lightbox-content" @click.stop>
                             <button class="lightbox-close" @click="closeLightbox">关闭</button>
                             <button class="lightbox-nav lightbox-prev" @click.stop="prevImage">上一张</button>
-                            <img :src="fanartList[lightboxIndex]" class="lightbox-image" @click.stop>
+                            <img :key="`lightbox-${mediaKey}-${lightboxIndex}`" :src="fanartList[lightboxIndex]" class="lightbox-image" @click.stop>
                             <button class="lightbox-nav lightbox-next" @click.stop="nextImage">下一张</button>
                             <div class="lightbox-counter">{{ lightboxIndex + 1 }} / {{ fanartList.length }}</div>
                         </div>
@@ -235,6 +235,9 @@ export default {
     computed: {
         fanartList() {
             return this.video?.fanarts || []
+        },
+        mediaKey() {
+            return normalizeVideoID(this.video?.id || this.id)
         },
         queueStateLabel() {
             if (this.queueState === 'downloading') return `下载中 ${this.queueProgress}%`
@@ -384,10 +387,22 @@ export default {
                 return id === normalizedTarget || id === canonicalTarget
             })
             if (index < 0) return false
+            const previousID = normalizeVideoID(this.video?.id)
             this.currentIndex = index
             this.video = this.allVideos[index]
+            if (previousID && previousID !== normalizeVideoID(this.video?.id)) {
+                this.resetMediaState()
+            }
             this.detailMissing = false
             return true
+        },
+        resetMediaState() {
+            this.closeLightbox()
+            this.lightboxIndex = 0
+            this.blockingName = null
+            this.blockingGenre = null
+            this.hoverGenre = null
+            this.favActresses = {}
         },
         loadWatched() {
             this.watchedSet = new Set(readLocalWatchedIDs())

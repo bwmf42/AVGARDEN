@@ -26,6 +26,7 @@
 ### Fixed
 
 - Reduced weekly detail browsing stalls by reusing the detail component, caching weekly data briefly, and saving watched state without blocking page navigation.
+- Reset weekly detail cover and preview image nodes when changing items so the previous page's preview images do not remain visible while new images load.
 - Warm weekly recommendation cache on server startup so the first browser request after deploy does not pay the full media-index scan cost.
 - Refresh low-resolution weekly covers from JavBus detail-page `bigImage` instead of keeping list-page thumbnails enlarged in detail view.
 - Added explicit manual weekly scrape start and finish/failure records to system logs.
