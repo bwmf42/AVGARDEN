@@ -17,6 +17,7 @@ COPY worker.py /app/
 COPY queue_api.py /app/
 COPY launcher.py /app/
 COPY weekly_updater.py /app/
+COPY weekly_backfill_details.py /app/
 COPY replace_chinese.py /app/
 RUN mkdir -p /data /db /cfg /logs
 ENTRYPOINT /usr/bin/python3 -u /app/launcher.py
