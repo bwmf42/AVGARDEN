@@ -618,42 +618,40 @@ func getMediaIndex() map[string]bool {
 	return mediaIndex
 }
 
-// weeklyHandler 读取 weekly.json 并返回 (过滤屏蔽演员 + 清理失效 downloaded)
-func weeklyHandler(w http.ResponseWriter, r *http.Request) {
-	loadBlockedLists()
-	if r.Method != http.MethodGet {
-		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+func warmWeeklyCache() {
+	start := time.Now()
 	weeklyPath := filepath.Join(basePath, "__weekly__", "weekly.json")
-
-	// 检查缓存：文件未变且缓存不超过5分钟
-	info, statErr := os.Stat(weeklyPath)
-	if statErr == nil {
-		weeklyCacheMtx.RLock()
-		if info.ModTime().Equal(weeklyCacheMod) && time.Since(weeklyCacheTime) < 5*time.Minute && len(weeklyCache) > 0 {
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			w.Write(weeklyCache)
-			weeklyCacheMtx.RUnlock()
-			return
-		}
-		weeklyCacheMtx.RUnlock()
+	info, err := os.Stat(weeklyPath)
+	if err != nil {
+		logger.Printf("weekly cache warm skipped: %v", err)
+		return
 	}
 
 	data, err := ioutil.ReadFile(weeklyPath)
 	if err != nil {
-		httpError(w, "Weekly data not found", http.StatusNotFound)
+		logger.Printf("weekly cache warm read failed: %v", err)
 		return
 	}
 
+	loadBlockedLists()
 	var items []map[string]interface{}
 	if err := json.Unmarshal(data, &items); err != nil || items == nil {
 		items = []map[string]interface{}{}
 	}
 
-	// 一次性构建 mp4 索引，避免逐条扫磁盘
 	mp4Index := getMediaIndex()
+	filtered := filterWeeklyItems(items, mp4Index)
+	cached, _ := json.Marshal(filtered)
 
+	weeklyCacheMtx.Lock()
+	weeklyCache = cached
+	weeklyCacheTime = time.Now()
+	weeklyCacheMod = info.ModTime()
+	weeklyCacheMtx.Unlock()
+	logger.Printf("weekly cache warmed: %d items in %v", len(filtered), time.Since(start))
+}
+
+func filterWeeklyItems(items []map[string]interface{}, mp4Index map[string]bool) []map[string]interface{} {
 	filtered := make([]map[string]interface{}, 0)
 	for _, item := range items {
 		// 过滤屏蔽演员
@@ -731,6 +729,46 @@ func weeklyHandler(w http.ResponseWriter, r *http.Request) {
 
 		filtered = append(filtered, item)
 	}
+	return filtered
+}
+
+// weeklyHandler 读取 weekly.json 并返回 (过滤屏蔽演员 + 清理失效 downloaded)
+func weeklyHandler(w http.ResponseWriter, r *http.Request) {
+	loadBlockedLists()
+	if r.Method != http.MethodGet {
+		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	weeklyPath := filepath.Join(basePath, "__weekly__", "weekly.json")
+
+	// 检查缓存：文件未变且缓存不超过5分钟
+	info, statErr := os.Stat(weeklyPath)
+	if statErr == nil {
+		weeklyCacheMtx.RLock()
+		if info.ModTime().Equal(weeklyCacheMod) && time.Since(weeklyCacheTime) < 5*time.Minute && len(weeklyCache) > 0 {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Write(weeklyCache)
+			weeklyCacheMtx.RUnlock()
+			return
+		}
+		weeklyCacheMtx.RUnlock()
+	}
+
+	data, err := ioutil.ReadFile(weeklyPath)
+	if err != nil {
+		httpError(w, "Weekly data not found", http.StatusNotFound)
+		return
+	}
+
+	var items []map[string]interface{}
+	if err := json.Unmarshal(data, &items); err != nil || items == nil {
+		items = []map[string]interface{}{}
+	}
+
+	// 一次性构建 mp4 索引，避免逐条扫磁盘
+	mp4Index := getMediaIndex()
+
+	filtered := filterWeeklyItems(items, mp4Index)
 
 	cached, _ := json.Marshal(filtered)
 

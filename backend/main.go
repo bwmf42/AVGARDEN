@@ -300,6 +300,7 @@ func main() {
 	if err := buildVideoListCache(); err != nil {
 		logger.Printf("Warning: initial cache build failed: %v", err)
 	}
+	go warmWeeklyCache()
 
 	// 启动定时缓存更新
 	go startCacheUpdater(10 * time.Minute)
