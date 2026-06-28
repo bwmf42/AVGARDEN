@@ -227,7 +227,17 @@ def _nyaa_candidate_score(candidate):
         -candidate["index"],
     )
 
-def search(avid):
-    """搜索磁链，多源兜底，优先 sukebei/nyaa，其次 MissAV。"""
+def search(avid, page_html=""):
+    """搜索磁链，多源兜底，优先 JavBus 列表，其次 sukebei/nyaa，最后 MissAV。"""
+    try:
+        from src.weekly import javbus
+        javbus.set_proxy(PROXY)
+        magnet = javbus.search_magnet(avid, page_html)
+        if magnet:
+            logger.info("[JavBus] selected %s magnet from detail list", avid)
+            return magnet
+    except Exception as e:
+        logger.info("[JavBus] magnet lookup failed for %s: %s", avid, e)
+
     magnet = _search_nyaa(avid, [f"{avid} 中文字幕", f"{avid} 中文", avid])
     return magnet or search_missav_magnet(avid)

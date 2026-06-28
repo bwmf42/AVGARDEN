@@ -144,6 +144,7 @@ def translate_title(item):
 def backfill_item(item):
     avid = normalize_id(item.get("id"))
     changed = False
+    html = ""
     need_detail = not item.get("duration") or not item.get("genres") or not item.get("fanarts")
     need_cover = not item.get("cover") or str(item.get("cover")).startswith("http")
 
@@ -162,7 +163,7 @@ def backfill_item(item):
             changed = True
 
     if not item.get("magnet"):
-        magnet = sukebei.search(avid)
+        magnet = sukebei.search(avid, html)
         if magnet:
             item["magnet"] = magnet
             changed = True

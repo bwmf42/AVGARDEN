@@ -11,6 +11,7 @@
 - Added a local changelog workflow: completed work is recorded here before commit, then waits for manual testing confirmation.
 - Added preview artifacts for the 02 media-hub direction under `design-demos/`.
 - Added a visible-unwatched weekly backfill script for filling details, local covers, magnets, and translated titles only for items that pass current filters and are still 未看.
+- Added JavBus detail-page magnet list lookup as the first weekly magnet source, before Sukebei/Nyaa and MissAV fallbacks.
 
 ### Changed
 

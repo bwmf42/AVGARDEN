@@ -1,5 +1,5 @@
 """JavBus 个体页刮削：元数据 + 封面下载"""
-import re, os, time
+import html, re, os, time, random, urllib.parse
 from curl_cffi import requests
 
 DOMAIN = "www.javbus.com"
@@ -82,6 +82,71 @@ def parse_page(html):
         "fanarts": fanarts,
         "hasChinese": False, "magnet": "", "downloaded": False, "size": "",
     }
+
+def search_magnet(avid, page_html=""):
+    """从 JavBus 详情页 AJAX 磁链列表挑一个磁链。"""
+    avid = avid.strip().upper()
+    if not avid:
+        return ""
+    html_text = page_html or fetch_page(avid) or ""
+    gid_m = re.search(r'var\s+gid\s*=\s*(\d+)', html_text)
+    uc_m = re.search(r'var\s+uc\s*=\s*(\d+)', html_text)
+    img_m = re.search(r'var\s+img\s*=\s*[\'"]([^\'"]+)', html_text)
+    if not (gid_m and uc_m and img_m):
+        return ""
+
+    query = urllib.parse.urlencode({
+        "gid": gid_m.group(1),
+        "lang": "zh",
+        "img": img_m.group(1),
+        "uc": uc_m.group(1),
+        "floor": random.randint(1, 1000),
+    })
+    url = f"https://{DOMAIN}/ajax/uncledatoolsbyajax.php?{query}"
+    try:
+        h = dict(HEADERS)
+        h["Referer"] = f"https://{DOMAIN}/{avid}"
+        r = requests.get(url, proxies=_proxies(), headers=h,
+                        impersonate="chrome110", timeout=20)
+        if r.status_code != 200:
+            return ""
+        return _pick_javbus_magnet(avid, r.text)
+    except Exception as e:
+        print(f"[JavBus] Magnet {avid}: {e}")
+        return ""
+
+def _pick_javbus_magnet(avid, page_html):
+    magnets = []
+    seen = set()
+    for match in re.finditer(r'href=["\'](magnet:\?xt=urn:btih:[^"\']+)["\']', page_html, re.I):
+        magnet = html.unescape(match.group(1))
+        if magnet in seen:
+            continue
+        seen.add(magnet)
+        row_start = page_html.rfind("<tr", 0, match.start())
+        row_end = page_html.find("</tr>", match.end())
+        row = html.unescape(page_html[row_start:row_end] if row_start != -1 and row_end != -1 else "")
+        text = re.sub(r"<[^>]+>", " ", row)
+        text = re.sub(r"\s+", " ", text).strip()
+        magnets.append((_javbus_magnet_score(avid, text), magnet))
+    if not magnets:
+        return ""
+    magnets.sort(reverse=True, key=lambda item: item[0])
+    return magnets[0][1]
+
+def _javbus_magnet_score(avid, text):
+    upper = text.upper()
+    code_score = 1 if avid in upper or avid.replace("-", "") in upper.replace("-", "") else 0
+    cn_score = 1 if any(k in upper for k in ["中文", "字幕", "-C", "-CH", "CHINESE"]) else 0
+    size_score = 0.0
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(GB|MB|TB)", upper)
+    if m:
+        size_score = float(m.group(1))
+        if m.group(2) == "TB":
+            size_score *= 1024
+        elif m.group(2) == "MB":
+            size_score /= 1024
+    return (cn_score, code_score, size_score)
 
 def download_cover(avid, url, save_dir):
     """下载封面到本地，返回本地路径"""
