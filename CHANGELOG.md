@@ -15,6 +15,7 @@
 
 ### Changed
 
+- Moved the NAS deployment root to `/42/docker/AVGARDEN` and updated local deployment guidance to keep future deploys in the Docker app folder.
 - Limited normal weekly scraping to JavBus cards marked 今日新種; 昨日新種 can still be included via `WEEKLY_FRESHNESS_MARKERS` for one-off recovery runs.
 - Weekly merge now keeps undownloaded recommendations beyond the old 30-day window, so the 未看 pool can continue accumulating until you watch or download them.
 - Kept weekly recommendation artwork on full weekly covers instead of generated portrait crops.

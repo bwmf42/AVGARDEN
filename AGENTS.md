@@ -24,6 +24,7 @@ A/GARDEN 是面向 NAS 和家庭服务器的媒体下载、整理和浏览系统
 - 元数据：`metadata.py`、`src/scraper.py`。
 - 前端：`frontend/`，Vue 3 + Vite，路由在 `frontend/src/router/index.js`。
 - 通用部署模板：`docker-compose.example.yml`。
+- NAS 生产部署目录：`/tmp/zfsv3/sata11/13049108160/data/docker/AVGARDEN`，对应极空间文件管理里的 `/42/docker/AVGARDEN`。
 
 ## 配置边界
 
