@@ -84,7 +84,7 @@
         <main class="app-main">
           <router-view v-slot="{ Component }">
             <keep-alive :include="['HomeView', 'WeeklyView']">
-              <component :is="Component" :key="$route.fullPath" />
+              <component :is="Component" :key="routeViewKey" />
             </keep-alive>
           </router-view>
         </main>
@@ -168,6 +168,9 @@ export default {
     }
   },
   computed: {
+    routeViewKey() {
+      return this.$route.name === 'weekly-detail' ? 'weekly-detail' : this.$route.fullPath
+    },
     activeStatusItems() {
       return this.statusBar.items.filter(item => item.status !== 'failed')
     },

@@ -193,6 +193,8 @@ import {
 
 const BROWSE_STATE_KEY = 'weekly_detail_browse_state'
 const QUEUE_FAILED_GRACE_MS = 120000
+const WEEKLY_CACHE_MS = 5 * 60 * 1000
+let weeklyDetailCache = { items: null, fetchedAt: 0, promise: null }
 
 function normalizeVideoID(id) {
     return String(id || '').trim().toUpperCase()
@@ -249,6 +251,10 @@ export default {
         window.addEventListener('keydown', this.handlePageKeydown, true)
         window.addEventListener('keyup', this.handlePageKeyup, true)
         this.unlockPageScroll()
+        this.loadWatched()
+        this.syncWatched().then(() => {
+            if (weeklyDetailCache.items) this.rebuildBrowseList(this.id)
+        })
         await this.loadRoute(this.id)
     },
     async beforeRouteUpdate(to, from, next) {
@@ -274,15 +280,11 @@ export default {
             const token = ++this.routeLoadToken
             this.routeLoading = true
             try {
-                await this.syncWatched()
-                if (token !== this.routeLoadToken) return
-
                 const loaded = await this.loadDetail(targetId, token)
                 if (!loaded || token !== this.routeLoadToken) return
 
                 this.trackView(targetId)
-                await this.markWatched(targetId)
-                if (token !== this.routeLoadToken) return
+                this.markWatched(targetId)
 
                 this.loadFavActresses()
                 this.syncQueueState(window.avGardenQueueStatus || [], targetId)
@@ -306,41 +308,16 @@ export default {
         async loadDetail(targetId, token = this.routeLoadToken) {
             const normalizedTarget = normalizeVideoID(targetId)
             const canonicalTarget = canonicalVideoID(targetId)
-            this.video = null
             this.detailMissing = false
-            this.currentIndex = -1
-            this.allVideos = []
             try {
-                const resp = await fetch('/api/weekly')
-                if (resp.ok) {
-                    const all = await resp.json()
-                    if (token !== this.routeLoadToken) return false
-                    const allById = new Map(all.map(v => [normalizeVideoID(v.id), v]))
-                    const undownloaded = all.filter(v => !v.downloaded)
-                    const tab = this.$route.query.tab || 'unwatched'
-                    const savedIds = this.readBrowseState(tab, canonicalTarget)
-                    if (savedIds) {
-                        this.allVideos = savedIds.map(id => allById.get(normalizeVideoID(id))).filter(Boolean)
-                    } else {
-                        if (tab === 'watched') {
-                            this.allVideos = undownloaded.filter(v => this.isWatched(v.id))
-                        } else {
-                            this.allVideos = undownloaded.filter(v => !this.isWatched(v.id))
-                        }
-                        if (!this.allVideos.some(v => normalizeVideoID(v.id) === canonicalTarget)) {
-                            const current = allById.get(normalizedTarget) || allById.get(canonicalTarget)
-                            if (current) this.allVideos = [current, ...this.allVideos]
-                        }
-                        this.saveBrowseState(tab, this.allVideos)
-                    }
-                    this.currentIndex = this.allVideos.findIndex(v => {
-                        const id = normalizeVideoID(v.id)
-                        return id === normalizedTarget || id === canonicalTarget
-                    })
-                    if (this.currentIndex >= 0) {
-                        this.video = this.allVideos[this.currentIndex]
-                    }
+                if (this.setVideoFromCurrentList(targetId)) {
+                    this.syncQueueState(window.avGardenQueueStatus || [], targetId)
+                    return true
                 }
+
+                const all = await this.getWeeklyItems()
+                if (token !== this.routeLoadToken) return false
+                this.rebuildBrowseList(targetId, all)
                 if (token !== this.routeLoadToken) return false
                 this.syncQueueState(window.avGardenQueueStatus || [], targetId)
                 this.detailMissing = !this.video
@@ -351,6 +328,66 @@ export default {
                 this.detailMissing = true
                 return false
             }
+        },
+        async getWeeklyItems() {
+            const now = Date.now()
+            if (weeklyDetailCache.items && now - weeklyDetailCache.fetchedAt < WEEKLY_CACHE_MS) {
+                return weeklyDetailCache.items
+            }
+            if (!weeklyDetailCache.promise) {
+                weeklyDetailCache.promise = fetch('/api/weekly')
+                    .then(resp => resp.ok ? resp.json() : [])
+                    .then(data => Array.isArray(data) ? data : [])
+                    .then(items => {
+                        weeklyDetailCache = { items, fetchedAt: Date.now(), promise: null }
+                        return items
+                    })
+                    .catch(err => {
+                        weeklyDetailCache.promise = null
+                        throw err
+                    })
+            }
+            return weeklyDetailCache.promise
+        },
+        rebuildBrowseList(targetId, weeklyItems = weeklyDetailCache.items || []) {
+            const normalizedTarget = normalizeVideoID(targetId)
+            const canonicalTarget = canonicalVideoID(targetId)
+            const allById = new Map(weeklyItems.map(v => [normalizeVideoID(v.id), v]))
+            const undownloaded = weeklyItems.filter(v => !v.downloaded)
+            const tab = this.$route.query.tab || 'unwatched'
+            const savedIds = this.readBrowseState(tab, canonicalTarget)
+
+            if (savedIds) {
+                this.allVideos = savedIds.map(id => allById.get(normalizeVideoID(id))).filter(Boolean)
+            } else if (tab === 'watched') {
+                this.allVideos = undownloaded.filter(v => this.isWatched(v.id))
+            } else {
+                this.allVideos = undownloaded.filter(v => !this.isWatched(v.id))
+            }
+
+            if (!this.allVideos.some(v => normalizeVideoID(v.id) === canonicalTarget)) {
+                const current = allById.get(normalizedTarget) || allById.get(canonicalTarget)
+                if (current) this.allVideos = [current, ...this.allVideos]
+            }
+
+            this.saveBrowseState(tab, this.allVideos)
+            if (!this.setVideoFromCurrentList(targetId)) {
+                this.currentIndex = -1
+                this.video = null
+            }
+        },
+        setVideoFromCurrentList(targetId) {
+            const normalizedTarget = normalizeVideoID(targetId)
+            const canonicalTarget = canonicalVideoID(targetId)
+            const index = this.allVideos.findIndex(v => {
+                const id = normalizeVideoID(v.id)
+                return id === normalizedTarget || id === canonicalTarget
+            })
+            if (index < 0) return false
+            this.currentIndex = index
+            this.video = this.allVideos[index]
+            this.detailMissing = false
+            return true
         },
         loadWatched() {
             this.watchedSet = new Set(readLocalWatchedIDs())
@@ -408,10 +445,10 @@ export default {
                 const nextIDs = normalizeWatchedIDs([...this.watchedSet, id])
                 this.watchedSet = new Set(nextIDs)
                 recordWatchedOrderID(id, nextIDs)
+                this.markedVisible = true
+                setTimeout(() => { this.markedVisible = false }, 2000)
                 try {
                     await this.saveWatched()
-                    this.markedVisible = true
-                    setTimeout(() => { this.markedVisible = false }, 2000)
                 } catch(e) {
                     console.error('[markWatched] FAILED:', e)
                 }
