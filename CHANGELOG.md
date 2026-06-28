@@ -14,6 +14,7 @@
 ### Changed
 
 - Limited normal weekly scraping to JavBus cards marked 今日新種; 昨日新種 can still be included via `WEEKLY_FRESHNESS_MARKERS` for one-off recovery runs.
+- Weekly merge now keeps undownloaded recommendations beyond the old 30-day window, so the 未看 pool can continue accumulating until you watch or download them.
 - Kept weekly recommendation artwork on full weekly covers instead of generated portrait crops.
 - Ordered blocked actresses by newest addition first in settings.
 - Replaced remaining project-visible legacy naming with `AVGARDEN`, including local deployment references and archived package naming.
@@ -23,6 +24,7 @@
 ### Fixed
 
 - Added explicit manual weekly scrape start and finish/failure records to system logs.
+- Added a one-off page-scan override for weekly scraping so missed recent JavBus cards can be backfilled from deeper paginated pages without changing the daily default.
 - Fixed weekly detail artwork so it uses the full weekly cover instead of generated portrait poster crops that can cut artwork in half.
 - Fixed source-prefixed codes such as `857OMG-032` so metadata scraping and Chinese-subtitle replacement search with `OMG-032` while keeping the original media folder.
 - Fixed weekly detail keyboard navigation so arrow-key paging only fires once per press and does not conflict with image lightbox navigation.

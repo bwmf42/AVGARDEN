@@ -24,6 +24,9 @@ def _freshness_markers():
     markers = [m.strip() for m in raw.split(",") if m.strip()]
     return markers or list(DEFAULT_FRESHNESS_MARKERS)
 
+def _scan_all_cards():
+    return os.environ.get("WEEKLY_SCAN_ALL_CARDS", "").strip().lower() in ("1", "true", "yes", "on")
+
 def _card_freshness(body, markers):
     text = re.sub(r"<[^>]+>", " ", body)
     text = re.sub(r"\s+", "", text)
@@ -36,6 +39,7 @@ def get_recent(max_pages=1):
     """从 JavBus 主页/翻页获取最新番号列表，附带标题和封面"""
     items = []
     markers = _freshness_markers()
+    scan_all_cards = _scan_all_cards()
     for page in range(1, max_pages + 1):
         url = f"https://{DOMAIN}/page/{page}" if page > 1 else f"https://{DOMAIN}/"
         try:
@@ -54,8 +58,10 @@ def get_recent(max_pages=1):
             )
             for avid, body in cards:
                 freshness = _card_freshness(body, markers)
-                if not freshness:
+                if not freshness and not scan_all_cards:
                     continue
+                if not freshness:
+                    freshness = "page-scan"
                 title_m = re.search(r'<img[^>]*title="([^"]*)"', body)
                 title = title_m.group(1).strip() if title_m else avid
                 cover_m = re.search(r'<img[^>]*src="([^"]*)"', body)

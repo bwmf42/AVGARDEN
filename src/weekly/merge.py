@@ -41,7 +41,7 @@ def is_recent(item, days=30):
     return rd >= datetime.now() - timedelta(days=days)
 
 def merge(existing, new_items, max_days=30):
-    """合并：保留未下载的 + 新片，去重，按日期排序"""
+    """合并：长期保留未下载的，已下载只保留近期，新片按窗口纳入"""
     merged = {}
     for item in existing:
         avid = item.get("id", "").upper()
@@ -49,9 +49,6 @@ def merge(existing, new_items, max_days=30):
             continue
         if item.get("downloaded"):
             if not is_recent(item, 7):
-                continue
-        else:
-            if not is_recent(item, max_days):
                 continue
         merged[avid] = item
     for item in new_items:
