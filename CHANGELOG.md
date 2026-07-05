@@ -9,6 +9,7 @@
 ### Added
 
 - Added a local changelog workflow: completed work is recorded here before commit, then waits for manual testing confirmation.
+- Added a media-library NFO title backfill script to translate older local titles while preserving original titles.
 - Added preview artifacts for the 02 media-hub direction under `design-demos/`.
 - Added a visible-unwatched weekly backfill script for filling details, local covers, magnets, and translated titles only for items that pass current filters and are still 未看.
 - Added JavBus detail-page magnet list lookup as the first weekly magnet source, before Sukebei/Nyaa and MissAV fallbacks.
@@ -26,6 +27,7 @@
 
 ### Fixed
 
+- Fixed weekly detail queue buttons so a recent queue submission for one code no longer makes another code display as already queued.
 - Reduced weekly detail browsing stalls by reusing the detail component, caching weekly data briefly, and saving watched state without blocking page navigation.
 - Reset weekly detail cover and preview image nodes when changing items so the previous page's preview images do not remain visible while new images load.
 - Warm weekly recommendation cache on server startup so the first browser request after deploy does not pay the full media-index scan cost.

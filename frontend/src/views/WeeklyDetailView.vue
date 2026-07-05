@@ -216,6 +216,7 @@ export default {
             queueState: 'idle',
             queueProgress: 0,
             queueSubmittedAt: 0,
+            queueSubmittedId: '',
             blockingName: null,
             blockingGenre: null,
             hoverGenre: null,
@@ -392,6 +393,7 @@ export default {
             this.video = this.allVideos[index]
             if (previousID && previousID !== normalizeVideoID(this.video?.id)) {
                 this.resetMediaState()
+                this.resetQueueState()
             }
             this.detailMissing = false
             return true
@@ -403,6 +405,12 @@ export default {
             this.blockingGenre = null
             this.hoverGenre = null
             this.favActresses = {}
+        },
+        resetQueueState() {
+            this.queueState = 'idle'
+            this.queueProgress = 0
+            this.queueSubmittedAt = 0
+            this.queueSubmittedId = ''
         },
         loadWatched() {
             this.watchedSet = new Set(readLocalWatchedIDs())
@@ -537,6 +545,13 @@ export default {
         syncQueueState(items, targetId = this.id) {
             const normalizedTarget = normalizeVideoID(targetId)
             const canonicalTarget = canonicalVideoID(targetId)
+            const submittedID = normalizeVideoID(this.queueSubmittedId)
+            const submittedCanonical = canonicalVideoID(this.queueSubmittedId)
+            const submittedMatchesTarget = submittedID &&
+                (submittedID === normalizedTarget ||
+                    submittedID === canonicalTarget ||
+                    submittedCanonical === normalizedTarget ||
+                    submittedCanonical === canonicalTarget)
             const current = items.find(item => {
                 const itemID = normalizeVideoID(item.id)
                 const itemCanonical = canonicalVideoID(item.id)
@@ -546,7 +561,7 @@ export default {
                     itemCanonical === canonicalTarget
             })
             if (!current) {
-                if (this.queueSubmittedAt && Date.now() - this.queueSubmittedAt < QUEUE_FAILED_GRACE_MS) {
+                if (submittedMatchesTarget && this.queueSubmittedAt && Date.now() - this.queueSubmittedAt < QUEUE_FAILED_GRACE_MS) {
                     this.queueState = 'queued'
                     this.queueProgress = 0
                     return
@@ -561,8 +576,9 @@ export default {
             if (current.status === 'done') {
                 this.queueState = 'success'
                 this.queueSubmittedAt = 0
+                this.queueSubmittedId = ''
             } else if (current.status === 'failed') {
-                if (this.queueSubmittedAt && Date.now() - this.queueSubmittedAt < QUEUE_FAILED_GRACE_MS) {
+                if (submittedMatchesTarget && this.queueSubmittedAt && Date.now() - this.queueSubmittedAt < QUEUE_FAILED_GRACE_MS) {
                     this.queueState = 'queued'
                     return
                 }
@@ -612,27 +628,31 @@ export default {
             } catch (e) {}
         },
         async addToQueue() {
+            const targetId = normalizeVideoID(this.video?.id || this.id)
             this.queueState = 'adding'
             this.queueSubmittedAt = Date.now()
+            this.queueSubmittedId = targetId
             try {
                 const resp = await fetch('/api/queue/', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({code: this.id})
+                    body: JSON.stringify({code: targetId})
                 })
                 if (resp.ok) {
                     this.queueState = 'queued'
-                    this.showToast(this.id + ' 已加入下载队列', 'info')
+                    this.showToast(targetId + ' 已加入下载队列', 'info')
                     window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
                 } else {
                     this.queueState = 'error'
                     this.queueSubmittedAt = 0
-                    this.showToast(this.id + ' 加入下载队列失败，请重试', 'warn')
+                    this.queueSubmittedId = ''
+                    this.showToast(targetId + ' 加入下载队列失败，请重试', 'warn')
                 }
             } catch (e) {
                 this.queueState = 'error'
                 this.queueSubmittedAt = 0
-                this.showToast(this.id + ' 加入下载队列失败，请重试', 'warn')
+                this.queueSubmittedId = ''
+                this.showToast(targetId + ' 加入下载队列失败，请重试', 'warn')
             }
         },
         showToast(msg, type) {
