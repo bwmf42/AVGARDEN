@@ -77,6 +77,10 @@ function normalizeText(value) {
     return String(value || '').trim().toUpperCase()
 }
 
+function compactText(value) {
+    return normalizeText(value).replace(/[^A-Z0-9]/g, '')
+}
+
 function normalizeCodeQuery(value) {
     const raw = normalizeText(value).replace(/_/g, '-')
     const exact = raw.match(/([A-Z0-9]{2,}\d*-\d{2,6})/)
@@ -112,6 +116,27 @@ export default {
         },
         onlineResultIDs() {
             return new Set(this.onlineResults.map(video => normalizeText(video.id)))
+        },
+        exactLocalResultIDs() {
+            const target = compactText(this.onlineCodeQuery)
+            if (!target) return new Set()
+            return new Set(
+                this.localItems
+                    .filter(video => compactText(video.id) === target)
+                    .map(video => normalizeText(video.id))
+            )
+        },
+        exactWeeklyResultIDs() {
+            const target = compactText(this.onlineCodeQuery)
+            if (!target) return new Set()
+            return new Set(
+                this.weeklyItems
+                    .filter(video => compactText(video.id) === target)
+                    .map(video => normalizeText(video.id))
+            )
+        },
+        hasExactLocalOrWeeklyResult() {
+            return this.exactLocalResultIDs.size > 0 || this.exactWeeklyResultIDs.size > 0
         },
         localResults() {
             return this.localItems
@@ -160,7 +185,7 @@ export default {
                 ])
                 this.localItems = Array.isArray(local) ? local : []
                 this.weeklyItems = weeklyResp.ok ? await weeklyResp.json() : []
-                if (this.onlineCodeQuery) {
+                if (this.onlineCodeQuery && !this.hasExactLocalOrWeeklyResult) {
                     await this.loadOnlineResult(this.onlineCodeQuery)
                 }
             } catch (e) {
@@ -206,7 +231,11 @@ export default {
                 video.titleJp,
                 ...(Array.isArray(video.actresses) ? video.actresses : [])
             ]
-            return fields.some(field => normalizeText(field).includes(q))
+            const compactQuery = compactText(q)
+            return fields.some(field =>
+                normalizeText(field).includes(q) ||
+                (compactQuery && compactText(field).includes(compactQuery))
+            )
         },
         displayTitle(video) {
             let title = video.titleZh || video.title || video.id

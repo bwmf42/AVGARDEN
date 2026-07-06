@@ -492,10 +492,11 @@ func addVideoHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 var (
-	weeklyCache     []byte
-	weeklyCacheMtx  sync.RWMutex
-	weeklyCacheTime time.Time
-	weeklyCacheMod  time.Time // weekly.json 的修改时间
+	weeklyCache         []byte
+	weeklyCacheMtx      sync.RWMutex
+	weeklyCacheTime     time.Time
+	weeklyCacheMod      time.Time // weekly.json 的修改时间
+	weeklyCacheQueueSig string
 
 	// mp4/poster 目录索引缓存，避免每条条目都扫磁盘
 	mediaIndex     map[string]bool
@@ -853,18 +854,20 @@ func warmWeeklyCache() {
 	}
 
 	mp4Index := getMediaIndex()
-	filtered := filterWeeklyItems(items, mp4Index)
+	activeQueueIndex := getActiveQueueIndex()
+	filtered := filterWeeklyItems(items, mp4Index, activeQueueIndex)
 	cached, _ := json.Marshal(filtered)
 
 	weeklyCacheMtx.Lock()
 	weeklyCache = cached
 	weeklyCacheTime = time.Now()
 	weeklyCacheMod = info.ModTime()
+	weeklyCacheQueueSig = activeQueueSignature(activeQueueIndex)
 	weeklyCacheMtx.Unlock()
 	logger.Printf("weekly cache warmed: %d items in %v", len(filtered), time.Since(start))
 }
 
-func filterWeeklyItems(items []map[string]interface{}, mp4Index map[string]bool) []map[string]interface{} {
+func filterWeeklyItems(items []map[string]interface{}, mp4Index map[string]bool, activeQueueIndex map[string]string) []map[string]interface{} {
 	filtered := make([]map[string]interface{}, 0)
 	for _, item := range items {
 		// 过滤屏蔽演员
@@ -933,16 +936,50 @@ func filterWeeklyItems(items []map[string]interface{}, mp4Index map[string]bool)
 		// 同步 downloaded：用媒体索引缓存查 mp4，避免逐条扫磁盘
 		if id, ok := item["id"].(string); ok {
 			code := strings.ToUpper(id)
-			if mp4Index[code] {
+			if status, active := activeQueueIndex[cleanVideoID(code)]; active {
+				item["downloaded"] = false
+				item["queueStatus"] = status
+			} else if mp4Index[code] {
 				item["downloaded"] = true
+				delete(item, "queueStatus")
 			} else {
 				item["downloaded"] = false
+				delete(item, "queueStatus")
 			}
 		}
 
 		filtered = append(filtered, item)
 	}
 	return filtered
+}
+
+func getActiveQueueIndex() map[string]string {
+	index := map[string]string{}
+	items, err := loadQueueAPIItems()
+	if err != nil {
+		return index
+	}
+	for _, item := range items {
+		code := cleanVideoID(item.Code)
+		status := strings.ToLower(strings.TrimSpace(item.Status))
+		if code == "" || status == "" || status == "done" {
+			continue
+		}
+		index[code] = status
+	}
+	return index
+}
+
+func activeQueueSignature(index map[string]string) string {
+	if len(index) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(index))
+	for code, status := range index {
+		parts = append(parts, code+":"+status)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "|")
 }
 
 // weeklyHandler 读取 weekly.json 并返回 (过滤屏蔽演员 + 清理失效 downloaded)
@@ -953,12 +990,14 @@ func weeklyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	weeklyPath := filepath.Join(basePath, "__weekly__", "weekly.json")
+	activeQueueIndex := getActiveQueueIndex()
+	activeQueueSig := activeQueueSignature(activeQueueIndex)
 
 	// 检查缓存：文件未变且缓存不超过5分钟
 	info, statErr := os.Stat(weeklyPath)
 	if statErr == nil {
 		weeklyCacheMtx.RLock()
-		if info.ModTime().Equal(weeklyCacheMod) && time.Since(weeklyCacheTime) < 5*time.Minute && len(weeklyCache) > 0 {
+		if info.ModTime().Equal(weeklyCacheMod) && activeQueueSig == weeklyCacheQueueSig && time.Since(weeklyCacheTime) < 5*time.Minute && len(weeklyCache) > 0 {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.Write(weeklyCache)
 			weeklyCacheMtx.RUnlock()
@@ -981,7 +1020,7 @@ func weeklyHandler(w http.ResponseWriter, r *http.Request) {
 	// 一次性构建 mp4 索引，避免逐条扫磁盘
 	mp4Index := getMediaIndex()
 
-	filtered := filterWeeklyItems(items, mp4Index)
+	filtered := filterWeeklyItems(items, mp4Index, activeQueueIndex)
 
 	cached, _ := json.Marshal(filtered)
 
@@ -991,6 +1030,7 @@ func weeklyHandler(w http.ResponseWriter, r *http.Request) {
 		weeklyCache = cached
 		weeklyCacheTime = time.Now()
 		weeklyCacheMod = info.ModTime()
+		weeklyCacheQueueSig = activeQueueSig
 		weeklyCacheMtx.Unlock()
 	}
 
@@ -1103,6 +1143,11 @@ func decorateOnlineSearchItem(item map[string]interface{}) {
 	if rawID == "" {
 		return
 	}
+	if status, ok := activeQueueStatusForID(rawID); ok {
+		item["downloaded"] = false
+		item["queueStatus"] = status
+		return
+	}
 	if localID, ok := findDownloadedLocalID(rawID); ok {
 		item["downloaded"] = true
 		item["localID"] = localID
@@ -1110,6 +1155,29 @@ func decorateOnlineSearchItem(item map[string]interface{}) {
 		return
 	}
 	item["downloaded"] = false
+}
+
+func activeQueueStatusForID(rawID string) (string, bool) {
+	candidates := coverIDCandidates(rawID)
+	if len(candidates) == 0 {
+		return "", false
+	}
+	items, err := loadQueueAPIItems()
+	if err != nil {
+		return "", false
+	}
+	for _, item := range items {
+		status := strings.ToLower(strings.TrimSpace(item.Status))
+		if status == "" || status == "done" {
+			continue
+		}
+		for _, candidate := range candidates {
+			if cleanVideoID(item.Code) == cleanVideoID(candidate) {
+				return status, true
+			}
+		}
+	}
+	return "", false
 }
 
 func findDownloadedLocalID(rawID string) (string, bool) {

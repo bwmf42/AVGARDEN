@@ -30,6 +30,10 @@
 
 ### Fixed
 
+- Fixed exact code search without a dash so queued weekly items open the weekly detail instead of being replaced by a one-time online result.
+- Fixed online search local badges so active queued/downloading items are not treated as completed local media.
+- Fixed weekly `downloaded` status so active queue items are not treated as completed just because a partial `.mp4` exists.
+- Fixed weekly cache invalidation to include active queue state, preventing stale downloaded flags while a task is still downloading.
 - Matched search-result cover cropping to the weekly 未看 list by using the same right-side cover framing and card aspect.
 - Fixed one-time online search to reuse the worker `PROXY` setting for JavBus and magnet lookups.
 - Fixed Queue API startup to use the worker virtualenv Python, so online search can import the scraper dependencies installed in the worker image.
