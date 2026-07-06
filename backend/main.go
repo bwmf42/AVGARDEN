@@ -309,6 +309,8 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/videos", listVideosHandler)
 	mux.HandleFunc("/api/videos/", videoDetailHandler)
+	mux.HandleFunc("/api/cover/", coverHandler)
+	mux.HandleFunc("/api/online-search/", onlineSearchHandler)
 	mux.HandleFunc("/api/addvideo/", addVideoHandler)
 	mux.HandleFunc("/file/", imageHandler)
 	mux.HandleFunc("/api/weekly", weeklyHandler)

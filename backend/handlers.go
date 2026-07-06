@@ -194,6 +194,219 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, imagePath)
 }
 
+type CoverLookupResult struct {
+	ID     string `json:"id"`
+	Title  string `json:"title,omitempty"`
+	Cover  string `json:"cover"`
+	Poster string `json:"poster,omitempty"`
+	Source string `json:"source"`
+}
+
+var exactAvidPattern = regexp.MustCompile(`(?i)^[A-Z0-9]+-\d+$`)
+
+// coverHandler returns the best known cover URL for a code without mutating weekly.json.
+func coverHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	rawID, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/api/cover/"))
+	if err != nil {
+		httpError(w, "Invalid video ID", http.StatusBadRequest)
+		return
+	}
+
+	candidates := coverIDCandidates(rawID)
+	if len(candidates) == 0 {
+		httpError(w, "Invalid video ID", http.StatusBadRequest)
+		return
+	}
+
+	if result, ok := findCover(candidates); ok {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			logger.Printf("Error encoding cover lookup for %s: %v", candidates[0], err)
+			httpError(w, "Internal server error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	httpError(w, "Cover not found", http.StatusNotFound)
+}
+
+func coverIDCandidates(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	raw = strings.ToUpper(strings.ReplaceAll(raw, "_", "-"))
+
+	candidates := make([]string, 0, 2)
+	add := func(value string) {
+		value = strings.TrimSpace(strings.ToUpper(value))
+		if value == "" || strings.Contains(value, "/") || strings.Contains(value, "\\") || strings.Contains(value, "..") {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == value {
+				return
+			}
+		}
+		candidates = append(candidates, value)
+	}
+
+	if exactAvidPattern.MatchString(raw) {
+		add(raw)
+	}
+	if matches := avidPattern.FindStringSubmatch(raw); len(matches) >= 3 {
+		add(matches[1] + "-" + matches[2])
+	}
+	return candidates
+}
+
+func findCover(candidates []string) (CoverLookupResult, bool) {
+	if result, ok := findLocalMediaCover(candidates); ok {
+		return result, true
+	}
+	if result, ok := findWeeklyJSONCover(candidates); ok {
+		return result, true
+	}
+	if result, ok := findWeeklyFileCover(candidates); ok {
+		return result, true
+	}
+	return CoverLookupResult{}, false
+}
+
+func findLocalMediaCover(candidates []string) (CoverLookupResult, bool) {
+	for _, code := range candidates {
+		videoID, cleanID := resolveVideoDir(code)
+		if videoID == "" || videoID == "__weekly__" {
+			continue
+		}
+		posterFile := getPosterFile(basePath, videoID)
+		if posterFile == "" {
+			continue
+		}
+		title, _, err := parseTitleAndDate(videoID)
+		if err != nil || strings.TrimSpace(title) == "" {
+			title = cleanID
+		}
+		poster := mediaFileURL(videoID, posterFile)
+		return CoverLookupResult{
+			ID:     cleanID,
+			Title:  title,
+			Cover:  poster,
+			Poster: poster,
+			Source: "media",
+		}, true
+	}
+	return CoverLookupResult{}, false
+}
+
+func findWeeklyJSONCover(candidates []string) (CoverLookupResult, bool) {
+	weeklyPath := filepath.Join(basePath, "__weekly__", "weekly.json")
+	data, err := ioutil.ReadFile(weeklyPath)
+	if err != nil {
+		return CoverLookupResult{}, false
+	}
+
+	var items []map[string]interface{}
+	if err := json.Unmarshal(data, &items); err != nil {
+		return CoverLookupResult{}, false
+	}
+
+	candidateSet := make(map[string]bool, len(candidates)*2)
+	for _, candidate := range candidates {
+		candidateSet[candidate] = true
+		candidateSet[cleanVideoID(candidate)] = true
+	}
+
+	for _, item := range items {
+		itemID, _ := item["id"].(string)
+		if itemID == "" {
+			continue
+		}
+		itemID = strings.ToUpper(strings.TrimSpace(itemID))
+		if !candidateSet[itemID] && !candidateSet[cleanVideoID(itemID)] {
+			continue
+		}
+
+		cover, _ := item["cover"].(string)
+		poster, _ := item["poster"].(string)
+		if strings.TrimSpace(cover) == "" {
+			cover = poster
+		}
+		if strings.TrimSpace(cover) == "" {
+			continue
+		}
+
+		title, _ := item["title"].(string)
+		return CoverLookupResult{
+			ID:     itemID,
+			Title:  title,
+			Cover:  cover,
+			Poster: poster,
+			Source: "weekly-json",
+		}, true
+	}
+	return CoverLookupResult{}, false
+}
+
+func findWeeklyFileCover(candidates []string) (CoverLookupResult, bool) {
+	for _, code := range candidates {
+		weeklyDir := filepath.Join(basePath, "__weekly__", code)
+		if info, err := os.Stat(weeklyDir); err != nil || !info.IsDir() {
+			continue
+		}
+
+		coverFile := firstExistingWeeklyImage(weeklyDir, code, "-cover.jpg")
+		posterFile := firstExistingWeeklyImage(weeklyDir, code, "-poster.jpg")
+		if coverFile == "" {
+			coverFile = posterFile
+		}
+		if coverFile == "" {
+			continue
+		}
+
+		return CoverLookupResult{
+			ID:     code,
+			Cover:  mediaFileURL(filepath.Join("__weekly__", code), coverFile),
+			Poster: mediaFileURL(filepath.Join("__weekly__", code), posterFile),
+			Source: "weekly-file",
+		}, true
+	}
+	return CoverLookupResult{}, false
+}
+
+func firstExistingWeeklyImage(dir, code, suffix string) string {
+	exact := code + suffix
+	if _, err := os.Stat(filepath.Join(dir, exact)); err == nil {
+		return exact
+	}
+	entries, err := ioutil.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(strings.ToLower(entry.Name()), suffix) {
+			return entry.Name()
+		}
+	}
+	return ""
+}
+
+func mediaFileURL(dirName, filename string) string {
+	if filename == "" {
+		return ""
+	}
+	parts := strings.Split(filepath.ToSlash(filepath.Join(dirName, filename)), "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return "/file/" + strings.Join(parts, "/")
+}
+
 // addVideoHandler 添加视频到下载队列（不再直接调 Python）
 // weeklyHandler 获取本周新片推荐（含下载状态）
 func appendToQueue(id string) error {
@@ -285,10 +498,10 @@ var (
 	weeklyCacheMod  time.Time // weekly.json 的修改时间
 
 	// mp4/poster 目录索引缓存，避免每条条目都扫磁盘
-	mediaIndex       map[string]bool
-	mediaIndexMtx    sync.RWMutex
-	mediaIndexTime   time.Time
-	mediaIndexTTL    = 30 * time.Second
+	mediaIndex     map[string]bool
+	mediaIndexMtx  sync.RWMutex
+	mediaIndexTime time.Time
+	mediaIndexTTL  = 30 * time.Second
 )
 
 type WeeklyWatchedPayload struct {
@@ -833,6 +1046,87 @@ func queueHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+func onlineSearchHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodDelete {
+		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	targetURL := strings.TrimRight(queueAPI, "/") + r.URL.Path
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
+	proxyReq, err := http.NewRequest(r.Method, targetURL, nil)
+	if err != nil {
+		httpError(w, "Proxy error", http.StatusInternalServerError)
+		return
+	}
+	proxyReq.Header = r.Header.Clone()
+
+	resp, err := http.DefaultClient.Do(proxyReq)
+	if err != nil {
+		httpError(w, "Queue service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		httpError(w, "Proxy read error", http.StatusBadGateway)
+		return
+	}
+
+	if r.Method == http.MethodGet && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var item map[string]interface{}
+		if err := json.Unmarshal(body, &item); err == nil {
+			decorateOnlineSearchItem(item)
+			if nextBody, err := json.Marshal(item); err == nil {
+				body = nextBody
+			}
+		}
+	}
+
+	for k, v := range resp.Header {
+		for _, vv := range v {
+			w.Header().Add(k, vv)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(body)
+}
+
+func decorateOnlineSearchItem(item map[string]interface{}) {
+	rawID, _ := item["id"].(string)
+	if rawID == "" {
+		return
+	}
+	if localID, ok := findDownloadedLocalID(rawID); ok {
+		item["downloaded"] = true
+		item["localID"] = localID
+		item["localUrl"] = "/video/" + url.PathEscape(localID)
+		return
+	}
+	item["downloaded"] = false
+}
+
+func findDownloadedLocalID(rawID string) (string, bool) {
+	for _, code := range coverIDCandidates(rawID) {
+		videoDir, cleanID := resolveVideoDir(code)
+		if videoDir == "" || strings.HasPrefix(videoDir, "__") {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(basePath, videoDir)); err != nil || !info.IsDir() {
+			continue
+		}
+		mp4Path := findFileInDir(basePath, videoDir, ".mp4")
+		if info, err := os.Stat(mp4Path); err == nil && info.Size() > 10*1024*1024 {
+			return cleanID, true
+		}
+	}
+	return "", false
 }
 
 // blockActressHandler 添加演员到屏蔽列表

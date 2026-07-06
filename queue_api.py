@@ -6,7 +6,7 @@ AV/GARDEN Queue API v7 —
 """
 import os, sys, json, signal, time, subprocess, re, shutil, threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 QUEUE_PATH = os.environ.get("QUEUE_PATH", "/db/download_queue.txt")
 STATE_PATH = os.environ.get("STATE_PATH", "/db/queue_state.json")
@@ -20,6 +20,8 @@ FAILED_QUEUE_JSON_PATH = os.path.join(os.path.dirname(QUEUE_PATH) or "/db", "fai
 FAILED_QUEUE_PATH = os.path.join(os.path.dirname(QUEUE_PATH) or "/db", "failed_queue.txt")
 RETRY_PATH = os.path.join(os.path.dirname(QUEUE_PATH) or "/db", "retry_counts.json")
 WEEKLY_JSON = os.path.join(SAVE_PATH, "__weekly__", "weekly.json")
+ONLINE_DIR = os.path.join(SAVE_PATH, "__online__")
+ONLINE_PROXY = os.environ.get("PROXY", "") or None
 BLOCKED_ACTRESSES = set(
     name.strip() for name in os.environ.get("BLOCKED_ACTRESSES", "").split(",") if name.strip()
 )
@@ -541,6 +543,121 @@ def read_queue_file():
         return []
 
 
+def normalize_online_code(raw):
+    raw = unquote(str(raw or "")).strip().upper().replace("_", "-")
+    if not raw:
+        return ""
+    if "/" in raw or "\\" in raw or ".." in raw:
+        return ""
+    exact = re.search(r'([A-Z0-9]{2,}\d*-\d{2,6})', raw)
+    if exact:
+        return clean_avid(exact.group(1))
+    compact = re.fullmatch(r'([A-Z]{2,}\d*?)(\d{2,6})', raw)
+    if compact:
+        return f"{compact.group(1)}-{compact.group(2)}"
+    return ""
+
+
+def online_file_url(code, filename):
+    return "/file/" + "/".join(quote(part) for part in ["__online__", code.upper(), filename])
+
+
+def online_code_dir(code):
+    return os.path.join(ONLINE_DIR, code.upper())
+
+
+def cleanup_online_detail(code):
+    code = normalize_online_code(code)
+    if not code:
+        return False
+    target = online_code_dir(code)
+    root = os.path.abspath(ONLINE_DIR)
+    abs_target = os.path.abspath(target)
+    if not abs_target.startswith(root + os.sep):
+        return False
+    if os.path.isdir(abs_target):
+        shutil.rmtree(abs_target)
+        log(f"Cleaned online temp detail: {code}")
+        return True
+    return False
+
+
+def download_online_cover(code, image_url):
+    if not image_url:
+        return ""
+    code = code.upper()
+    filename = f"{code}-cover.jpg"
+    local_dir = online_code_dir(code)
+    local_path = os.path.join(local_dir, filename)
+    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+        return online_file_url(code, filename)
+    try:
+        from curl_cffi import requests
+        from src.weekly import javbus
+        javbus.set_proxy(ONLINE_PROXY)
+        os.makedirs(local_dir, exist_ok=True)
+        headers = dict(javbus.HEADERS)
+        headers["Referer"] = "https://www.javbus.com/"
+        resp = requests.get(
+            image_url,
+            proxies=javbus._proxies(),
+            headers=headers,
+            impersonate="chrome110",
+            timeout=15,
+        )
+        if resp.status_code >= 400 or not resp.content:
+            return image_url
+        with open(local_path, "wb") as f:
+            f.write(resp.content)
+        return online_file_url(code, filename)
+    except Exception as e:
+        log(f"Online cover download failed for {code}: {e}")
+        return image_url
+
+
+def build_online_detail(raw_code):
+    code = normalize_online_code(raw_code)
+    if not code:
+        return None, "invalid code"
+    try:
+        from src.weekly import javbus, sukebei
+        javbus.set_proxy(ONLINE_PROXY)
+        sukebei.set_proxy(ONLINE_PROXY)
+        html = javbus.fetch_page(code)
+        if not html:
+            return None, "detail not found"
+        item = javbus.parse_page(html) or {}
+        item["id"] = code
+        if not item.get("title"):
+            item["title"] = code
+        item.setdefault("titleZh", "")
+        item.setdefault("titleJp", "")
+        item.setdefault("releaseDate", "")
+        item.setdefault("duration", "")
+        item.setdefault("actresses", [])
+        item.setdefault("genres", [])
+        item.setdefault("fanarts", [])
+        item.setdefault("hasChinese", False)
+        item.setdefault("size", "")
+        item["source"] = "online"
+        item["downloaded"] = False
+
+        remote_cover = item.get("cover", "")
+        if remote_cover:
+            item["remoteCover"] = remote_cover
+            item["cover"] = download_online_cover(code, remote_cover)
+            item["poster"] = item["cover"]
+        else:
+            item.setdefault("poster", "")
+
+        if not item.get("magnet"):
+            item["magnet"] = sukebei.search(code, html)
+        return item, ""
+    except Exception as e:
+        log(f"Online detail lookup failed for {code}: {e}")
+        return None, "lookup failed"
+
+
 class QueueHandler(BaseHTTPRequestHandler):
     def _json(self, data, status=200):
         self.send_response(status)
@@ -555,7 +672,18 @@ class QueueHandler(BaseHTTPRequestHandler):
         self._json({})
 
     def do_GET(self):
-        path = self.path.rstrip("/")
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+        if path.startswith("/api/online-search/"):
+            raw_code = path.replace("/api/online-search/", "", 1)
+            item, error = build_online_detail(raw_code)
+            if not item:
+                status = 400 if error == "invalid code" else 404
+                self._json({"error": error}, status)
+                return
+            self._json(item)
+            return
+
         if path != "/api/queue":
             self._json({"error": "not found"}, 404)
             return
@@ -799,12 +927,21 @@ class QueueHandler(BaseHTTPRequestHandler):
             self._json({"status": "already in queue", "code": code})
 
     def do_DELETE(self):
-        path = self.path.rstrip("/")
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+        if path.startswith("/api/online-search/"):
+            raw_code = path.replace("/api/online-search/", "", 1)
+            code = normalize_online_code(raw_code)
+            if not code:
+                self._json({"error": "code required"}, 400)
+                return
+            removed = cleanup_online_detail(code)
+            self._json({"status": "cleaned", "code": code, "removed": removed})
+            return
+
         if not path.startswith("/api/queue/"):
             self._json({"error": "not found"}, 404)
             return
-        parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/")
         code = path.replace("/api/queue/", "").strip().upper()
         if not code:
             self._json({"error": "code required"}, 400)

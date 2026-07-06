@@ -230,10 +230,14 @@ export default {
             routeLoadToken: 0,
             routeLoading: false,
             navInFlight: false,
-            keyNavPressed: null
+            keyNavPressed: null,
+            onlineDetailCode: ''
         }
     },
     computed: {
+        isOnlineSource() {
+            return this.$route.query.source === 'online'
+        },
         fanartList() {
             return this.video?.fanarts || []
         },
@@ -262,6 +266,10 @@ export default {
         await this.loadRoute(this.id)
     },
     async beforeRouteUpdate(to, from, next) {
+        if (from.query?.source === 'online' &&
+            (to.query?.source !== 'online' || normalizeVideoID(to.params.id) !== normalizeVideoID(from.params.id))) {
+            await this.cleanupOnlineDetail()
+        }
         this.closeLightbox()
         this.unlockPageScroll()
         next()
@@ -273,8 +281,12 @@ export default {
         window.removeEventListener('av-garden-status', this.handleGlobalStatus)
         this.unlockPageScroll()
         if (this.genreHoverTimer) clearTimeout(this.genreHoverTimer)
+        if (this.isOnlineSource) this.cleanupOnlineDetail()
     },
-    beforeRouteLeave(to, from, next) {
+    async beforeRouteLeave(to, from, next) {
+        if (from.query?.source === 'online') {
+            await this.cleanupOnlineDetail()
+        }
         if (to.name !== 'weekly-detail') this.clearBrowseState()
         this.unlockPageScroll()
         next()
@@ -287,8 +299,10 @@ export default {
                 const loaded = await this.loadDetail(targetId, token)
                 if (!loaded || token !== this.routeLoadToken) return
 
-                this.trackView(targetId)
-                this.markWatched(targetId)
+                if (!this.isOnlineSource) {
+                    this.trackView(targetId)
+                    this.markWatched(targetId)
+                }
 
                 this.loadFavActresses()
                 this.syncQueueState(window.avGardenQueueStatus || [], targetId)
@@ -314,6 +328,10 @@ export default {
             const canonicalTarget = canonicalVideoID(targetId)
             this.detailMissing = false
             try {
+                if (this.isOnlineSource) {
+                    return await this.loadOnlineDetail(canonicalTarget || normalizedTarget, token)
+                }
+
                 if (this.setVideoFromCurrentList(targetId)) {
                     this.syncQueueState(window.avGardenQueueStatus || [], targetId)
                     return true
@@ -332,6 +350,41 @@ export default {
                 this.detailMissing = true
                 return false
             }
+        },
+        async loadOnlineDetail(targetId, token = this.routeLoadToken) {
+            const code = canonicalVideoID(targetId)
+            const resp = await fetch('/api/online-search/' + encodeURIComponent(code))
+            if (token !== this.routeLoadToken) return false
+            if (!resp.ok) {
+                this.video = null
+                this.allVideos = []
+                this.currentIndex = -1
+                this.detailMissing = true
+                return true
+            }
+            const item = await resp.json()
+            if (token !== this.routeLoadToken) return false
+            const video = { ...item, source: 'online' }
+            this.onlineDetailCode = normalizeVideoID(video.id || code)
+            this.allVideos = [video]
+            this.currentIndex = 0
+            this.video = video
+            this.detailMissing = false
+            this.clearBrowseState()
+            this.resetMediaState()
+            this.syncQueueState(window.avGardenQueueStatus || [], video.id)
+            return true
+        },
+        async cleanupOnlineDetail() {
+            const code = normalizeVideoID(this.onlineDetailCode || this.video?.id || this.id)
+            if (!code) return
+            this.onlineDetailCode = ''
+            try {
+                await fetch('/api/online-search/' + encodeURIComponent(code), {
+                    method: 'DELETE',
+                    keepalive: true
+                })
+            } catch(e) {}
         },
         async getWeeklyItems() {
             const now = Date.now()
@@ -451,6 +504,10 @@ export default {
         },
         goBackToWeekly() {
             this.clearBrowseState()
+            if (this.isOnlineSource) {
+                this.$router.push({ name: 'search' })
+                return
+            }
             this.$router.push('/weekly')
         },
         loadFavActresses() {
@@ -598,6 +655,10 @@ export default {
             } catch (e) {}
         },
         goNextAfterBlock() {
+            if (this.isOnlineSource) {
+                this.$router.replace({ name: 'search' })
+                return
+            }
             if (this.currentIndex < this.allVideos.length - 1) {
                 const next = this.allVideos[this.currentIndex + 1]
                 this.$router.replace({ name: 'weekly-detail', params: { id: next.id } })

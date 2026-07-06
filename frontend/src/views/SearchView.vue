@@ -10,6 +10,26 @@
         <div v-else-if="results.length === 0" class="empty">没有找到相关影片</div>
 
         <div v-else class="result-sections">
+            <div v-if="onlineResults.length" class="section">
+                <h2>在线作品 ({{ onlineResults.length }})</h2>
+                <div class="video-grid">
+                    <div v-for="video in onlineResults" :key="'online-' + video.id" class="video-card" @click="openResult(video)">
+                        <div class="cover-container">
+                            <img class="cover" :src="video.cover || video.poster || getDmmFallback(video)" :alt="video.title" loading="lazy">
+                            <div class="source-badge online">在线</div>
+                            <div v-if="video.downloaded" class="badge local-status">已在本地</div>
+                            <div v-if="video.hasChinese" class="badge chinese" :class="{ lower: video.downloaded }">中文</div>
+                        </div>
+                        <div class="info">
+                            <h3>{{ displayTitle(video) }}</h3>
+                            <div v-if="video.actresses && video.actresses.length" class="actresses">
+                                {{ video.actresses.slice(0, 3).join(' / ') }}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div v-if="localResults.length" class="section">
                 <h2>本地片 ({{ localResults.length }})</h2>
                 <div class="video-grid">
@@ -57,13 +77,24 @@ function normalizeText(value) {
     return String(value || '').trim().toUpperCase()
 }
 
+function normalizeCodeQuery(value) {
+    const raw = normalizeText(value).replace(/_/g, '-')
+    const exact = raw.match(/([A-Z0-9]{2,}\d*-\d{2,6})/)
+    if (exact) return exact[1]
+    const compact = raw.match(/^([A-Z]{2,}\d*?)(\d{2,6})$/)
+    if (compact) return `${compact[1]}-${compact[2]}`
+    return ''
+}
+
 export default {
     name: 'SearchView',
     data() {
         return {
             loading: true,
             localItems: [],
-            weeklyItems: []
+            weeklyItems: [],
+            onlineResult: null,
+            onlineError: ''
         }
     },
     computed: {
@@ -73,32 +104,55 @@ export default {
         normalizedQuery() {
             return normalizeText(this.query)
         },
+        onlineCodeQuery() {
+            return normalizeCodeQuery(this.query)
+        },
+        onlineResults() {
+            return this.onlineResult ? [{ ...this.onlineResult, source: 'online' }] : []
+        },
+        onlineResultIDs() {
+            return new Set(this.onlineResults.map(video => normalizeText(video.id)))
+        },
         localResults() {
             return this.localItems
                 .filter(video => this.matches(video))
+                .filter(video => !this.onlineResultIDs.has(normalizeText(video.id)))
                 .map(video => ({ ...video, source: 'local' }))
         },
         weeklyResults() {
             const localIDs = new Set(this.localResults.map(video => normalizeText(video.id)))
             return this.weeklyItems
                 .filter(video => !localIDs.has(normalizeText(video.id)))
+                .filter(video => !this.onlineResultIDs.has(normalizeText(video.id)))
                 .filter(video => this.matches(video))
                 .map(video => ({ ...video, source: 'weekly' }))
         },
         results() {
-            return [...this.localResults, ...this.weeklyResults]
+            return [...this.onlineResults, ...this.localResults, ...this.weeklyResults]
         }
     },
     async created() {
         await this.loadData()
     },
     async beforeRouteUpdate(to, from, next) {
+        await this.cleanupOnlineResult()
         next()
         await this.loadData()
+    },
+    async beforeRouteLeave(to, from, next) {
+        const keepForOnlineDetail = to.name === 'weekly-detail' &&
+            to.query?.source === 'online' &&
+            normalizeText(to.params?.id) === normalizeText(this.onlineResult?.id)
+        if (!keepForOnlineDetail) {
+            await this.cleanupOnlineResult()
+        }
+        next()
     },
     methods: {
         async loadData() {
             this.loading = true
+            this.onlineResult = null
+            this.onlineError = ''
             try {
                 const [local, weeklyResp] = await Promise.all([
                     videosApi.getVideoList(),
@@ -106,11 +160,41 @@ export default {
                 ])
                 this.localItems = Array.isArray(local) ? local : []
                 this.weeklyItems = weeklyResp.ok ? await weeklyResp.json() : []
+                if (this.onlineCodeQuery) {
+                    await this.loadOnlineResult(this.onlineCodeQuery)
+                }
             } catch (e) {
                 console.error(e)
             } finally {
                 this.loading = false
             }
+        },
+        async loadOnlineResult(code) {
+            try {
+                const resp = await fetch('/api/online-search/' + encodeURIComponent(code))
+                if (!resp.ok) {
+                    this.onlineError = 'online-not-found'
+                    return
+                }
+                const item = await resp.json()
+                if (item && item.id && normalizeText(item.id) === normalizeText(this.onlineCodeQuery)) {
+                    this.onlineResult = { ...item, source: 'online' }
+                }
+            } catch (e) {
+                console.error(e)
+                this.onlineError = 'online-error'
+            }
+        },
+        async cleanupOnlineResult() {
+            const code = normalizeText(this.onlineResult?.id)
+            if (!code) return
+            this.onlineResult = null
+            try {
+                await fetch('/api/online-search/' + encodeURIComponent(code), {
+                    method: 'DELETE',
+                    keepalive: true
+                })
+            } catch (e) {}
         },
         matches(video) {
             const q = this.normalizedQuery
@@ -137,8 +221,16 @@ export default {
             return c ? `https://pics.dmm.co.jp/mono/movie/adult/${c}/${c}pl.jpg` : ''
         },
         openResult(video) {
-            if (video.source === 'local') {
-                this.$router.push({ name: 'detail', params: { id: video.id } })
+            if (video.source === 'local' || video.downloaded) {
+                this.$router.push({ name: 'detail', params: { id: video.localID || video.id } })
+                return
+            }
+            if (video.source === 'online') {
+                this.$router.push({
+                    name: 'weekly-detail',
+                    params: { id: video.id },
+                    query: { source: 'online' }
+                })
                 return
             }
             this.$router.push({ name: 'weekly-detail', params: { id: video.id }, query: { tab: 'unwatched' } })
@@ -211,7 +303,7 @@ h2 {
 
 .video-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(166px, 1fr));
   gap: 18px;
   padding: 14px 0;
 }
@@ -245,7 +337,7 @@ h2 {
 .cover-container {
   position: relative;
   width: 100%;
-  padding-top: 137.78%;
+  aspect-ratio: 3 / 4.2;
   overflow: hidden;
   background: #f6edf2;
 }
@@ -256,6 +348,7 @@ h2 {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: right center;
 }
 
 .source-badge,
@@ -285,11 +378,27 @@ h2 {
   color: white;
 }
 
+.source-badge.online {
+  background: rgba(111, 87, 151, 0.9);
+  color: white;
+}
+
+.badge.local-status {
+  top: 8px;
+  left: 8px;
+  background: rgba(40, 122, 67, 0.9);
+  color: white;
+}
+
 .badge.chinese {
   top: 8px;
   left: 8px;
   background: rgba(161, 92, 0, 0.9);
   color: white;
+}
+
+.badge.chinese.lower {
+  top: 36px;
 }
 
 .info {

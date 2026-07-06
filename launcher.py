@@ -240,8 +240,9 @@ def main():
     env["HISTORY_PATH"] = env.get("HISTORY_PATH", "/db/download_history.json")
     
     log("Starting queue_api...")
+    queue_python = os.environ.get("QUEUE_API_PYTHON", "/app/venv/bin/python3")
     queue_proc = subprocess.Popen(
-        ["python3", "-u", QUEUE_API_PY],
+        [queue_python, "-u", QUEUE_API_PY],
         env=env,
         stdout=sys.stdout,
         stderr=sys.stderr

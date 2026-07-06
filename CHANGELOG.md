@@ -8,6 +8,9 @@
 
 ### Added
 
+- Added one-time online code search: exact code searches can fetch a JavBus detail, show it in the weekly-card style, reuse download/favorite/block actions, and mark already-local items with a local badge.
+- Added temporary online artwork cleanup under `__online__`: online search/detail cache is removed when leaving the online search flow and never written into `weekly.json`.
+- Added a `/api/cover/{id}` lookup endpoint that searches local media, current weekly data, and orphaned `__weekly__` cover folders without mutating `weekly.json`.
 - Added a local changelog workflow: completed work is recorded here before commit, then waits for manual testing confirmation.
 - Added a media-library NFO title backfill script to translate older local titles while preserving original titles.
 - Added preview artifacts for the 02 media-hub direction under `design-demos/`.
@@ -27,6 +30,9 @@
 
 ### Fixed
 
+- Matched search-result cover cropping to the weekly 未看 list by using the same right-side cover framing and card aspect.
+- Fixed one-time online search to reuse the worker `PROXY` setting for JavBus and magnet lookups.
+- Fixed Queue API startup to use the worker virtualenv Python, so online search can import the scraper dependencies installed in the worker image.
 - Fixed weekly detail queue buttons so a recent queue submission for one code no longer makes another code display as already queued.
 - Reduced weekly detail browsing stalls by reusing the detail component, caching weekly data briefly, and saving watched state without blocking page navigation.
 - Reset weekly detail cover and preview image nodes when changing items so the previous page's preview images do not remain visible while new images load.
