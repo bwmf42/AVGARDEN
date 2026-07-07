@@ -105,6 +105,9 @@ def main():
                 item["title"] = avid
 
             item["cover"] = javbus.download_cover(avid, item.get("cover", ""), WEEKLY_DIR, force=javbus.cover_needs_refresh(avid, WEEKLY_DIR))
+            remote_fanarts = item.get("fanarts", [])
+            item["remoteFanarts"] = remote_fanarts if isinstance(remote_fanarts, list) else []
+            item["fanarts"] = javbus.download_fanarts(avid, item["remoteFanarts"], WEEKLY_DIR)
             item["magnet"] = sukebei.search(avid, html)
             # 补齐缺失字段
             for k in ["titleZh", "titleJp", "poster", "duration", "actresses", "genres", "fanarts", "size"]:

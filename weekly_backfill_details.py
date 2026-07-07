@@ -87,10 +87,23 @@ def needs_backfill(item):
         or not item.get("duration")
         or not item.get("genres")
         or not item.get("fanarts")
+        or has_remote_fanarts(item)
         or not item.get("titleZh")
         or not cover
         or cover.startswith("http")
     )
+
+
+def has_remote_fanarts(item):
+    return bool(remote_fanart_source(item))
+
+
+def remote_fanart_source(item):
+    for key in ("remoteFanarts", "fanarts"):
+        fanarts = item.get(key)
+        if isinstance(fanarts, list) and any(str(url or "").startswith("http") for url in fanarts):
+            return fanarts
+    return []
 
 
 def missing_fields(item):
@@ -102,6 +115,8 @@ def missing_fields(item):
         missing.append("genres")
     if not item.get("fanarts"):
         missing.append("fanarts")
+    elif has_remote_fanarts(item):
+        missing.append("fanarts_local")
     if not item.get("magnet"):
         missing.append("magnet")
     if not item.get("titleZh"):
@@ -146,6 +161,7 @@ def backfill_item(item):
     changed = False
     html = ""
     need_detail = not item.get("duration") or not item.get("genres") or not item.get("fanarts")
+    need_fanarts = not item.get("fanarts") or has_remote_fanarts(item)
     need_cover = not item.get("cover") or str(item.get("cover")).startswith("http")
     refresh_cover = not need_cover and javbus.cover_needs_refresh(avid, WEEKLY_DIR)
 
@@ -161,6 +177,15 @@ def backfill_item(item):
         cover = javbus.download_cover(avid, item.get("cover", ""), WEEKLY_DIR, force=refresh_cover)
         if cover and cover != item.get("cover"):
             item["cover"] = cover
+            changed = True
+
+    if need_fanarts:
+        remote_fanarts = remote_fanart_source(item)
+        if remote_fanarts:
+            item["remoteFanarts"] = remote_fanarts
+        fanarts = javbus.download_fanarts(avid, remote_fanarts, WEEKLY_DIR)
+        if fanarts != item.get("fanarts"):
+            item["fanarts"] = fanarts
             changed = True
 
     if not item.get("magnet"):

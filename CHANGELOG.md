@@ -30,6 +30,7 @@
 
 ### Fixed
 
+- Fixed broken weekly and online-search preview images by downloading JavBus sample images into local `__weekly__` / `__online__` folders, retrying DMM images through the working `.com` image host, returning `/file/...` URLs, and lazily localizing older weekly detail pages when opened.
 - Fixed exact code search without a dash so queued weekly items open the weekly detail instead of being replaced by a one-time online result.
 - Fixed online search local badges so active queued/downloading items are not treated as completed local media.
 - Fixed weekly `downloaded` status so active queue items are not treated as completed just because a partial `.mp4` exists.

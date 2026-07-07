@@ -311,6 +311,7 @@ func main() {
 	mux.HandleFunc("/api/videos/", videoDetailHandler)
 	mux.HandleFunc("/api/cover/", coverHandler)
 	mux.HandleFunc("/api/online-search/", onlineSearchHandler)
+	mux.HandleFunc("/api/weekly-fanarts/", onlineSearchHandler)
 	mux.HandleFunc("/api/addvideo/", addVideoHandler)
 	mux.HandleFunc("/file/", imageHandler)
 	mux.HandleFunc("/api/weekly", weeklyHandler)

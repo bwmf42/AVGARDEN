@@ -27,6 +27,7 @@ BLOCKED_ACTRESSES = set(
 )
 weekly_scrape_proc = None
 weekly_scrape_lock = threading.Lock()
+weekly_json_lock = threading.Lock()
 
 def clean_avid(name):
     """从文件夹/种子名中提取标准车牌号（去掉 -C, ch, 中文字幕 等后缀）"""
@@ -650,11 +651,61 @@ def build_online_detail(raw_code):
         else:
             item.setdefault("poster", "")
 
+        item["fanarts"] = javbus.download_fanarts(code, item.get("fanarts", []), ONLINE_DIR)
+
         if not item.get("magnet"):
             item["magnet"] = sukebei.search(code, html)
         return item, ""
     except Exception as e:
         log(f"Online detail lookup failed for {code}: {e}")
+        return None, "lookup failed"
+
+
+def localize_weekly_fanarts(raw_code):
+    code = normalize_online_code(raw_code)
+    if not code:
+        return None, "invalid code"
+    if not os.path.exists(WEEKLY_JSON):
+        return None, "weekly not found"
+    try:
+        from src.weekly import javbus
+        javbus.set_proxy(ONLINE_PROXY)
+        with weekly_json_lock:
+            with open(WEEKLY_JSON, "r", encoding="utf-8") as f:
+                items = json.load(f)
+            if not isinstance(items, list):
+                return None, "weekly not found"
+
+            target = None
+            for item in items:
+                item_id = normalize_online_code(item.get("id", ""))
+                if item_id == code:
+                    target = item
+                    break
+            if target is None:
+                return None, "detail not found"
+
+            remote_fanarts = target.get("remoteFanarts") if isinstance(target.get("remoteFanarts"), list) else []
+            fanarts = target.get("fanarts") if isinstance(target.get("fanarts"), list) else []
+            source_fanarts = remote_fanarts or fanarts
+            if not fanarts:
+                html = javbus.fetch_page(code)
+                detail = javbus.parse_page(html) if html else {}
+                source_fanarts = detail.get("fanarts") if isinstance(detail.get("fanarts"), list) else []
+
+            if any(str(url or "").startswith("http") for url in source_fanarts):
+                target["remoteFanarts"] = source_fanarts
+            local_fanarts = javbus.download_fanarts(code, source_fanarts, os.path.join(SAVE_PATH, "__weekly__"))
+            next_fanarts = local_fanarts if local_fanarts else ([] if source_fanarts else fanarts)
+            if target.get("remoteFanarts") != remote_fanarts or next_fanarts != target.get("fanarts"):
+                target["fanarts"] = next_fanarts
+                tmp = WEEKLY_JSON + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(items, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, WEEKLY_JSON)
+            return {"id": target.get("id") or code, "fanarts": local_fanarts}, ""
+    except Exception as e:
+        log(f"Weekly fanart localization failed for {code}: {e}")
         return None, "lookup failed"
 
 
@@ -674,6 +725,16 @@ class QueueHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+        if path.startswith("/api/weekly-fanarts/"):
+            raw_code = path.replace("/api/weekly-fanarts/", "", 1)
+            item, error = localize_weekly_fanarts(raw_code)
+            if not item:
+                status = 400 if error == "invalid code" else 404
+                self._json({"error": error}, status)
+                return
+            self._json(item)
+            return
+
         if path.startswith("/api/online-search/"):
             raw_code = path.replace("/api/online-search/", "", 1)
             item, error = build_online_detail(raw_code)

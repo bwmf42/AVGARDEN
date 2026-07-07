@@ -18,8 +18,10 @@ def set_proxy(proxy):
 def _proxies():
     return {"http": PROXY, "https": PROXY} if PROXY else None
 
-def _weekly_file_url(avid, filename):
-    return f"/file/__weekly__/{avid.upper()}/{filename}"
+def _file_url(save_dir, avid, filename):
+    bucket = os.path.basename(os.path.normpath(save_dir)) or "__weekly__"
+    parts = [bucket, avid.upper(), filename]
+    return "/file/" + "/".join(urllib.parse.quote(part) for part in parts)
 
 def _cover_paths(avid, save_dir):
     code = avid.upper()
@@ -39,6 +41,46 @@ def cover_needs_refresh(avid, save_dir, min_width=300, min_height=400, min_bytes
         return bool(size and (size[0] < min_width or size[1] < min_height))
     except OSError:
         return False
+
+def _fanart_paths(avid, save_dir, index):
+    code = avid.upper()
+    local_dir = os.path.join(save_dir, code)
+    filename = f"{code}-fanart-{index}.jpg"
+    return local_dir, filename, os.path.join(local_dir, filename)
+
+def _image_url_candidates(url):
+    candidates = []
+    replacements = (
+        ("https://awsimgsrc.dmm.co.jp/", "https://awsimgsrc.dmm.com/"),
+        ("https://pics.dmm.co.jp/digital/video/", "https://awsimgsrc.dmm.com/pics_dig/digital/video/"),
+        ("http://pics.dmm.co.jp/digital/video/", "https://awsimgsrc.dmm.com/pics_dig/digital/video/"),
+    )
+    for old, new in replacements:
+        if isinstance(url, str) and url.startswith(old):
+            candidates.append(new + url[len(old):])
+    candidates.append(url)
+    result = []
+    seen = set()
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            result.append(candidate)
+    return result
+
+def _fetch_image_content(url, referer, timeout=15):
+    h = dict(HEADERS)
+    h["Referer"] = referer
+    last_error = None
+    for candidate in _image_url_candidates(url):
+        try:
+            r = requests.get(candidate, proxies=_proxies(), headers=h,
+                            impersonate="chrome110", timeout=timeout)
+            if r.status_code < 400 and r.content:
+                return r.content
+            last_error = f"status {r.status_code}"
+        except Exception as e:
+            last_error = e
+    raise RuntimeError(last_error or "image download failed")
 
 def _image_size(path):
     with open(path, "rb") as f:
@@ -198,16 +240,40 @@ def download_cover(avid, url, save_dir, force=False):
         return url
     local_dir, cover_name, local_path = _cover_paths(avid, save_dir)
     if os.path.exists(local_path) and not force:
-        return _weekly_file_url(avid, cover_name)
+        return _file_url(save_dir, avid, cover_name)
     try:
         os.makedirs(local_dir, exist_ok=True)
-        h = dict(HEADERS)
-        h["Referer"] = f"https://{DOMAIN}/"
-        r = requests.get(url, proxies=_proxies(), headers=h,
-                        impersonate="chrome110", timeout=15)
+        content = _fetch_image_content(url, f"https://{DOMAIN}/", timeout=15)
         with open(local_path, "wb") as f:
-            f.write(r.content)
-        return _weekly_file_url(avid, cover_name)
+            f.write(content)
+        return _file_url(save_dir, avid, cover_name)
     except Exception as e:
         print(f"[JavBus] Cover {avid}: {e}")
         return url
+
+def download_fanarts(avid, urls, save_dir, force=False, limit=0):
+    """下载详情页预览图到本地，返回 /file/... URL 列表。"""
+    if not isinstance(urls, list) or not urls:
+        return []
+    local_urls = []
+    for index, url in enumerate(urls, 1):
+        if not url:
+            continue
+        if limit and index > limit:
+            break
+        if isinstance(url, str) and url.startswith("/file/"):
+            local_urls.append(url)
+            continue
+        local_dir, filename, local_path = _fanart_paths(avid, save_dir, index)
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 0 and not force:
+            local_urls.append(_file_url(save_dir, avid, filename))
+            continue
+        try:
+            os.makedirs(local_dir, exist_ok=True)
+            content = _fetch_image_content(url, f"https://{DOMAIN}/{avid.upper()}", timeout=15)
+            with open(local_path, "wb") as f:
+                f.write(content)
+            local_urls.append(_file_url(save_dir, avid, filename))
+        except Exception as e:
+            print(f"[JavBus] Fanart {avid} #{index}: {e}")
+    return local_urls

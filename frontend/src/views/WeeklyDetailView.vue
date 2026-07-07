@@ -206,6 +206,10 @@ function canonicalVideoID(id) {
     return sourcePrefixed ? sourcePrefixed[1] : normalized
 }
 
+function hasRemoteFanarts(video) {
+    return Array.isArray(video?.fanarts) && video.fanarts.some(img => /^https?:\/\//i.test(String(img || '')))
+}
+
 export default {
     props: ['id'],
     data() {
@@ -334,6 +338,7 @@ export default {
 
                 if (this.setVideoFromCurrentList(targetId)) {
                     this.syncQueueState(window.avGardenQueueStatus || [], targetId)
+                    this.ensureLocalFanarts(token)
                     return true
                 }
 
@@ -343,6 +348,7 @@ export default {
                 if (token !== this.routeLoadToken) return false
                 this.syncQueueState(window.avGardenQueueStatus || [], targetId)
                 this.detailMissing = !this.video
+                this.ensureLocalFanarts(token)
                 return true
             } catch (e) {
                 if (token !== this.routeLoadToken) return false
@@ -450,6 +456,28 @@ export default {
             }
             this.detailMissing = false
             return true
+        },
+        async ensureLocalFanarts(token = this.routeLoadToken) {
+            if (this.isOnlineSource || !hasRemoteFanarts(this.video)) return
+            const code = canonicalVideoID(this.video.id || this.id)
+            const previous = this.video
+            const pendingVideo = { ...previous, fanarts: [] }
+            this.video = pendingVideo
+            if (this.currentIndex >= 0) this.allVideos.splice(this.currentIndex, 1, pendingVideo)
+            try {
+                const resp = await fetch('/api/weekly-fanarts/' + encodeURIComponent(code))
+                if (token !== this.routeLoadToken || !resp.ok) return
+                const data = await resp.json()
+                const fanarts = Array.isArray(data.fanarts) ? data.fanarts : []
+                const nextVideo = { ...this.video, fanarts }
+                this.video = nextVideo
+                if (this.currentIndex >= 0) this.allVideos.splice(this.currentIndex, 1, nextVideo)
+                if (weeklyDetailCache.items) {
+                    weeklyDetailCache.items = weeklyDetailCache.items.map(item =>
+                        normalizeVideoID(item.id) === normalizeVideoID(nextVideo.id) ? nextVideo : item
+                    )
+                }
+            } catch(e) {}
         },
         resetMediaState() {
             this.closeLightbox()

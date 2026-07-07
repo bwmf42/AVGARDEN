@@ -1118,7 +1118,8 @@ func onlineSearchHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Method == http.MethodGet && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if strings.HasPrefix(r.URL.Path, "/api/online-search/") &&
+		r.Method == http.MethodGet && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		var item map[string]interface{}
 		if err := json.Unmarshal(body, &item); err == nil {
 			decorateOnlineSearchItem(item)
