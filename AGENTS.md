@@ -47,6 +47,15 @@ A/GARDEN 是面向 NAS 和家庭服务器的媒体下载、整理和浏览系统
 - 手动刮削按钮触发的是 worker 容器内的 `weekly_updater.py`，不要让 Go server 直接依赖 Python 环境。
 - 屏蔽演员、屏蔽标签、收藏演员、标题关键词是持久化配置，改动前要确认对应接口和文件。
 
+## 每日推荐图片刮削规则
+
+- 每日推荐封面和详情预览图应尽量本地化到 `/data/__weekly__/{番号}/`，前端优先使用 `/file/__weekly__/...`，避免用户浏览时再等外站图片。
+- JavBus 详情页样张来自 `<a class="sample-box" ...>`；如果详情页没有 `sample-box`，不要把它当作下载失败，先确认源站是否本来没有预览图。
+- DMM 图片源优先保留现有 `.co.jp` 路径，但下载失败时要尝试 `.com` / `awsimgsrc.dmm.com` 变体。
+- MGStage 图片源常见域名是 `image.mgstage.com`；这类图不要只用 JavBus Referer 和代理下载，应优先直连，并尝试 `https://www.mgstage.com/product/product_detail/`、`https://www.mgstage.com/`、空 Referer，再兜底代理。
+- `queue_api.py` 的在线/weekly 精确番号归一化不能套用本地文件夹清洗规则；`300MIUM-1395` 这类数字开头的真实番号必须保留，只有本地文件夹名清洗场景才把 `857OMG-032` 这类源站前缀还原成 `OMG-032`。
+- 只补用户当前筛选出的 weekly 条目时，应从 `/api/weekly`、`/api/queue/`、`/api/weekly-watched` 复现前端筛选结果；不要扩大到全量 `weekly.json`。
+
 ## 前端设计规则
 
 当前视觉方向是粉白色 A/GARDEN：

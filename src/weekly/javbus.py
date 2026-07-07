@@ -67,13 +67,45 @@ def _image_url_candidates(url):
             result.append(candidate)
     return result
 
-def _fetch_image_content(url, referer, timeout=15):
-    h = dict(HEADERS)
-    h["Referer"] = referer
-    last_error = None
+def _image_fetch_attempts(url, referer):
+    proxy = _proxies()
     for candidate in _image_url_candidates(url):
+        host = urllib.parse.urlparse(candidate).netloc.lower()
+        if host == "image.mgstage.com":
+            referers = [
+                "https://www.mgstage.com/product/product_detail/",
+                "https://www.mgstage.com/",
+                "",
+                referer,
+            ]
+            proxy_options = [None]
+            if proxy:
+                proxy_options.append(proxy)
+        else:
+            referers = [referer]
+            proxy_options = [proxy]
+            if proxy:
+                proxy_options.append(None)
+
+        seen = set()
+        for proxies in proxy_options:
+            for ref in referers:
+                key = (candidate, ref, bool(proxies))
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield candidate, ref, proxies
+
+def _fetch_image_content(url, referer, timeout=15):
+    last_error = None
+    for candidate, ref, proxies in _image_fetch_attempts(url, referer):
+        h = dict(HEADERS)
+        if ref:
+            h["Referer"] = ref
+        else:
+            h.pop("Referer", None)
         try:
-            r = requests.get(candidate, proxies=_proxies(), headers=h,
+            r = requests.get(candidate, proxies=proxies, headers=h,
                             impersonate="chrome110", timeout=timeout)
             if r.status_code < 400 and r.content:
                 return r.content

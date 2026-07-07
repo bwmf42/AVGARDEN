@@ -552,8 +552,8 @@ def normalize_online_code(raw):
         return ""
     exact = re.search(r'([A-Z0-9]{2,}\d*-\d{2,6})', raw)
     if exact:
-        return clean_avid(exact.group(1))
-    compact = re.fullmatch(r'([A-Z]{2,}\d*?)(\d{2,6})', raw)
+        return exact.group(1)
+    compact = re.fullmatch(r'([A-Z0-9]{2,}?)(\d{2,6})', raw)
     if compact:
         return f"{compact.group(1)}-{compact.group(2)}"
     return ""
