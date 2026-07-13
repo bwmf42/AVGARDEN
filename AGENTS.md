@@ -98,6 +98,12 @@ curl -sS http://127.0.0.1:31471/api/version
 curl -sS http://127.0.0.1:31471/api/queue-status
 ```
 
+## 部署后镜像清理
+
+- 新容器必须先确认处于 `Up`，且版本、队列等关键接口健康，再清理被替换的旧镜像。
+- 清理前核对所有容器实际引用的 image ID，只删除未被引用的旧 `avgarden-server` / `avgarden-worker` 镜像。
+- 不使用 `docker image prune -a` 等宽泛清理命令，不删除当前镜像、其它项目镜像或仍被容器引用的共享镜像；清理后再次检查容器和接口。
+
 ## Git 与 Changelog 规则
 
 - 本仓库已初始化本地 Git；不要为“初始化”重复创建仓库。
