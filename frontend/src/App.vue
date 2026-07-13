@@ -141,6 +141,8 @@
 </template>
 
 <script>
+import { normalizeVideoId } from './utils/videoId'
+
 function normalizeStatusID(id) {
   return String(id || '').trim().toUpperCase()
 }
@@ -152,7 +154,7 @@ function normalizeVideoCode(id) {
 }
 
 function normalizeInputID(value) {
-  return normalizeStatusID(value)
+  return normalizeVideoId(value)
 }
 
 export default {
@@ -212,11 +214,7 @@ export default {
     async handleAddVideo() {
       const code = normalizeInputID(this.inputContent)
       if (!code) {
-        this.showToast('请输入番号', 'warn')
-        return
-      }
-      if (!/^([A-Z0-9]+)-\d+$/.test(code)) {
-        this.showToast('格式错误，请输入 ABC-123 这样的番号', 'warn')
+        this.showToast(this.inputContent.trim() ? '无法识别这个番号，请检查输入' : '请输入番号', 'warn')
         return
       }
       this.isAdding = true

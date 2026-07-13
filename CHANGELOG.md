@@ -8,6 +8,8 @@
 
 ### Added
 
+- Added shared video ID normalization coverage across Vue, Go, and Python for dashed, compact, numeric-leading, FC2, multi-part, numeric-date, and selected special formats.
+- Added automated tests for video ID safety, queue file concurrency, tracked-process cancellation, exact qB task removal, Queue API polling, Go blocked-list concurrency, and JSON escaping.
 - Added one-time online code search: exact code searches can fetch a JavBus detail, show it in the weekly-card style, reuse download/favorite/block actions, and mark already-local items with a local badge.
 - Added temporary online artwork cleanup under `__online__`: online search/detail cache is removed when leaving the online search flow and never written into `weekly.json`.
 - Added a `/api/cover/{id}` lookup endpoint that searches local media, current weekly data, and orphaned `__weekly__` cover folders without mutating `weekly.json`.
@@ -30,6 +32,12 @@
 
 ### Fixed
 
+- Fixed unsafe queue input handling by separating format recognition from path safety, rejecting control/path characters, and replacing shell-built downloader commands with argument-based subprocess execution.
+- Fixed queue deletion so it sends a cross-process cancellation request, terminates tracked online downloader/ffmpeg processes, removes matching tagged qB tasks, and only hides the frontend row after a successful API response.
+- Fixed queue and retry state races with locked, atomic queue/JSON writes shared by Queue API, Worker, and Launcher.
+- Fixed repeated qB polling by fetching the torrent list once per queue-status request instead of once per queued item.
+- Fixed worker image builds on the NAS by using the configured China-accessible Go module proxy and pinning the runtime to Alpine 3.21/Python 3.12 instead of an incompatible moving `latest` image.
+- Fixed Go blocked/favorite list concurrent map access, Queue API proxy requests without timeouts, invalid hand-built JSON responses, wildcard CORS credentials, and the hard-coded actress-age year.
 - Fixed MGStage-hosted weekly preview image localization by retrying those images direct with MGStage referers, so filtered weekly backfills can save local fanarts instead of failing through the proxy/JavBus referer path.
 - Fixed online/weekly exact code normalization so numeric-leading codes such as `300MIUM-1395` are not mistaken for source-prefixed folder names.
 - Fixed broken weekly and online-search preview images by downloading JavBus sample images into local `__weekly__` / `__online__` folders, retrying DMM images through the working `.com` image host, returning `/file/...` URLs, and lazily localizing older weekly detail pages when opened.

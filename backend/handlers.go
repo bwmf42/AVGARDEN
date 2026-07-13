@@ -202,8 +202,6 @@ type CoverLookupResult struct {
 	Source string `json:"source"`
 }
 
-var exactAvidPattern = regexp.MustCompile(`(?i)^[A-Z0-9]+-\d+$`)
-
 // coverHandler returns the best known cover URL for a code without mutating weekly.json.
 func coverHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -240,7 +238,7 @@ func coverIDCandidates(raw string) []string {
 	if raw == "" {
 		return nil
 	}
-	raw = strings.ToUpper(strings.ReplaceAll(raw, "_", "-"))
+	raw = strings.ToUpper(raw)
 
 	candidates := make([]string, 0, 2)
 	add := func(value string) {
@@ -256,8 +254,9 @@ func coverIDCandidates(raw string) []string {
 		candidates = append(candidates, value)
 	}
 
-	if exactAvidPattern.MatchString(raw) {
-		add(raw)
+	if normalized := normalizeUserVideoID(raw); normalized != "" {
+		add(normalized)
+		return candidates
 	}
 	if matches := avidPattern.FindStringSubmatch(raw); len(matches) >= 3 {
 		add(matches[1] + "-" + matches[2])
@@ -319,7 +318,7 @@ func findWeeklyJSONCover(candidates []string) (CoverLookupResult, bool) {
 	candidateSet := make(map[string]bool, len(candidates)*2)
 	for _, candidate := range candidates {
 		candidateSet[candidate] = true
-		candidateSet[cleanVideoID(candidate)] = true
+		candidateSet[comparableVideoID(candidate)] = true
 	}
 
 	for _, item := range items {
@@ -328,7 +327,7 @@ func findWeeklyJSONCover(candidates []string) (CoverLookupResult, bool) {
 			continue
 		}
 		itemID = strings.ToUpper(strings.TrimSpace(itemID))
-		if !candidateSet[itemID] && !candidateSet[cleanVideoID(itemID)] {
+		if !candidateSet[itemID] && !candidateSet[comparableVideoID(itemID)] {
 			continue
 		}
 
@@ -868,6 +867,8 @@ func warmWeeklyCache() {
 }
 
 func filterWeeklyItems(items []map[string]interface{}, mp4Index map[string]bool, activeQueueIndex map[string]string) []map[string]interface{} {
+	blockedListsMtx.RLock()
+	defer blockedListsMtx.RUnlock()
 	filtered := make([]map[string]interface{}, 0)
 	for _, item := range items {
 		// 过滤屏蔽演员
@@ -936,7 +937,7 @@ func filterWeeklyItems(items []map[string]interface{}, mp4Index map[string]bool,
 		// 同步 downloaded：用媒体索引缓存查 mp4，避免逐条扫磁盘
 		if id, ok := item["id"].(string); ok {
 			code := strings.ToUpper(id)
-			if status, active := activeQueueIndex[cleanVideoID(code)]; active {
+			if status, active := activeQueueIndex[comparableVideoID(code)]; active {
 				item["downloaded"] = false
 				item["queueStatus"] = status
 			} else if mp4Index[code] {
@@ -960,7 +961,7 @@ func getActiveQueueIndex() map[string]string {
 		return index
 	}
 	for _, item := range items {
-		code := cleanVideoID(item.Code)
+		code := comparableVideoID(item.Code)
 		status := strings.ToLower(strings.TrimSpace(item.Status))
 		if code == "" || status == "" || status == "done" {
 			continue
@@ -1053,18 +1054,23 @@ func queueHandler(w http.ResponseWriter, r *http.Request) {
 		var payload struct {
 			Code string `json:"code"`
 		}
-		if json.Unmarshal(body, &payload) == nil {
-			code := strings.ToUpper(strings.TrimSpace(payload.Code))
-			if code != "" {
-				failedAckMtx.Lock()
-				acked := loadFailedAckIDs()
-				if acked[code] {
-					delete(acked, code)
-					saveFailedAckIDs(acked)
-				}
-				failedAckMtx.Unlock()
-			}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			httpError(w, "Invalid JSON", http.StatusBadRequest)
+			return
 		}
+		code := normalizeUserVideoID(payload.Code)
+		if code == "" {
+			httpError(w, "Invalid video ID", http.StatusBadRequest)
+			return
+		}
+		body, _ = json.Marshal(map[string]string{"code": code})
+		failedAckMtx.Lock()
+		acked := loadFailedAckIDs()
+		if acked[code] {
+			delete(acked, code)
+			saveFailedAckIDs(acked)
+		}
+		failedAckMtx.Unlock()
 	}
 	proxyReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -1073,7 +1079,7 @@ func queueHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	proxyReq.Header = r.Header.Clone()
 	proxyReq.ContentLength = int64(len(body))
-	resp, err := http.DefaultClient.Do(proxyReq)
+	resp, err := queueHTTPClient.Do(proxyReq)
 	if err != nil {
 		httpError(w, "Queue service unavailable", http.StatusServiceUnavailable)
 		return
@@ -1105,7 +1111,7 @@ func onlineSearchHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	proxyReq.Header = r.Header.Clone()
 
-	resp, err := http.DefaultClient.Do(proxyReq)
+	resp, err := onlineQueueHTTPClient.Do(proxyReq)
 	if err != nil {
 		httpError(w, "Queue service unavailable", http.StatusServiceUnavailable)
 		return
@@ -1173,7 +1179,7 @@ func activeQueueStatusForID(rawID string) (string, bool) {
 			continue
 		}
 		for _, candidate := range candidates {
-			if cleanVideoID(item.Code) == cleanVideoID(candidate) {
+			if comparableVideoID(item.Code) == comparableVideoID(candidate) {
 				return status, true
 			}
 		}
@@ -1202,7 +1208,9 @@ func findDownloadedLocalID(rawID string) (string, bool) {
 func blockActressHandler(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/block-actress/")
 	if r.Method == http.MethodGet {
+		blockedListsMtx.RLock()
 		keys := orderedActiveValuesNewestFirst(blockedActressesFile, blockedActresses)
+		blockedListsMtx.RUnlock()
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(keys)
 		return
@@ -1219,22 +1227,26 @@ func blockActressHandler(w http.ResponseWriter, r *http.Request) {
 		httpError(w, "Failed to block", http.StatusInternalServerError)
 		return
 	}
+	blockedListsMtx.Lock()
 	blockedActresses[name] = true
+	blockedListsMtx.Unlock()
 	logger.Printf("Blocked actress: %s", name)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Write([]byte(`{"status":"blocked","name":"` + name + `"}`))
+	json.NewEncoder(w).Encode(map[string]string{"status": "blocked", "name": name})
 }
 
 // blockGenreHandler 添加标签到屏蔽列表
 func blockGenreHandler(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/block-genre/")
 	if r.Method == http.MethodGet {
+		blockedListsMtx.RLock()
 		keys := make([]string, 0, len(blockedGenres))
 		for k := range blockedGenres {
 			if blockedGenres[k] {
 				keys = append(keys, k)
 			}
 		}
+		blockedListsMtx.RUnlock()
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(keys)
 		return
@@ -1254,10 +1266,12 @@ func blockGenreHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	f.WriteString(name + "\n")
+	blockedListsMtx.Lock()
 	blockedGenres[name] = true
+	blockedListsMtx.Unlock()
 	logger.Printf("Blocked genre: %s", name)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Write([]byte(`{"status":"blocked","name":"` + name + `"}`))
+	json.NewEncoder(w).Encode(map[string]string{"status": "blocked", "name": name})
 }
 
 func getQBCookie() string {
@@ -1281,7 +1295,11 @@ var (
 	qbTorrentCacheTime time.Time
 )
 
-var qbHTTPClient = &http.Client{Timeout: 30 * time.Second}
+var (
+	qbHTTPClient          = &http.Client{Timeout: 30 * time.Second}
+	queueHTTPClient       = &http.Client{Timeout: 15 * time.Second}
+	onlineQueueHTTPClient = &http.Client{Timeout: 90 * time.Second}
+)
 
 type FailedQueueRecord struct {
 	Code     string `json:"code"`
@@ -1477,12 +1495,14 @@ func videoStatusHandler(w http.ResponseWriter, r *http.Request) {
 func blockKeywordHandler(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/block-keyword/")
 	if r.Method == http.MethodGet {
+		blockedListsMtx.RLock()
 		keys := make([]string, 0, len(blockedKeywords))
 		for k := range blockedKeywords {
 			if blockedKeywords[k] {
 				keys = append(keys, k)
 			}
 		}
+		blockedListsMtx.RUnlock()
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(keys)
 		return
@@ -1492,6 +1512,7 @@ func blockKeywordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodPost {
+		blockedListsMtx.Lock()
 		if blockedKeywords[name] {
 			delete(blockedKeywords, name)
 		} else {
@@ -1502,9 +1523,11 @@ func blockKeywordHandler(w http.ResponseWriter, r *http.Request) {
 				f.Close()
 			}
 		}
-		logger.Printf("Blocked keyword toggled: %s = %v", name, blockedKeywords[name])
+		blocked := blockedKeywords[name]
+		blockedListsMtx.Unlock()
+		logger.Printf("Blocked keyword toggled: %s = %v", name, blocked)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		json.NewEncoder(w).Encode(map[string]interface{}{"keyword": name, "blocked": blockedKeywords[name]})
+		json.NewEncoder(w).Encode(map[string]interface{}{"keyword": name, "blocked": blocked})
 		return
 	}
 	httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1513,6 +1536,8 @@ func blockKeywordHandler(w http.ResponseWriter, r *http.Request) {
 func favActressHandler(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/fav-actress/")
 	if r.Method == http.MethodGet {
+		blockedListsMtx.RLock()
+		defer blockedListsMtx.RUnlock()
 		if name == "" {
 			keys := make([]string, 0, len(favActresses))
 			for k := range favActresses {
@@ -1529,6 +1554,7 @@ func favActressHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodPost {
+		blockedListsMtx.Lock()
 		if favActresses[name] {
 			favActresses[name] = false
 			rewriteFavFile(favActresses)
@@ -1540,9 +1566,11 @@ func favActressHandler(w http.ResponseWriter, r *http.Request) {
 				f.Close()
 			}
 		}
-		logger.Printf("Favorite actress toggled: %s = %v", name, favActresses[name])
+		favorited := favActresses[name]
+		blockedListsMtx.Unlock()
+		logger.Printf("Favorite actress toggled: %s = %v", name, favorited)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		json.NewEncoder(w).Encode(map[string]interface{}{"name": name, "favorited": favActresses[name]})
+		json.NewEncoder(w).Encode(map[string]interface{}{"name": name, "favorited": favorited})
 		return
 	}
 	httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1725,7 +1753,7 @@ func weeklyScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := http.Post(strings.TrimRight(queueAPI, "/")+"/api/weekly-scrape", "application/json", nil)
+	resp, err := queueHTTPClient.Post(strings.TrimRight(queueAPI, "/")+"/api/weekly-scrape", "application/json", nil)
 	if err != nil {
 		logger.Printf("Manual weekly scrape request failed: %v", err)
 		httpError(w, "Queue API unavailable", http.StatusBadGateway)
@@ -1753,7 +1781,7 @@ func weeklyScrapeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func loadQueueAPIItems() ([]queueAPIItem, error) {
-	resp, err := http.Get(queueAPI + "/api/queue")
+	resp, err := queueHTTPClient.Get(queueAPI + "/api/queue")
 	if err != nil {
 		return nil, err
 	}

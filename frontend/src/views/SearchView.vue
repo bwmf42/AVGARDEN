@@ -72,6 +72,7 @@
 
 <script>
 import videosApi from '../api/videos'
+import { normalizeVideoId } from '../utils/videoId'
 
 function normalizeText(value) {
     return String(value || '').trim().toUpperCase()
@@ -82,12 +83,7 @@ function compactText(value) {
 }
 
 function normalizeCodeQuery(value) {
-    const raw = normalizeText(value).replace(/_/g, '-')
-    const exact = raw.match(/([A-Z0-9]{2,}\d*-\d{2,6})/)
-    if (exact) return exact[1]
-    const compact = raw.match(/^([A-Z]{2,}\d*?)(\d{2,6})$/)
-    if (compact) return `${compact[1]}-${compact[2]}`
-    return ''
+    return normalizeVideoId(value)
 }
 
 export default {

@@ -28,4 +28,4 @@ class DownloaderMgr:
         self.downloaders[downloader.getDownloaderName()] = downloader
     
     def GetDownloader(self, downloaderName: str) -> Optional[Downloader]:
-        return self.downloaders[downloaderName]
+        return self.downloaders.get(downloaderName)

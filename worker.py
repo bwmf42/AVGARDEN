@@ -18,6 +18,9 @@ import urllib.request
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_root)
 from src.log_writer import write as log_write
+from process_control import clear_cancel_request, is_cancel_requested, terminate_active_process
+from queue_store import append_unique, pop_first, read_json, update_json
+from video_id import normalize_video_id, safe_video_dir
 
 # 从 comm 加载配置
 from src.comm import *
@@ -49,6 +52,7 @@ MIN_VIDEO_FILE_SIZE = 10 * 1024 * 1024
 MAGNET_COMPLETED = "completed"
 MAGNET_PENDING = "pending"
 MAGNET_FAILED = "failed"
+MAGNET_CANCELLED = "cancelled"
 
 logger.info(f"[Worker] save_path={save_path}")
 logger.info(f"[Worker] queue_path={queue_path}")
@@ -66,6 +70,7 @@ def signal_handler(sig, frame):
     global running
     logger.info("[Worker] Received signal, shutting down...")
     running = False
+    terminate_active_process()
 
 
 signal.signal(signal.SIGTERM, signal_handler)
@@ -74,35 +79,11 @@ signal.signal(signal.SIGINT, signal_handler)
 
 def read_queue_first_line():
     """读取队列第一行并返回"""
-    if not os.path.exists(queue_path):
-        return None
     try:
-        with open(queue_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    return line
+        return pop_first(queue_path)
     except Exception as e:
         logger.error(f"[Worker] Error reading queue: {e}")
-    return None
-
-
-def remove_queue_first_line(avid):
-    """从队列中移除指定的车牌号（只移除第一行匹配的）"""
-    if not os.path.exists(queue_path):
-        return
-    try:
-        with open(queue_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        removed = False
-        with open(queue_path, "w", encoding="utf-8") as f:
-            for line in lines:
-                if not removed and line.strip() == avid:
-                    removed = True
-                    continue
-                f.write(line)
-    except Exception as e:
-        logger.error(f"[Worker] Error removing from queue: {e}")
+        return None
 
 
 def is_locked():
@@ -119,22 +100,20 @@ def is_locked():
 def _load_failed_records():
     records = []
     try:
-        if os.path.exists(failed_queue_json_path):
-            with open(failed_queue_json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                for item in data:
-                    if not isinstance(item, dict):
-                        continue
-                    code = str(item.get("code", "")).strip().upper()
-                    if not code:
-                        continue
-                    records.append({
-                        "code": code,
-                        "failed_at": item.get("failed_at") or item.get("time") or "",
-                        "retries": item.get("retries", MAX_RETRIES),
-                    })
-                return records
+        data = read_json(failed_queue_json_path, [])
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                code = str(item.get("code", "")).strip().upper()
+                if not code:
+                    continue
+                records.append({
+                    "code": code,
+                    "failed_at": item.get("failed_at") or item.get("time") or "",
+                    "retries": item.get("retries", MAX_RETRIES),
+                })
+            return records
     except Exception as e:
         logger.error(f"[Worker] Error reading failed queue json: {e}")
 
@@ -160,22 +139,18 @@ def record_failed_download(avid):
     """记录最终失败，主存储为带时间戳的 failed_queue.json。"""
     code = avid.upper().strip()
     now = time.strftime("%Y-%m-%d %H:%M:%S")
-    records = _load_failed_records()
-    updated = False
-    for item in records:
-        if item["code"] == code:
-            item["failed_at"] = now
-            item["retries"] = get_retries(code)
-            updated = True
-            break
-    if not updated:
-        records.append({"code": code, "failed_at": now, "retries": get_retries(code)})
-
-    os.makedirs(os.path.dirname(failed_queue_json_path), exist_ok=True)
-    tmp = failed_queue_json_path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(records, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, failed_queue_json_path)
+    retries = get_retries(code)
+    def record(records):
+        records = records if isinstance(records, list) else []
+        for item in records:
+            if isinstance(item, dict) and str(item.get("code", "")).upper() == code:
+                item["failed_at"] = now
+                item["retries"] = retries
+                break
+        else:
+            records.append({"code": code, "failed_at": now, "retries": retries})
+        return records
+    update_json(failed_queue_json_path, [], record)
 
 
 def _handle_failure(avid):
@@ -191,8 +166,7 @@ def _handle_failure(avid):
         notify_feishu_all_failed(avid)
     else:
         logger.warning(f"[Worker] {avid} 失败 ({retries}/{MAX_RETRIES})，放回队列重试")
-        with open(queue_path, "a", encoding="utf-8") as f:
-            f.write(f"{avid}\n")
+        append_unique(queue_path, avid)
     return True
 
 def _handle_magnet_unavailable(avid):
@@ -211,8 +185,7 @@ def _handle_magnet_unavailable(avid):
     else:
         logger.warning(f"[Worker] {avid} 磁链暂不可用 ({retries}/{MAX_RETRIES})，放回队列重试")
         log_write("Worker", f"{avid} 磁链暂不可用，等待重试({retries}/{MAX_RETRIES})")
-        with open(queue_path, "a", encoding="utf-8") as f:
-            f.write(f"{avid}\n")
+        append_unique(queue_path, avid)
     return True
 
 def has_active_qb_task(avid):
@@ -273,40 +246,25 @@ def release_lock():
         f.write("0")
 
 def get_retries(avid):
-    try:
-        if os.path.exists(retry_file):
-            with open(retry_file, "r") as f:
-                counts = json.load(f)
-                return counts.get(avid.upper(), 0)
-    except:
-        pass
-    return 0
+    counts = read_json(retry_file, {})
+    return counts.get(avid.upper(), 0) if isinstance(counts, dict) else 0
 
 def incr_retry(avid):
-    counts = {}
-    try:
-        if os.path.exists(retry_file):
-            with open(retry_file, "r") as f:
-                counts = json.load(f)
-    except:
-        pass
     key = avid.upper()
-    counts[key] = counts.get(key, 0) + 1
-    with open(retry_file, "w") as f:
-        json.dump(counts, f)
+    def increment(counts):
+        counts = counts if isinstance(counts, dict) else {}
+        counts[key] = counts.get(key, 0) + 1
+        return counts
+    counts = update_json(retry_file, {}, increment)
     return counts[key]
 
 def clear_retry(avid):
-    counts = {}
-    try:
-        if os.path.exists(retry_file):
-            with open(retry_file, "r") as f:
-                counts = json.load(f)
-    except:
-        pass
-    counts.pop(avid.upper(), None)
-    with open(retry_file, "w") as f:
-        json.dump(counts, f)
+    key = avid.upper()
+    def clear(counts):
+        counts = counts if isinstance(counts, dict) else {}
+        counts.pop(key, None)
+        return counts
+    update_json(retry_file, {}, clear)
 
 
 def get_magnet_from_weekly(avid):
@@ -396,7 +354,7 @@ def qbittorrent_api(method, endpoint, data=None):
             req = urllib.request.Request(full_url)
         else:
             headers = {"Content-Type": "application/x-www-form-urlencoded"} if data else {}
-            req = urllib.request.Request(full_url, data=data.encode() if data else None, headers=headers)
+            req = urllib.request.Request(full_url, data=data.encode() if data else b"", headers=headers, method="POST")
         resp = opener.open(req, timeout=30)
         body = resp.read().decode()
         # qB API 部分端点返回纯文本 "Ok." / "Fails."
@@ -416,6 +374,32 @@ def qbittorrent_api(method, endpoint, data=None):
 def qbittorrent_post(endpoint, params):
     """发送 qBittorrent 表单 POST。"""
     return qbittorrent_api("POST", endpoint, urllib.parse.urlencode(params))
+
+
+def cancel_qb_tasks(avid, delete_files=False):
+    torrents = qbittorrent_api("GET", "/api/v2/torrents/info?category=AV_GARDEN")
+    if not isinstance(torrents, list):
+        return False
+    hashes = []
+    for torrent in torrents:
+        tags = {tag.strip().upper() for tag in str(torrent.get("tags", "")).split(",") if tag.strip()}
+        candidates = set()
+        for value in (torrent.get("name", ""), torrent.get("save_path", ""), torrent.get("content_path", "")):
+            for token in re.findall(r"[A-Z0-9]+(?:[-_][A-Z0-9]+){0,2}", str(value).upper()):
+                for variant in (token, re.sub(r"(?:[-_](?:C|CH)|CH)$", "", token)):
+                    normalized = normalize_video_id(variant)
+                    if normalized:
+                        candidates.add(normalized)
+        if avid in tags or avid in candidates:
+            torrent_hash = str(torrent.get("hash", "")).strip()
+            if torrent_hash:
+                hashes.append(torrent_hash)
+    if not hashes:
+        return False
+    return bool(qbittorrent_post(
+        "/api/v2/torrents/delete",
+        {"hashes": "|".join(hashes), "deleteFiles": "true" if delete_files else "false"},
+    ))
 
 
 def apply_largest_video_only(avid, torrent_hash):
@@ -525,6 +509,9 @@ def try_magnet_download(avid, save_dir, magnet=None):
     - 获取到元数据后继续下载，最长 2 小时
     - 已进入 qB 但未完成时返回 pending，不当作下载成功
     """
+    if is_cancel_requested(avid):
+        cancel_qb_tasks(avid)
+        return MAGNET_CANCELLED
     if magnet is None:
         magnet = get_magnet_from_weekly(avid)
     if not magnet:
@@ -535,7 +522,12 @@ def try_magnet_download(avid, save_dir, magnet=None):
 
     # 通过 qBittorrent API 添加磁链（不指定 savepath，用 qB 默认的 /data/）
     add_url = "/api/v2/torrents/add"
-    add_data = f"urls={urllib.parse.quote(magnet)}&category=AV_GARDEN&autoTMM=false"
+    add_data = urllib.parse.urlencode({
+        "urls": magnet,
+        "category": "AV_GARDEN",
+        "tags": avid,
+        "autoTMM": "false",
+    })
     result = qbittorrent_api("POST", add_url, add_data)
     # result=None 可能是添加失败或已存在(重复)，检查 qB 中是否已有该磁链的种子
     if result is None:
@@ -564,6 +556,13 @@ def try_magnet_download(avid, save_dir, magnet=None):
     file_selection_done = False
 
     while True:
+        if is_cancel_requested(avid) or not running:
+            logger.info(f"[Magnet] {avid} cancelled")
+            if torrent_hash:
+                qbittorrent_post("/api/v2/torrents/delete", {"hashes": torrent_hash, "deleteFiles": "false"})
+            else:
+                cancel_qb_tasks(avid)
+            return MAGNET_CANCELLED
         elapsed = time.time() - start
 
         # 查询所有 torrent 状态
@@ -670,7 +669,15 @@ def try_magnet_download(avid, save_dir, magnet=None):
 
 def download_video(avid):
     """下载单个视频（逻辑移植自 main.py）"""
-    avid = avid.upper().strip()
+    avid = normalize_video_id(avid)
+    if not avid:
+        logger.error("[Worker] Invalid video ID discarded")
+        return False
+    if is_cancel_requested(avid):
+        logger.info(f"[Worker] {avid} 已取消，跳过")
+        cancel_qb_tasks(avid)
+        clear_cancel_request(avid)
+        return False
     logger.info(f"[Worker] 开始下载: {avid}")
 
     # 检查是否已在数据库
@@ -682,6 +689,7 @@ def download_video(avid):
     # 尝试获取锁
     if is_locked():
         logger.info(f"[Worker] 下载器忙，{avid} 保留在队列中")
+        append_unique(queue_path, avid)
         return False
 
     acquire_lock()
@@ -690,7 +698,7 @@ def download_video(avid):
 
     try:
         # ======= 第一步：优先尝试磁链下载（中文字幕） =======
-        save_dir = os.path.join(save_path, avid)
+        save_dir = safe_video_dir(save_path, avid)
         magnet = get_magnet_from_weekly(avid)
         retries = get_retries(avid)
         if retries >= MAX_RETRIES and not magnet:
@@ -703,6 +711,11 @@ def download_video(avid):
             logger.info(f"[Worker] {avid} 已失败 {retries} 次，但找到磁链，尝试 qB")
         if magnet:
             magnet_status = try_magnet_download(avid, save_dir, magnet)
+            if magnet_status == MAGNET_CANCELLED:
+                logger.info(f"[Worker] {avid} 下载已取消")
+                log_write("Worker", f"{avid} 下载已取消")
+                clear_cancel_request(avid)
+                return False
             if magnet_status == MAGNET_COMPLETED:
                 gen_nfo()
                 logger.info(f"[Worker] {avid} 磁链下载完成!")
@@ -732,12 +745,18 @@ def download_video(avid):
         downloaded = False
         count = 0
         for it in sorted_downloaders:
+            if is_cancel_requested(avid) or not running:
+                logger.info(f"[Worker] {avid} 下载已取消")
+                log_write("Worker", f"{avid} 下载已取消")
+                clear_cancel_request(avid)
+                return False
             count += 1
             downloader = mgr.GetDownloader(it["downloaderName"])
+            if downloader is None:
+                logger.error(f"[Worker] 未知下载器: {it['downloaderName']}")
+                continue
             if not downloader.setDomain(it["domain"]):
                 logger.error(f"[Worker] 下载器 {downloader.getDownloaderName()} 域名未配置")
-                continue
-            if downloader is None:
                 continue
             logger.info(f"[Worker] 尝试下载器: {downloader.getDownloaderName()}")
 
@@ -749,6 +768,11 @@ def download_video(avid):
                 continue
 
             if not downloader.downloadM3u8(info.m3u8, avid):
+                if is_cancel_requested(avid) or not running:
+                    logger.info(f"[Worker] {avid} 下载已取消")
+                    log_write("Worker", f"{avid} 下载已取消")
+                    clear_cancel_request(avid)
+                    return False
                 logger.error(f"[Worker] {avid} 视频下载失败 ({downloader.getDownloaderName()})")
                 if count >= len(sorted_downloaders):
                     raise ValueError(f"{avid} 所有下载器均失败")
@@ -768,6 +792,9 @@ def download_video(avid):
 
     except ValueError as e:
         logger.error(f"[Worker] {e}")
+        if is_cancel_requested(avid) or not running:
+            clear_cancel_request(avid)
+            return False
         if _handle_failure(avid):
             log_write("Worker", f"{avid} 所有源均失败")
         else:
@@ -776,7 +803,10 @@ def download_video(avid):
         logger.error(f"[Worker] 下载异常: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        _handle_failure(avid)
+        if not is_cancel_requested(avid) and running:
+            _handle_failure(avid)
+        else:
+            clear_cancel_request(avid)
     finally:
         release_lock()
         logger.info(f"[Worker] 锁已释放")
@@ -794,11 +824,14 @@ def worker_loop():
             # 初始化 DB（每次循环都确保）
             data.initialize_db(downloaded_path, "MissAV")
 
-            avid = read_queue_first_line()
-            if avid:
+            raw_avid = read_queue_first_line()
+            if raw_avid:
                 empty_poll_count = 0
-                logger.info(f"[Worker] 从队列取出: {avid}")
-                remove_queue_first_line(avid)
+                logger.info(f"[Worker] 从队列取出: {raw_avid}")
+                avid = normalize_video_id(raw_avid)
+                if not avid:
+                    logger.error(f"[Worker] 丢弃非法队列项: {raw_avid!r}")
+                    continue
                 download_video(avid)
                 # 下载完后短暂等待再取下一个
                 time.sleep(3)

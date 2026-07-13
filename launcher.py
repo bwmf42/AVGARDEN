@@ -10,6 +10,7 @@ AV/GARDEN Container Launcher — 统一管理 worker + queue_api 生命周期
 import os, sys, signal, subprocess, time, json, random, threading
 from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from queue_store import append_unique
 from src.log_writer import write as log_write
 
 WORKER_PY = "/app/worker.py"
@@ -111,21 +112,11 @@ def save_current_back_to_queue():
         pass
     
     if current:
-        existing = set()
         try:
-            with open(QUEUE_PATH, "r") as f:
-                for line in f:
-                    existing.add(line.strip().upper())
-        except:
-            pass
-        
-        if current.upper() not in existing:
-            try:
-                with open(QUEUE_PATH, "a") as f:
-                    f.write(current + "\n")
+            if append_unique(QUEUE_PATH, current):
                 log(f"Saved current download back to queue: {current}")
-            except Exception as e:
-                log(f"Failed to save to queue: {e}")
+        except Exception as e:
+            log(f"Failed to save to queue: {e}")
         
         # 清理当前下载标记
         try:

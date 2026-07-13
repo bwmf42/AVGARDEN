@@ -145,10 +145,20 @@ export default {
                 return
             }
             try {
-                await fetch(`/api/queue/${code}`, { method: 'DELETE' })
+                const resp = await fetch(`/api/queue/${encodeURIComponent(code)}`, { method: 'DELETE' })
+                if (!resp.ok) {
+                    throw new Error(`Delete failed: ${resp.status}`)
+                }
                 this.items = this.items.filter(i => i.code !== code)
+                window.dispatchEvent(new CustomEvent('av-garden-toast', {
+                    detail: { msg: `${code} 已停止并移出下载管理`, type: 'info' }
+                }))
             } catch (e) {
                 console.error(e)
+                window.dispatchEvent(new CustomEvent('av-garden-toast', {
+                    detail: { msg: `${code} 停止失败，请稍后重试`, type: 'warn' }
+                }))
+                await this.fetchStatus()
             }
         }
     }

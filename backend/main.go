@@ -46,9 +46,12 @@ var (
 	favActresses         map[string]bool
 	actressAges          map[string]int
 	actressAgeLimit      = 45
+	blockedListsMtx      sync.RWMutex
 )
 
 func loadBlockedLists() {
+	blockedListsMtx.Lock()
+	defer blockedListsMtx.Unlock()
 	blockedActresses = make(map[string]bool)
 	blockedGenres = make(map[string]bool)
 	// 1. 从环境变量加载
@@ -94,7 +97,7 @@ func hasOldActress(actresses []interface{}) bool {
 	for _, a := range actresses {
 		if name, ok := a.(string); ok {
 			if year, exists := actressAges[name]; exists {
-				if (2026 - year) > actressAgeLimit {
+				if (time.Now().Year() - year) > actressAgeLimit {
 					return true
 				}
 			}
@@ -280,7 +283,6 @@ func enableCORS(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return

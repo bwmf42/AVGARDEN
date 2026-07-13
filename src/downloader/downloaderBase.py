@@ -62,7 +62,7 @@ class Downloader(ABC):
             'https': proxy
         } if proxy else None
         self.timeout = timeout
-    
+
     def setDomain(self, domain: str) -> bool:
         if domain:  
             self.domain = domain
@@ -114,39 +114,44 @@ class Downloader(ABC):
     
     def downloadM3u8(self, url: str, avid: str) -> bool:
         """m3u8视频下载"""
-        import subprocess
+        from process_control import is_cancel_requested, run_tracked
+
         os.makedirs(os.path.dirname(os.path.join(self.path, avid)), exist_ok=True)
         out_ts = os.path.join(self.path, avid, avid+'.ts')
         out_mp4 = os.path.join(self.path, avid, avid+'.mp4')
         try:
+            if is_cancel_requested(avid):
+                return False
             if isNeedVideoProxy and self.proxy:
                 logger.info("使用代理")
-                command = f"{download_tool} -u {url} -o {out_ts} -p {self.proxy} -H Referer:http://{self.domain}"
+                command = [download_tool, "-u", url, "-o", out_ts, "-p", self.proxy, "-H", f"Referer:http://{self.domain}"]
             else:
                 logger.info("不使用代理")
-                command = f"{download_tool} -u {url} -o {out_ts} -H Referer:http://{self.domain}"
+                command = [download_tool, "-u", url, "-o", out_ts, "-H", f"Referer:http://{self.domain}"]
             logger.debug(command)
-            if subprocess.run(command, shell=True).returncode != 0:
+            if run_tracked(command, avid) != 0:
+                if is_cancel_requested(avid):
+                    return False
                 # 难顶。。。使用代理下载失败，尝试不用代理；不用代理下载失败，尝试使用代理
                 if not isNeedVideoProxy and self.proxy:
                     logger.info("尝试使用代理")
-                    command = f"{download_tool} -u {url} -o {out_ts} -p {self.proxy} -H Referer:http://{self.domain}"
+                    command = [download_tool, "-u", url, "-o", out_ts, "-p", self.proxy, "-H", f"Referer:http://{self.domain}"]
                 else:
                     logger.info("尝试不使用代理")
-                    command = f"{download_tool} -u {url} -o {out_ts} -H Referer:http://{self.domain}"
+                    command = [download_tool, "-u", url, "-o", out_ts, "-H", f"Referer:http://{self.domain}"]
                 logger.debug(f"retry {command}")
-                if subprocess.run(command, shell=True).returncode != 0:
+                if run_tracked(command, avid) != 0:
                     return False
 
             # 转mp4
-            convert = f"{ffmpeg_tool} -i {out_ts} -c copy -f mp4 {out_mp4}"
+            convert = [ffmpeg_tool, "-i", out_ts, "-c", "copy", "-f", "mp4", out_mp4]
             logger.debug(convert)
-            if subprocess.run(convert, shell=True).returncode != 0:
+            if run_tracked(convert, avid) != 0:
                 return False
-            if subprocess.run(f"rm {out_ts}", shell=True).returncode != 0:
-                return False
+            os.remove(out_ts)
             return True
-        except:
+        except Exception as exc:
+            logger.error(f"下载命令执行失败: {exc}")
             return False
     
     def _fetch_html(self, url: str, referer: str = "") -> Optional[str]:
@@ -167,4 +172,3 @@ class Downloader(ABC):
         except requests.exceptions.RequestException as e:
             logger.error(f"请求失败: {str(e)}")
             return None
-    

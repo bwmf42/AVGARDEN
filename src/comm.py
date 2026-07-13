@@ -57,8 +57,8 @@ logger.info(f"qBittorrent url: {qb_url}")
 
 
 # 初始化下载器
-download_tool = f"'{project_root}/tools/m3u8-Downloader-Go'"
-ffmpeg_tool = f"'ffmpeg'"
+download_tool = f"{project_root}/tools/m3u8-Downloader-Go"
+ffmpeg_tool = "ffmpeg"
 if platform.system() == 'Windows':
     print("platform: Windows")
     download_tool = rf"{project_root}\tools\m3u8-Downloader-Go.exe"

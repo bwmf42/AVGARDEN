@@ -8,6 +8,10 @@ import os, sys, json, signal, time, subprocess, re, shutil, threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import quote, unquote, urlparse
 
+from process_control import cancel_request_age, cleanup_stale_cancel_requests, clear_cancel_request, request_cancel
+from queue_store import append_many_unique, append_unique, read_json, read_queue, remove_code, update_json, write_json
+from video_id import normalize_video_id, safe_local_dir, safe_video_dir
+
 QUEUE_PATH = os.environ.get("QUEUE_PATH", "/db/download_queue.txt")
 STATE_PATH = os.environ.get("STATE_PATH", "/db/queue_state.json")
 CURRENT_PATH = os.environ.get("CURRENT_PATH", "/db/current_download.txt")
@@ -28,6 +32,17 @@ BLOCKED_ACTRESSES = set(
 weekly_scrape_proc = None
 weekly_scrape_lock = threading.Lock()
 weekly_json_lock = threading.Lock()
+queue_state_lock = threading.RLock()
+
+
+def queue_route_locked(method):
+    def wrapped(self, *args, **kwargs):
+        path = urlparse(self.path).path.rstrip("/")
+        if path == "/api/queue" or path.startswith("/api/queue/"):
+            with queue_state_lock:
+                return method(self, *args, **kwargs)
+        return method(self, *args, **kwargs)
+    return wrapped
 
 def clean_avid(name):
     """从文件夹/种子名中提取标准车牌号（去掉 -C, ch, 中文字幕 等后缀）"""
@@ -73,9 +88,12 @@ def log_write(source, message):
         pass
 
 
-def qb_api(endpoint):
-    """调用 qBittorrent Web API，读取进度"""
-    import urllib.request, http.cookiejar
+def qb_request(endpoint, data=None):
+    """Call qBittorrent Web API with a fresh authenticated session."""
+    import http.cookiejar
+    import urllib.parse
+    import urllib.request
+
     try:
         cookie_jar = http.cookiejar.CookieJar()
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
@@ -84,16 +102,57 @@ def qb_api(endpoint):
         resp = opener.open(urllib.request.Request(login_url, data=login_data), timeout=5)
         if resp.status != 200:
             return None
-        resp = opener.open(urllib.request.Request(f"{QB_URL}{endpoint}"), timeout=10)
-        return json.loads(resp.read().decode())
+        request_data = urllib.parse.urlencode(data).encode() if data is not None else None
+        request = urllib.request.Request(f"{QB_URL}{endpoint}", data=request_data)
+        resp = opener.open(request, timeout=10)
+        body = resp.read().decode().strip()
+        if not body or body == "Ok.":
+            return True
+        if body == "Fails.":
+            return None
+        return json.loads(body)
     except Exception as e:
         log(f"qB API error: {e}")
         return None
 
 
-def get_qb_progress(save_dir):
+def qb_api(endpoint):
+    return qb_request(endpoint)
+
+
+def qb_remove_code(code, delete_files=False):
+    torrents = qb_api("/api/v2/torrents/info?category=AV_GARDEN")
+    if not isinstance(torrents, list):
+        return False
+    hashes = []
+    for torrent in torrents:
+        tags = {tag.strip().upper() for tag in str(torrent.get("tags", "")).split(",") if tag.strip()}
+        candidates = set()
+        for value in (torrent.get("name", ""), torrent.get("save_path", ""), torrent.get("content_path", "")):
+            value = str(value)
+            for token in re.findall(r"[A-Z0-9]+(?:[-_][A-Z0-9]+){0,2}", value.upper()):
+                variants = {token, re.sub(r"(?:[-_](?:C|CH)|CH)$", "", token)}
+                for variant in variants:
+                    normalized = normalize_video_id(variant)
+                    if normalized:
+                        candidates.add(normalized)
+        if code in tags or code in candidates:
+            torrent_hash = str(torrent.get("hash", "")).strip()
+            if torrent_hash:
+                hashes.append(torrent_hash)
+    if not hashes:
+        return False
+    result = qb_request(
+        "/api/v2/torrents/delete",
+        {"hashes": "|".join(hashes), "deleteFiles": "true" if delete_files else "false"},
+    )
+    return result is True
+
+
+def get_qb_progress(save_dir, torrents=None):
     """从 qBittorrent 获取指定下载目录的进度 {size, speed, progress_pct}"""
-    torrents = qb_api("/api/v2/torrents/info")
+    if torrents is None:
+        torrents = qb_api("/api/v2/torrents/info?category=AV_GARDEN")
     if not torrents:
         return None
     code = os.path.basename(save_dir.rstrip("/")).upper()
@@ -108,31 +167,18 @@ def get_qb_progress(save_dir):
     return None
 
 def load_state():
-    if not os.path.exists(STATE_PATH):
-        return []
-    try:
-        with open(STATE_PATH, "r") as f:
-            return json.load(f)
-    except:
-        return []
+    value = read_json(STATE_PATH, [])
+    return value if isinstance(value, list) else []
 
 def save_state(items):
-    with open(STATE_PATH, "w") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
+    write_json(STATE_PATH, items)
 
 def load_history():
-    if not os.path.exists(HISTORY_PATH):
-        return []
-    try:
-        with open(HISTORY_PATH, "r") as f:
-            history = json.load(f)
-        return prune_history(history)
-    except:
-        return []
+    history = read_json(HISTORY_PATH, [])
+    return prune_history(history) if isinstance(history, list) else []
 
 def save_history(items):
-    with open(HISTORY_PATH, "w") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
+    write_json(HISTORY_PATH, items)
 
 def parse_history_time(value):
     if not value:
@@ -230,36 +276,26 @@ def clear_failure_record(code):
     """重新入队时清理旧失败/重试记录，避免刚添加就显示失败。"""
     code = code.upper().strip()
     try:
-        if os.path.exists(FAILED_QUEUE_JSON_PATH):
-            with open(FAILED_QUEUE_JSON_PATH, "r", encoding="utf-8") as f:
-                records = json.load(f)
-            if isinstance(records, list):
-                filtered = [r for r in records if str(r.get("code", "")).upper() != code]
-                if len(filtered) != len(records):
-                    with open(FAILED_QUEUE_JSON_PATH, "w", encoding="utf-8") as f:
-                        json.dump(filtered, f, ensure_ascii=False, indent=2)
+        update_json(
+            FAILED_QUEUE_JSON_PATH,
+            [],
+            lambda records: [r for r in records if str(r.get("code", "")).upper() != code]
+            if isinstance(records, list) else [],
+        )
     except Exception as e:
         log(f"Failed to clear failed_queue.json for {code}: {e}")
 
     try:
-        if os.path.exists(FAILED_QUEUE_PATH):
-            with open(FAILED_QUEUE_PATH, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            filtered = [line for line in lines if line.strip().upper() != code]
-            if len(filtered) != len(lines):
-                with open(FAILED_QUEUE_PATH, "w", encoding="utf-8") as f:
-                    f.writelines(filtered)
+        remove_code(FAILED_QUEUE_PATH, code)
     except Exception as e:
         log(f"Failed to clear failed_queue.txt for {code}: {e}")
 
     try:
-        if os.path.exists(RETRY_PATH):
-            with open(RETRY_PATH, "r", encoding="utf-8") as f:
-                retries = json.load(f)
-            if isinstance(retries, dict) and code in retries:
-                retries.pop(code, None)
-                with open(RETRY_PATH, "w", encoding="utf-8") as f:
-                    json.dump(retries, f, ensure_ascii=False, indent=2)
+        def clear_retry_value(retries):
+            retries = retries if isinstance(retries, dict) else {}
+            retries.pop(code, None)
+            return retries
+        update_json(RETRY_PATH, {}, clear_retry_value)
     except Exception as e:
         log(f"Failed to clear retry count for {code}: {e}")
 
@@ -267,14 +303,12 @@ def clear_failure_record(code):
 def load_failure_codes():
     codes = set()
     try:
-        if os.path.exists(FAILED_QUEUE_JSON_PATH):
-            with open(FAILED_QUEUE_JSON_PATH, "r", encoding="utf-8") as f:
-                records = json.load(f)
-            if isinstance(records, list):
-                for item in records:
-                    code = str(item.get("code", "")).upper().strip()
-                    if code:
-                        codes.add(code)
+        records = read_json(FAILED_QUEUE_JSON_PATH, [])
+        if isinstance(records, list):
+            for item in records:
+                code = str(item.get("code", "")).upper().strip()
+                if code:
+                    codes.add(code)
     except Exception as e:
         log(f"Failed to read failed_queue.json: {e}")
 
@@ -317,7 +351,10 @@ def clear_current_download():
         pass
 
 def get_code_dir(code):
-    return os.path.join(SAVE_PATH, code.upper())
+    try:
+        return safe_video_dir(SAVE_PATH, code)
+    except ValueError:
+        return safe_local_dir(SAVE_PATH, code)
 
 def find_ts_path(code):
     dir_path = get_code_dir(code)
@@ -535,28 +572,14 @@ def get_download_info(code):
     return {"size": current, "speed": speed, "progress_pct": progress_pct}
 
 def read_queue_file():
-    if not os.path.exists(QUEUE_PATH):
-        return []
     try:
-        with open(QUEUE_PATH, "r") as f:
-            return [line.strip() for line in f if line.strip()]
-    except:
+        return read_queue(QUEUE_PATH)
+    except Exception:
         return []
 
 
 def normalize_online_code(raw):
-    raw = unquote(str(raw or "")).strip().upper().replace("_", "-")
-    if not raw:
-        return ""
-    if "/" in raw or "\\" in raw or ".." in raw:
-        return ""
-    exact = re.search(r'([A-Z0-9]{2,}\d*-\d{2,6})', raw)
-    if exact:
-        return exact.group(1)
-    compact = re.fullmatch(r'([A-Z0-9]{2,}?)(\d{2,6})', raw)
-    if compact:
-        return f"{compact.group(1)}-{compact.group(2)}"
-    return ""
+    return normalize_video_id(unquote(str(raw or "")))
 
 
 def online_file_url(code, filename):
@@ -722,6 +745,7 @@ class QueueHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self._json({})
 
+    @queue_route_locked
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
@@ -754,13 +778,16 @@ class QueueHandler(BaseHTTPRequestHandler):
         queue_codes = read_queue_file()
         current_code = read_current_download()
         failed_codes = load_failure_codes()
+        qb_torrents = qb_api("/api/v2/torrents/info?category=AV_GARDEN")
+        if not isinstance(qb_torrents, list):
+            qb_torrents = []
         
         result = {}
         
         # Items in queue.txt → queued（先用 qB 数据覆盖）
         for c in queue_codes:
             result[c] = {"code": c, "status": "queued", "size": 0, "speed": 0, "progress_pct": 0}
-            qb_info = get_qb_progress(get_code_dir(c))
+            qb_info = get_qb_progress(get_code_dir(c), qb_torrents)
             if qb_info:
                 result[c] = {"code": c, "status": "downloading", **qb_info}
         
@@ -817,7 +844,6 @@ class QueueHandler(BaseHTTPRequestHandler):
                                 break
 
         # Scan qBittorrent for active downloads not in queue/state
-        qb_torrents = qb_api("/api/v2/torrents/info?category=AV_GARDEN")
         if qb_torrents:
             for t in qb_torrents:
                 if t.get("state") not in ("downloading", "stalledDL", "metaDL", "forcedDL", "queuedUP", "uploading", "stalledUP", "pausedUP"):
@@ -932,6 +958,7 @@ class QueueHandler(BaseHTTPRequestHandler):
         
         self._json(sorted_result)
 
+    @queue_route_locked
     def do_POST(self):
         path = self.path.rstrip("/")
         if path == "/api/weekly-scrape":
@@ -954,10 +981,16 @@ class QueueHandler(BaseHTTPRequestHandler):
             data = json.loads(body)
         except:
             data = {}
-        code = data.get("code", "").strip().upper()
+        code = normalize_video_id(data.get("code", ""))
         if not code:
-            self._json({"error": "code required"}, 400)
+            self._json({"error": "invalid code"}, 400)
             return
+        cancel_age = cancel_request_age(code)
+        if cancel_age is not None and cancel_age < 300:
+            self._json({"error": "cancellation in progress", "code": code}, 409)
+            return
+        if cancel_age is not None:
+            clear_cancel_request(code)
         clear_failure_record(code)
 
         # 检查 qBittorrent 是否已在下载此车号
@@ -970,14 +1003,7 @@ class QueueHandler(BaseHTTPRequestHandler):
                     self._json({"status": "already in qBittorrent", "code": code})
                     return
 
-        existing = set()
-        if os.path.exists(QUEUE_PATH):
-            with open(QUEUE_PATH, "r") as f:
-                for line in f:
-                    existing.add(line.strip().upper())
-        if code not in existing:
-            with open(QUEUE_PATH, "a") as f:
-                f.write(code + "\n")
+        append_unique(QUEUE_PATH, code)
 
         state = load_state()
         if code not in [s["code"] for s in state]:
@@ -987,6 +1013,7 @@ class QueueHandler(BaseHTTPRequestHandler):
         else:
             self._json({"status": "already in queue", "code": code})
 
+    @queue_route_locked
     def do_DELETE(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
@@ -1003,25 +1030,25 @@ class QueueHandler(BaseHTTPRequestHandler):
         if not path.startswith("/api/queue/"):
             self._json({"error": "not found"}, 404)
             return
-        code = path.replace("/api/queue/", "").strip().upper()
+        code = normalize_video_id(unquote(path.replace("/api/queue/", "")))
         if not code:
-            self._json({"error": "code required"}, 400)
+            self._json({"error": "invalid code"}, 400)
             return
         delete_files = "delete_files=1" in (parsed.query or "")
+        request_cancel(code)
+        qb_removed = qb_remove_code(code, delete_files=delete_files)
         
         state = [s for s in load_state() if s["code"] != code]
         save_state(state)
         
-        if os.path.exists(QUEUE_PATH):
-            with open(QUEUE_PATH, "r") as f:
-                lines = [l for l in f if l.strip().upper() != code]
-            with open(QUEUE_PATH, "w") as f:
-                f.writelines(lines)
+        remove_code(QUEUE_PATH, code)
         
         if read_current_download() == code:
             clear_current_download()
         
         # 默认只移出队列/状态；显式 delete_files=1 才删除磁盘文件。
+        files_deleted = False
+        delete_error = ""
         if delete_files and os.path.exists(get_code_dir(code)):
             try:
                 # 忽略系统目录
@@ -1032,10 +1059,19 @@ class QueueHandler(BaseHTTPRequestHandler):
                 else:
                     shutil.rmtree(code_dir)
                     log(f"Deleted files: {code_dir}")
+                    files_deleted = True
             except Exception as e:
                 log(f"Delete failed: {e}")
+                delete_error = str(e)
         
-        self._json({"status": "removed", "code": code, "files_deleted": delete_files})
+        self._json({
+            "status": "removed",
+            "code": code,
+            "cancel_requested": True,
+            "qb_removed": qb_removed,
+            "files_deleted": files_deleted,
+            "delete_error": delete_error,
+        })
 
     def log_message(self, format, *args):
         pass
@@ -1061,6 +1097,9 @@ def startup_recovery():
     在容器重启后自动执行，确保下载任务不丢失
     """
     log("=== Startup Recovery ===")
+    stale_cancel_count = cleanup_stale_cancel_requests()
+    if stale_cancel_count:
+        log(f"  Removed {stale_cancel_count} stale cancellation markers")
     
     # 1. 检查当前下载记录
     current = read_current_download()
@@ -1113,17 +1152,8 @@ def startup_recovery():
                     log(f"  Found unfinished: {d}")
     
     if recovered:
-        # Add to queue.txt
-        existing = set()
-        if os.path.exists(QUEUE_PATH):
-            with open(QUEUE_PATH, "r") as f:
-                for line in f:
-                    existing.add(line.strip().upper())
-        with open(QUEUE_PATH, "a") as f:
-            for code in recovered:
-                if code.upper() not in existing:
-                    f.write(code.upper() + "\n")
-                    log(f"  Re-queued: {code}")
+        for code in append_many_unique(QUEUE_PATH, [item.upper() for item in recovered]):
+            log(f"  Re-queued: {code}")
         
         # Add to state
         for code in recovered:
