@@ -4,7 +4,7 @@ import json, os, sys, re, time, random
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from src.weekly import sources, javbus, sukebei
+from src.weekly import artwork, sources, javbus, sukebei
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 WEEKLY_DIR = os.path.join(SAVE_PATH, "__weekly__")
@@ -59,6 +59,7 @@ def main():
     sources.set_proxy(PROXY)
     javbus.set_proxy(PROXY)
     sukebei.set_proxy(PROXY)
+    artwork.set_proxy(PROXY)
 
     cutoff = (datetime.now() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
     log(f"Scanning last {DAYS_BACK} days (since {cutoff})")
@@ -97,7 +98,7 @@ def main():
         item.update({k: v for k, v in detail.items() if v})
         if not item.get("title"):
             item["title"] = avid
-        item["cover"] = javbus.download_cover(avid, item.get("cover", ""), WEEKLY_DIR)
+        artwork.download_for_item(item, WEEKLY_DIR)
         item["magnet"] = sukebei.search(avid)
         for k in ["titleZh", "titleJp", "poster", "duration", "size"]:
             item.setdefault(k, "")

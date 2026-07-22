@@ -166,7 +166,8 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 	filename := strings.Join(pathParts[1:], "/")
 	imagePath := filepath.Join(basePath, videoID, filename)
 
-	if !strings.HasPrefix(filepath.Clean(imagePath), filepath.Clean(basePath)) {
+	// Require path to be inside basePath (prefix alone is wrong: /data vs /data-evil).
+	if !isPathInsideBase(imagePath, basePath) {
 		httpError(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
@@ -448,10 +449,27 @@ func httpError(w http.ResponseWriter, message string, code int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
+// isPathInsideBase reports whether candidate resolves under baseDir.
+// strings.HasPrefix alone is insufficient: "/data-evil" has prefix "/data".
+func isPathInsideBase(candidate, baseDir string) bool {
+	cleanPath := filepath.Clean(candidate)
+	cleanBase := filepath.Clean(baseDir)
+	if cleanPath == cleanBase {
+		return true
+	}
+	sep := string(os.PathSeparator)
+	return strings.HasPrefix(cleanPath, cleanBase+sep)
+}
+
 // addVideoHandler 添加视频到下载队列
 func addVideoHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Empty API_KEY must never authorize (Bearer with empty token used to pass).
+	if apiKey == "" {
+		httpError(w, "Server misconfigured: API_KEY not set", http.StatusServiceUnavailable)
 		return
 	}
 	authHeader := r.Header.Get("Authorization")
@@ -460,11 +478,11 @@ func addVideoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	videoID := strings.TrimPrefix(r.URL.Path, "/api/addvideo/")
-	if videoID == "" {
+	id := normalizeUserVideoID(videoID)
+	if id == "" {
 		httpError(w, "Invalid video ID", http.StatusBadRequest)
 		return
 	}
-	id := strings.ToUpper(videoID)
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		httpError(w, "Database error", http.StatusInternalServerError)

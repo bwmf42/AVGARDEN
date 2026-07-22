@@ -10,7 +10,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.log_writer import write as log_write
-from src.weekly import javbus, sukebei
+from src.weekly import artwork, enrich, javbus, sukebei
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 WEEKLY_DIR = os.path.join(SAVE_PATH, "__weekly__")
@@ -159,37 +159,29 @@ def translate_title(item):
 def backfill_item(item):
     avid = normalize_id(item.get("id"))
     changed = False
-    html = ""
-    need_detail = not item.get("duration") or not item.get("genres") or not item.get("fanarts")
-    need_fanarts = not item.get("fanarts") or has_remote_fanarts(item)
-    need_cover = not item.get("cover") or str(item.get("cover")).startswith("http")
-    refresh_cover = not need_cover and javbus.cover_needs_refresh(avid, WEEKLY_DIR)
+    before = {
+        "actresses": list(item.get("actresses") or []),
+        "genres": list(item.get("genres") or []),
+        "duration": item.get("duration") or "",
+        "releaseDate": item.get("releaseDate") or "",
+        "cover": item.get("cover") or "",
+        "fanarts": list(item.get("fanarts") or []) if isinstance(item.get("fanarts"), list) else [],
+        "title": item.get("title") or "",
+    }
 
-    if need_detail or need_cover or refresh_cover:
-        html = javbus.fetch_page(avid)
-        detail = javbus.parse_page(html) if html else {}
-        for key, value in detail.items():
-            if value and (not item.get(key) or key in ("actresses", "genres", "fanarts") or (key == "cover" and refresh_cover)):
-                item[key] = value
+    if enrich.needs_enrich(item) or has_remote_fanarts(item) or not str(item.get("cover") or "").startswith("/file/"):
+        enrich.enrich_item(
+            item,
+            save_dir=WEEKLY_DIR,
+            download_images=True,
+            force_images=javbus.cover_needs_refresh(avid, WEEKLY_DIR),
+        )
+        for k, v in before.items():
+            if item.get(k) != v:
                 changed = True
 
-    if need_cover or refresh_cover:
-        cover = javbus.download_cover(avid, item.get("cover", ""), WEEKLY_DIR, force=refresh_cover)
-        if cover and cover != item.get("cover"):
-            item["cover"] = cover
-            changed = True
-
-    if need_fanarts:
-        remote_fanarts = remote_fanart_source(item)
-        if remote_fanarts:
-            item["remoteFanarts"] = remote_fanarts
-        fanarts = javbus.download_fanarts(avid, remote_fanarts, WEEKLY_DIR)
-        if fanarts != item.get("fanarts"):
-            item["fanarts"] = fanarts
-            changed = True
-
     if not item.get("magnet"):
-        magnet = sukebei.search(avid, html)
+        magnet = sukebei.search(avid, "")
         if magnet:
             item["magnet"] = magnet
             changed = True
@@ -211,6 +203,8 @@ def backfill_item(item):
 def main():
     javbus.set_proxy(PROXY)
     sukebei.set_proxy(PROXY)
+    artwork.set_proxy(PROXY)
+    enrich.set_proxy(PROXY)
     items = load_weekly()
     by_id = {normalize_id(item.get("id")): item for item in items if normalize_id(item.get("id"))}
     targets = [avid for avid in visible_unwatched_ids() if avid in by_id and needs_backfill(by_id[avid])]

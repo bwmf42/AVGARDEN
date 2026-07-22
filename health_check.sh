@@ -18,9 +18,9 @@ if ! curl -sf --max-time 10 "$API_URL" > /dev/null; then
     errors="$errors\n- Go API 无响应 ($API_URL)"
 fi
 
-# 2. Worker 容器
-if ! sudo docker ps --format '{{.Names}}' | grep -q av-garden-worker; then
-    errors="$errors\n- Worker 容器未运行"
+# 2. Worker 容器（生产 compose 用 avgarden-worker；旧 example 用 av-garden-worker）
+if ! sudo docker ps --format '{{.Names}}' | grep -Eq '^(avgarden-worker|av-garden-worker)$'; then
+    errors="$errors\n- Worker 容器未运行 (avgarden-worker / av-garden-worker)"
 fi
 
 # 3. qBittorrent

@@ -29,40 +29,45 @@ export default {
     },
 
     async addVideo(id) {
-        console.log(id);
-        const pattern = /^([A-Z0-9]+)-\d+$/;
-
-        if (!id.trim()) {
-            alert('请输入视频内容', true);
-            return;
+        // Align with backend normalizeUserVideoID: allow FC2 / 300MIUM / etc.
+        const raw = (id || '').trim()
+        if (!raw) {
+            alert('请输入视频内容')
+            return
+        }
+        // Loose client check; server is the source of truth for normalization.
+        if (!/^[A-Za-z0-9][A-Za-z0-9._\-\s]{1,40}$/.test(raw)) {
+            alert('格式错误：请输入番号，如 ABC-123 或 300MIUM-1395')
+            return
+        }
+        if (!API_KEY) {
+            alert('前端未配置 API 密钥（构建时需注入 VITE_API_KEY，与后端 API_KEY 一致）')
+            return
         }
 
-        if (!pattern.test(id)) {
-            alert('格式错误：请输入(字母或数字)-数字的组合，如 ABC-123', true);
-            return;
-        }
-
-        this.isAdding = true;
+        this.isAdding = true
         try {
-            const response = await axios.get(`${API_BASE}/api/addvideo/${encodeURIComponent(id)}`, {
+            const response = await axios.get(`${API_BASE}/api/addvideo/${encodeURIComponent(raw)}`, {
                 headers: {
-                    'Authorization': `Bearer ${API_KEY}`
-                }
-            });
-            console.log(response.data);
+                    Authorization: `Bearer ${API_KEY}`,
+                },
+            })
 
             if (response.status >= 200 && response.status < 300) {
-                this.inputContent = ''; // 清空输入框
-                // 使用原生alert替代ElMessage
-                alert('视频添加成功');
+                this.inputContent = ''
+                alert(typeof response.data === 'string' ? response.data : '视频添加成功')
             } else {
-                alert(response.data.message || '添加视频失败');
+                alert((response.data && response.data.message) || '添加视频失败')
             }
         } catch (error) {
-            console.error('添加视频出错:', error);
-            alert(`添加视频失败: ${error.message}`);
+            const detail =
+                error.response?.data?.error ||
+                error.response?.data ||
+                error.message ||
+                '未知错误'
+            alert(`添加视频失败: ${detail}`)
         } finally {
-            this.isAdding = false;
+            this.isAdding = false
         }
     }
 }

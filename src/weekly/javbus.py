@@ -3,7 +3,7 @@ import html, re, os, time, random, urllib.parse
 from curl_cffi import requests
 
 DOMAIN = "www.javbus.com"
-PROXY = None
+PROXY = os.environ.get("PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or None
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -13,10 +13,11 @@ HEADERS = {
 
 def set_proxy(proxy):
     global PROXY
-    PROXY = proxy
+    PROXY = proxy or None
 
 def _proxies():
-    return {"http": PROXY, "https": PROXY} if PROXY else None
+    p = PROXY or os.environ.get("PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+    return {"http": p, "https": p} if p else None
 
 def _file_url(save_dir, avid, filename):
     bucket = os.path.basename(os.path.normpath(save_dir)) or "__weekly__"
@@ -78,9 +79,8 @@ def _image_fetch_attempts(url, referer):
                 "",
                 referer,
             ]
-            proxy_options = [None]
-            if proxy:
-                proxy_options.append(proxy)
+            # MGS CDN: Japan proxy only when PROXY is set (no direct-first).
+            proxy_options = [proxy] if proxy else [None]
         else:
             referers = [referer]
             proxy_options = [proxy]

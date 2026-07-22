@@ -60,8 +60,8 @@ def merge(existing, new_items, max_days=30):
     return sorted(merged.values(), key=lambda x: x.get("releaseDate", ""), reverse=True)
 
 def fill_covers(items, save_dir):
-    """给远程 URL 或无封面的项目下载封面到本地"""
-    from . import javbus
+    """给远程 URL 或无封面的项目下载封面到本地（MGS -> DMM -> JavBus）"""
+    from . import artwork, javbus
     remote = [
         i for i in items
         if not i.get("cover")
@@ -70,12 +70,16 @@ def fill_covers(items, save_dir):
     ]
     for item in remote:
         avid = item["id"]
-        force = bool(item.get("cover")) and not item["cover"].startswith("http")
-        if force:
+        force = bool(item.get("cover")) and not str(item["cover"]).startswith("http")
+        if force or not item.get("cover") or str(item.get("cover", "")).startswith("http"):
             html = javbus.fetch_page(avid)
             detail = javbus.parse_page(html) if html else {}
-            if detail.get("cover"):
+            if detail.get("cover") and (
+                not item.get("cover") or str(item.get("cover", "")).startswith("http")
+            ):
                 item["cover"] = detail["cover"]
-        item["cover"] = javbus.download_cover(avid, item.get("cover", ""), save_dir, force=force)
+            if detail.get("fanarts") and not item.get("remoteFanarts"):
+                item["remoteFanarts"] = detail["fanarts"]
+        artwork.download_for_item(item, save_dir, force_cover=force)
         time.sleep(random.uniform(5, 10))
     return len(remote)

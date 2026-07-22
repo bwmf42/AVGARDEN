@@ -4,6 +4,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.server
+      args:
+        # Must match runtime API_KEY so the Vue add-video button can auth.
+        VITE_API_KEY: ${API_KEY:-}
     ports:
       - "${AV_GARDEN_HTTP_PORT:-31471}:31471"
     volumes:

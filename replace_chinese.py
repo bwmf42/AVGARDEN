@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
-"""扫描已下载 mp4，搜索中文字幕版磁链，有则替换"""
+"""扫描本地库，用中文字幕论坛补中文版磁链并替换。
+
+模式：
+- 日常（默认）：论坛最新 CHINESE_FORUM_DAILY_PAGES 页（默认 2），命中缺中文则进帖拿链
+- 一次性回补 CHINESE_FORUM_BACKFILL=1：按库 NFO 最早作品日停列表，再定向进帖
+不再使用 sukebei 搜中文字幕。
+"""
 import json, os, re, time, random, sys, urllib.parse
-from datetime import datetime, timedelta
+from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from src.weekly import sukebei
 from src.log_writer import write as log_write, cleanup as log_cleanup
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 PROXY = os.environ.get("PROXY", "") or None
-MAX_AGE = int(os.environ.get("REPLACE_MAX_AGE", "30"))
+MAX_AGE = int(os.environ.get("REPLACE_MAX_AGE", "30"))  # 保留兼容，主路径不再用 mtime 截断
 QB_URL = os.environ.get("QBITTORRENT_URL", "http://127.0.0.1:8080")
 QB_USER = os.environ.get("QBITTORRENT_USERNAME", "admin")
 QB_PASS = os.environ.get("QBITTORRENT_PASSWORD", "adminadmin")
 PENDING_FILE = os.environ.get("CHINESE_PENDING_FILE", "/db/chinese_pending.json")
+BACKFILL = os.environ.get("CHINESE_FORUM_BACKFILL", "").strip().lower() in ("1", "true", "yes", "on")
+DAILY_PAGES = int(os.environ.get("CHINESE_FORUM_DAILY_PAGES", "2"))
+BACKFILL_MAX_PAGES = int(os.environ.get("CHINESE_FORUM_MAX_PAGES", "0"))  # 0=只靠日期
+DRY_RUN = os.environ.get("CHINESE_FORUM_DRY_RUN", "").strip().lower() in ("1", "true", "yes", "on")
+SKIP_WEEKLY_REFILL = os.environ.get("REPLACE_SKIP_WEEKLY_REFILL", "").strip().lower() in ("1", "true", "yes", "on")
 
 CN_MARKER_PATTERNS = [
     re.compile(r"中文字幕", re.I),
@@ -220,6 +230,8 @@ def dir_has_cn_video(dpath, dirname, mp4_files, avid=None):
     avid = avid or clean_avid(dirname)
     if has_cn_marker_for_avid(dirname, avid):
         return True
+    if os.path.exists(os.path.join(dpath, ".av_garden_chinese")):
+        return True
     for filename in mp4_files:
         if has_cn_marker_for_avid(filename, avid):
             return True
@@ -232,6 +244,96 @@ def dir_has_cn_video(dpath, dirname, mp4_files, avid=None):
             except:
                 pass
     return False
+
+
+# 只取作品发行日字段，不用 plot
+_NFO_DATE = re.compile(
+    r"<(premiered|releasedate)\b[^>]*>\s*(\d{4}-\d{2}-\d{2})",
+    re.I,
+)
+
+
+def read_nfo_premiered(dpath):
+    """读目录内 NFO 作品发行日 YYYY-MM-DD，没有则 None。"""
+    try:
+        names = os.listdir(dpath)
+    except OSError:
+        return None
+    for filename in names:
+        if not filename.lower().endswith(".nfo"):
+            continue
+        try:
+            with open(os.path.join(dpath, filename), encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+        except OSError:
+            continue
+        m = _NFO_DATE.search(text)
+        if m:
+            return m.group(2)
+    return None
+
+
+def scan_library(save_path=None):
+    """扫描本地媒体库：earliest NFO 作品日 + 缺中文目录。"""
+    save_path = save_path or SAVE_PATH
+    earliest = None
+    missing = {}  # avid -> {target_dir, premiered}
+    existing_cn = 0
+    total_with_video = 0
+    no_nfo_date = 0
+
+    try:
+        entries = sorted(os.listdir(save_path))
+    except OSError as e:
+        log(f"Cannot list SAVE_PATH {save_path}: {e}")
+        return {"earliest": None, "missing": {}, "existing_cn": 0, "total": 0, "no_nfo_date": 0}
+
+    for d in entries:
+        if d.startswith("_") or d.startswith(".") or d in ("thumb",):
+            continue
+        dpath = os.path.join(save_path, d)
+        if not os.path.isdir(dpath):
+            continue
+        try:
+            mp4_files = [f for f in os.listdir(dpath) if f.lower().endswith(".mp4") and not f.startswith("._")]
+        except OSError:
+            continue
+        if not mp4_files:
+            continue
+
+        total_with_video += 1
+        search_avid = clean_avid(d)
+        premiered = read_nfo_premiered(dpath)
+        if premiered:
+            try:
+                pd = datetime.strptime(premiered, "%Y-%m-%d").date()
+                if earliest is None or pd < earliest:
+                    earliest = pd
+            except ValueError:
+                no_nfo_date += 1
+        else:
+            no_nfo_date += 1
+
+        if dir_has_cn_video(dpath, d, mp4_files, search_avid):
+            existing_cn += 1
+            continue
+
+        key = (search_avid or d).upper()
+        # 同一番号多目录时保留第一个
+        if key not in missing:
+            missing[key] = {
+                "avid": key,
+                "target_dir": d,
+                "premiered": premiered or "",
+            }
+
+    return {
+        "earliest": earliest,
+        "missing": missing,
+        "existing_cn": existing_cn,
+        "total": total_with_video,
+        "no_nfo_date": no_nfo_date,
+    }
 
 def merge_completed_chinese():
     """检查已下载完成的中文字幕版，合并到原文件夹"""
@@ -284,15 +386,18 @@ def merge_completed_chinese():
             moved_files = []
             selected, skipped = select_main_mp4(full_path, avid)
             if selected:
-                cleanup_original(avid, target_dirname)
                 target_dir = os.path.join(SAVE_PATH, target_dirname)
                 os.makedirs(target_dir, exist_ok=True)
                 src = selected["path"]
                 dst = os.path.join(target_dir, selected["name"])
+                # 目标已存在同名文件时加后缀，避免覆盖失败后双份残留
+                if os.path.exists(dst) and os.path.realpath(dst) != os.path.realpath(src):
+                    base, ext = os.path.splitext(selected["name"])
+                    dst = os.path.join(target_dir, f"{base}.zh{ext}")
                 log(f"  Selected Chinese video: {selected['rel']} ({format_size(selected['size'])})")
                 shutil.move(src, dst)
                 moved_files.append(selected["name"])
-                log(f"  Moved {selected['name']} -> {target_dir}")
+                log(f"  Moved {selected['name']} -> {dst}")
                 if skipped:
                     preview = ", ".join(
                         f"{item['rel']} ({format_size(item['size'])})"
@@ -300,6 +405,8 @@ def merge_completed_chinese():
                     )
                     suffix = " ..." if len(skipped) > 5 else ""
                     log(f"  Skipped extra video(s): {preview}{suffix}")
+                # 合并后再清：保留刚迁入的中文正片，删无中文原片 + 广告片（递归）
+                cleanup_original(avid, target_dirname, keep_paths=[dst], force=True)
             else:
                 log(f"  No mp4 found for {avid}, skip merge")
                 continue
@@ -338,110 +445,235 @@ def merge_completed_chinese():
 
     if merged:
         log(f"  Merged {merged} Chinese torrent(s)")
+    # 合并批结束后再扫一遍：清历史残留（夹内已有中文却仍留无中文/广告）
+    try:
+        sweep_leftover_non_chinese()
+    except Exception as e:
+        log(f"  Sweep leftover error: {e}")
 
-def cleanup_original(avid, target_dirname=None):
-    """删除原文件夹里非中文字幕的 mp4，保留 NFO/封面等元数据。"""
-    import shutil
+_VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov", ".m4v", ".wmv", ".ts")
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+_KEEP_DOTFILES = {".av_garden_chinese", ".nassav_chinese"}
+
+# 允许保留的元数据图（Jellyfin / 本项目刮削命名）
+_ALLOWED_IMAGE_NAME = re.compile(
+    r"(?i)("
+    r"poster|fanart|cover|landscape|thumb|folder|backdrop|banner|clearart|logo|disc"
+    r"|-poster\b|-fanart(?:-\d+)?\b|-thumb\b|-landscape\b|-cover\b"
+    r")"
+)
+
+# 种子里常见的广告/推广片（非正片），有中文正片后一律删
+_PROMO_NAME_PATTERNS = [
+    re.compile(r"游戏大全", re.I),
+    re.compile(r"直播大秀", re.I),
+    re.compile(r"强\s*力\s*推\s*荐", re.I),
+    re.compile(r"苍\s*老\s*师", re.I),
+    re.compile(r"社\s*區\s*最\s*新\s*情\s*報", re.I),
+    re.compile(r"社\s*区\s*最\s*新\s*情\s*报", re.I),
+    re.compile(r"台湾uu美少女", re.I),
+    re.compile(r"免费18禁手游", re.I),
+    re.compile(r"赌场", re.I),
+    re.compile(r"推广", re.I),
+    re.compile(r"广告", re.I),
+    re.compile(r"(?<![a-z])preview(?![a-z])", re.I),
+    re.compile(r"(?<![a-z])sample(?![a-z])", re.I),
+    re.compile(r"(?<![a-z])trailer(?![a-z])", re.I),
+]
+
+
+def is_video_filename(name):
+    n = (name or "").lower()
+    return n.endswith(_VIDEO_EXTS) and not name.startswith("._")
+
+
+def is_image_filename(name):
+    n = (name or "").lower()
+    return n.endswith(_IMAGE_EXTS) and not name.startswith("._")
+
+
+def is_promo_video(name):
+    text = name or ""
+    return any(p.search(text) for p in _PROMO_NAME_PATTERNS)
+
+
+def is_allowed_media_image(name):
+    """封面 / 预览 fanart 等；广告图、随机截图不在此列。"""
+    base = os.path.basename(name or "")
+    if not is_image_filename(base):
+        return False
+    return bool(_ALLOWED_IMAGE_NAME.search(base))
+
+
+def is_allowed_nfo(name):
+    return (name or "").lower().endswith(".nfo") and not name.startswith("._")
+
+
+def iter_all_files(dpath):
+    """递归列出目录内所有文件 (abs_path, rel_path)。"""
+    for root, dirs, files in os.walk(dpath):
+        dirs[:] = [d for d in dirs if not d.startswith("._")]
+        for f in files:
+            abs_path = os.path.join(root, f)
+            rel = os.path.relpath(abs_path, dpath)
+            yield abs_path, rel
+
+
+def iter_videos(dpath):
+    """递归列出目录内视频文件 (abs_path, rel_path)。"""
+    for abs_path, rel in iter_all_files(dpath):
+        if is_video_filename(os.path.basename(abs_path)):
+            yield abs_path, rel
+
+
+def should_keep_file(abs_path, rel, avid, keep_video_paths):
+    """合并后白名单：中文正片 + NFO + poster/fanart 封面预览 + 标记文件。"""
+    name = os.path.basename(abs_path)
+    # macOS 垃圾
+    if name.startswith("._"):
+        return False
+    # 内部标记
+    if name in _KEEP_DOTFILES or name == ".av_garden_chinese":
+        return True
+    if name.startswith("."):
+        return False
+
+    try:
+        real = os.path.realpath(abs_path)
+    except OSError:
+        real = abs_path
+
+    # 中文正片（刚迁入的 keep 路径，或文件名带中文标记）
+    if is_video_filename(name):
+        if is_promo_video(name) or is_promo_video(rel):
+            return False
+        if real in keep_video_paths:
+            return True
+        if has_cn_marker_for_avid(name, avid) or has_cn_marker_for_avid(rel, avid):
+            return True
+        return False
+
+    # NFO
+    if is_allowed_nfo(name):
+        return True
+
+    # 封面 / 预览图
+    if is_allowed_media_image(name):
+        return True
+
+    # 其它一律不要（.url .html .txt 种子说明、广告图、字幕包外的杂项等）
+    return False
+
+
+def cleanup_original(avid, target_dirname=None, keep_paths=None, force=False):
+    """合并后整理目录：只留中文视频、NFO、封面/预览图。
+
+    keep_paths: 刚合并进来的中文正片绝对路径，即使文件名无 -C 也保留。
+    force: 保留参数兼容旧调用；合并后始终按白名单清理。
+    """
     target_dirname = target_dirname or avid
     dpath = os.path.join(SAVE_PATH, target_dirname)
     if not os.path.isdir(dpath):
-        return
-    d_up = dpath.upper()
-    if d_up.endswith("-C") or d_up.endswith("CH") or "中文字幕" in d_up or "中文" in d_up:
-        return
-    deleted = []
-    for f in os.listdir(dpath):
-        fp = os.path.join(dpath, f)
-        if os.path.isfile(fp) and f.lower().endswith(".mp4") and not has_cn_marker_for_avid(f, avid):
+        return []
+
+    keep_videos = set()
+    for p in (keep_paths or []):
+        if p:
             try:
-                os.remove(fp)
-                deleted.append(f)
-            except Exception as e:
-                log(f"  Delete {f} error: {e}")
+                keep_videos.add(os.path.realpath(p))
+            except OSError:
+                keep_videos.add(p)
+
+    deleted = []
+    for abs_path, rel in list(iter_all_files(dpath)):
+        if should_keep_file(abs_path, rel, avid, keep_videos):
+            continue
+        try:
+            os.remove(abs_path)
+            deleted.append(rel)
+        except Exception as e:
+            log(f"  Delete {rel} error: {e}")
+
     if deleted:
-        log(f"  Cleaned {avid}: {', '.join(deleted)}")
-    # 如果文件夹空了，删除它
+        # 日志过长时截断
+        preview = ", ".join(deleted[:12])
+        if len(deleted) > 12:
+            preview += f" ... (+{len(deleted) - 12})"
+        log(f"  Cleaned {avid}: {preview}")
+
+    # 删空子目录（广告解压目录等）
+    for root, dirs, files in os.walk(dpath, topdown=False):
+        if root == dpath:
+            continue
+        try:
+            if not os.listdir(root):
+                os.rmdir(root)
+        except OSError:
+            pass
+
+    return deleted
+
+
+def sweep_leftover_non_chinese(save_path=None):
+    """扫描库：已有中文正片（或 .av_garden_chinese）的目录，整理成「仅媒体集」。"""
+    save_path = save_path or SAVE_PATH
+    swept = 0
+    deleted_total = 0
     try:
-        remaining = [x for x in os.listdir(dpath) if not x.startswith(".")]
-        if not remaining:
-            shutil.rmtree(dpath)
-            log(f"  Removed empty dir: {avid}")
-    except:
-        pass
+        entries = os.listdir(save_path)
+    except OSError as e:
+        log(f"Sweep list error: {e}")
+        return 0
 
-def main():
-    log("=== Start ===")
-    sukebei.set_proxy(PROXY)
-
-    # 0. 先合并已完成的中文字幕版
-    merge_completed_chinese()
-
-    # 1. 扫最近 30 天的 mp4
-    cutoff = datetime.now() - timedelta(days=MAX_AGE)
-    candidates = []
-    existing_cn = 0
-    for d in sorted(os.listdir(SAVE_PATH)):
-        dpath = os.path.join(SAVE_PATH, d)
-        if not os.path.isdir(dpath) or d.startswith("_") or d == "thumb":
+    for d in entries:
+        if d.startswith("_") or d.startswith(".") or d == "thumb":
             continue
-        mp4_files = [f for f in os.listdir(dpath) if f.endswith(".mp4")]
-        if not mp4_files:
+        dpath = os.path.join(save_path, d)
+        if not os.path.isdir(dpath):
             continue
-        search_avid = clean_avid(d)
-        # 跳过已有中文字幕标记的目录、视频或 sidecar 标记。
-        if dir_has_cn_video(dpath, d, mp4_files, search_avid):
-            existing_cn += 1
-            continue
-        mtime = os.path.getmtime(os.path.join(dpath, mp4_files[0]))
-        mdt = datetime.fromtimestamp(mtime)
-        if mdt > cutoff:
-            candidates.append({"target_dir": d, "avid": search_avid, "mtime": mdt})
-            label = f"{d} -> {search_avid}" if d.upper() != search_avid else d
-            log(f"  Candidate: {label} ({mdt.strftime('%Y-%m-%d')})")
+        avid = clean_avid(d)
+        videos = list(iter_videos(dpath))
+        has_marker_file = os.path.exists(os.path.join(dpath, ".av_garden_chinese"))
+        cn_videos = []
+        for abs_path, rel in videos:
+            name = os.path.basename(abs_path)
+            if is_promo_video(name) or is_promo_video(rel):
+                continue
+            if has_cn_marker_for_avid(name, avid) or has_cn_marker_for_avid(rel, avid):
+                cn_videos.append(abs_path)
 
-    log(f"Found {len(candidates)} candidates")
-
-    # 2. 逐个搜中文字幕磁链
-    added = 0
-    existing_qb = 0
-    add_failed = 0
-    no_magnet = 0
-    for candidate in sorted(candidates, key=lambda x: x["mtime"], reverse=True):
-        avid = candidate["avid"]
-        target_dirname = candidate["target_dir"]
-        # 跳过 qB 里已有的
-        if qb_has_cn_avid(avid):
-            existing_qb += 1
-            log(f"  Skip {avid}: already in qB")
+        # 仅当确认已有中文时整理（避免误删尚未换中文的目录）
+        if not has_marker_file and not cn_videos:
             continue
 
-        log(f"Searching {avid}...")
-        magnet = sukebei.search_chinese(avid)
-        if not magnet:
-            no_magnet += 1
-            log(f"  {avid}: no Chinese magnet")
-            continue
+        keep = {os.path.realpath(p) for p in cn_videos}
+        deleted = cleanup_original(avid, d, keep_paths=keep, force=True)
+        if deleted:
+            swept += 1
+            deleted_total += len(deleted)
+            if not has_marker_file:
+                try:
+                    with open(os.path.join(dpath, ".av_garden_chinese"), "w") as f:
+                        f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                except OSError:
+                    pass
 
-        # 3. 加 qB下载 + 更新 weekly.json + 记录 pending
-        torrent_hash = qb_add_magnet(magnet)
-        if torrent_hash:
-            log(f"  {avid}: added Chinese magnet to qB ({torrent_hash[:12]})")
-            update_weekly_magnet(avid, magnet)
-            pending = load_pending()
-            pending[torrent_hash] = {"avid": avid, "target_dir": target_dirname}
-            save_pending(pending)
-            added += 1
-        elif torrent_hash is None:
-            add_failed += 1
-            log(f"  {avid}: failed to add to qB")
-        time.sleep(random.uniform(5, 10))
+    if swept:
+        log(f"  Sweep media-set: {swept} dirs, {deleted_total} files removed")
+    else:
+        log("  Sweep media-set: nothing to clean")
+    return deleted_total
 
-    log(f"=== Done: {added} qB tasks added ===")
-
-    # 4. 补刮空字段（JavBus 后来填了数据）
+def _refill_weekly_gaps():
+    """可选：补 weekly 空字段（JavBus）。日常可关。"""
+    if SKIP_WEEKLY_REFILL:
+        log("Skip weekly fanart refill (REPLACE_SKIP_WEEKLY_REFILL)")
+        return 0
+    weekly_path = os.path.join(SAVE_PATH, "__weekly__", "weekly.json")
+    if not os.path.exists(weekly_path):
+        return 0
     from src.weekly import javbus as jb
     jb.set_proxy(PROXY)
-    weekly_path = os.path.join(SAVE_PATH, "__weekly__", "weekly.json")
     with open(weekly_path) as f:
         all_items = json.load(f)
     refilled = 0
@@ -465,18 +697,156 @@ def main():
             json.dump(all_items, f, ensure_ascii=False, indent=2)
         log(f"  Refilled {refilled} videos")
     else:
-        log(f"  No videos need refill")
+        log("  No videos need refill")
+    return refilled
+
+
+def main():
+    from src.weekly import chinese_forum  # lazy: merge/sweep 不依赖论坛模块
+
+    mode = "backfill" if BACKFILL else "daily"
+    log(f"=== Start mode={mode} dry_run={DRY_RUN} ===")
+    log(f"SAVE_PATH={SAVE_PATH}")
+    chinese_forum.set_proxy(PROXY)
+
+    # 0. 先合并已完成的中文字幕版
+    if not DRY_RUN:
+        merge_completed_chinese()
+    else:
+        log("DRY_RUN: skip merge_completed_chinese")
+
+    # 1. 扫本地库
+    lib = scan_library(SAVE_PATH)
+    missing = lib["missing"]
+    existing_cn = lib["existing_cn"]
+    earliest = lib["earliest"]
+    log(
+        f"Library: total_video_dirs={lib['total']} existing_cn={existing_cn} "
+        f"missing_cn={len(missing)} no_nfo_date={lib['no_nfo_date']} "
+        f"earliest_premiered={earliest.isoformat() if earliest else None}"
+    )
+
+    if not missing:
+        log("No missing Chinese items in library; done")
+        try:
+            log_write("ReplaceCN", f"mode={mode} 无缺中文条目")
+            log_cleanup()
+        except Exception:
+            pass
+        return
+
+    # 2. 论坛列表
+    stop_date = None
+    max_pages = DAILY_PAGES
+    if BACKFILL:
+        if earliest is None:
+            log("BACKFILL abort: no NFO premiered dates in library (cannot set stop date)")
+            try:
+                log_write("ReplaceCN", "backfill中止: 库内无NFO作品日")
+                log_cleanup()
+            except Exception:
+                pass
+            return
+        stop_date = earliest.isoformat()
+        max_pages = BACKFILL_MAX_PAGES  # 0 = only stop by date
+        log(f"BACKFILL: list until postDate >= {stop_date}, max_pages={max_pages or 'unlimited'}")
+    else:
+        log(f"DAILY: list first {max_pages} page(s)")
+
+    client = chinese_forum.ForumClient()
+    if not client.ensure_safe():
+        log("Forum safe gate failed; abort")
+        return
+
+    list_items = chinese_forum.get_list_until(
+        stop_date=stop_date,
+        max_pages=max_pages,
+        client=client,
+    )
+    log(f"Forum list unique codes: {len(list_items)}")
+
+    # 3. 列表 ∩ 缺中文
+    missing_ids = set(missing.keys())
+    hits = []
+    for item in list_items:
+        avid = (item.get("id") or "").upper()
+        if avid in missing_ids:
+            hits.append(item)
+    # 去重保序
+    seen = set()
+    unique_hits = []
+    for item in hits:
+        avid = item["id"].upper()
+        if avid in seen:
+            continue
+        seen.add(avid)
+        unique_hits.append(item)
+    log(f"Forum hits for missing_cn: {len(unique_hits)}")
+
+    # 4. 定向进帖拿 magnet
+    magnets = chinese_forum.fetch_magnets_for_targets(
+        unique_hits,
+        {i["id"].upper() for i in unique_hits},
+        client=client,
+    )
+    log(f"Magnets fetched: {len(magnets)}")
+
+    # 5. 加入 qB
+    added = 0
+    existing_qb = 0
+    add_failed = 0
+    no_magnet = 0
+    for item in unique_hits:
+        avid = item["id"].upper()
+        target_dirname = missing[avid]["target_dir"]
+        info = magnets.get(avid)
+        if not info or not info.get("magnet"):
+            no_magnet += 1
+            continue
+        magnet = info["magnet"]
+        if DRY_RUN:
+            log(f"DRY_RUN would add {avid}: {magnet[:70]}...")
+            added += 1
+            continue
+        if qb_has_cn_avid(avid):
+            existing_qb += 1
+            log(f"  Skip {avid}: already in qB")
+            continue
+        torrent_hash = qb_add_magnet(magnet)
+        if torrent_hash:
+            log(f"  {avid}: added Chinese magnet to qB ({torrent_hash[:12]})")
+            update_weekly_magnet(avid, magnet)
+            pending = load_pending()
+            pending[torrent_hash] = {"avid": avid, "target_dir": target_dirname}
+            save_pending(pending)
+            added += 1
+        else:
+            add_failed += 1
+            log(f"  {avid}: failed to add to qB")
+        time.sleep(random.uniform(2, 5))
+
+    log(
+        f"=== Done mode={mode}: list={len(list_items)} hits={len(unique_hits)} "
+        f"added={added} qb_skip={existing_qb} no_magnet={no_magnet} fail={add_failed} ==="
+    )
+
+    # 6. 可选 weekly 补字段（回补时默认跳过以省时间，可用 env 打开）
+    refilled = 0
+    if not BACKFILL and not DRY_RUN:
+        refilled = _refill_weekly_gaps()
 
     try:
         summary = (
-            f"扫描{len(candidates)}个候选, 新增{added}部中文字幕任务, "
-            f"已存在{existing_cn + existing_qb}部, 未找到{no_magnet}部, "
-            f"添加失败{add_failed}部, 补刮{refilled}部空数据"
+            f"mode={mode} 缺中文{len(missing)} 论坛列表{len(list_items)} 命中{len(unique_hits)} "
+            f"新增任务{added} qB已有{existing_qb} 无磁链{no_magnet} 失败{add_failed} "
+            f"earliest={earliest.isoformat() if earliest else '-'} 补刮{refilled}"
         )
         log_write("ReplaceCN", summary)
         log_cleanup()
-    except:
+    except Exception:
         pass
+
 
 if __name__ == "__main__":
     main()
+

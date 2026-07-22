@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""周推荐自动更新 — JavBus 主页 + 个体页补充细节"""
+"""周推荐自动更新 — 98堂 forum-37 列表 + 个体页/图源补充细节"""
 import json, os, sys, time, random, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from src.weekly import sources, javbus, sukebei, merge
+from src.weekly import sources, javbus, sukebei, merge, artwork, enrich
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 WEEKLY_DIR = os.path.join(SAVE_PATH, "__weekly__")
@@ -58,6 +58,8 @@ def main():
     sources.set_proxy(PROXY)
     javbus.set_proxy(PROXY)
     sukebei.set_proxy(PROXY)
+    artwork.set_proxy(PROXY)
+    enrich.set_proxy(PROXY)
 
     existing = json.load(open(WEEKLY_JSON)) if os.path.exists(WEEKLY_JSON) else []
     if not existing:
@@ -71,13 +73,13 @@ def main():
         if n:
             log(f"Filled {n} covers")
 
-    # 2. JavBus 主页获取番号+封面+标题（一步到位）
+    # 2. 98堂 forum-37 列表获取番号+标题（默认 3 页；封面稍后 MGS/DMM）
     recent = sources.get_recent(MAX_PAGES)
     freshness_counts = {}
     for item in recent:
-        marker = item.get("freshness") or "unknown"
+        marker = item.get("freshness") or item.get("source") or "unknown"
         freshness_counts[marker] = freshness_counts.get(marker, 0) + 1
-    log(f"JavBus homepage fresh items: {len(recent)} ({freshness_counts})")
+    log(f"Weekly list items: {len(recent)} ({freshness_counts})")
 
     new_items = []
     for item in recent:
@@ -97,18 +99,16 @@ def main():
             item.setdefault("genres", [])
             item.setdefault("fanarts", [])
         else:
-            # 个体页补充演员/标签/时长
-            html = javbus.fetch_page(avid)
-            detail = javbus.parse_page(html) if html else {}
-            item.update({k: v for k, v in detail.items() if v})
+            # SOAV-style metadata: MGS → JavBus → DMM images + genre ZH
             if not item.get("title"):
                 item["title"] = avid
-
-            item["cover"] = javbus.download_cover(avid, item.get("cover", ""), WEEKLY_DIR, force=javbus.cover_needs_refresh(avid, WEEKLY_DIR))
-            remote_fanarts = item.get("fanarts", [])
-            item["remoteFanarts"] = remote_fanarts if isinstance(remote_fanarts, list) else []
-            item["fanarts"] = javbus.download_fanarts(avid, item["remoteFanarts"], WEEKLY_DIR)
-            item["magnet"] = sukebei.search(avid, html)
+            enrich.enrich_item(
+                item,
+                save_dir=WEEKLY_DIR,
+                download_images=True,
+                force_images=javbus.cover_needs_refresh(avid, WEEKLY_DIR),
+            )
+            item["magnet"] = sukebei.search(avid, "")
             # 补齐缺失字段
             for k in ["titleZh", "titleJp", "poster", "duration", "actresses", "genres", "fanarts", "size"]:
                 item.setdefault(k, "")

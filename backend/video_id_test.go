@@ -36,3 +36,19 @@ func TestNormalizeUserVideoIDRejectsUnsafeInput(t *testing.T) {
 		}
 	}
 }
+
+func TestIsPathInsideBase(t *testing.T) {
+	if !isPathInsideBase("/data/OMG-032/cover.jpg", "/data") {
+		t.Fatal("expected /data/OMG-032/cover.jpg under /data")
+	}
+	if !isPathInsideBase("/data", "/data") {
+		t.Fatal("base itself should be allowed")
+	}
+	// Classic prefix trap: /data-evil must not match base /data
+	if isPathInsideBase("/data-evil/secret", "/data") {
+		t.Fatal("/data-evil must not be treated as under /data")
+	}
+	if isPathInsideBase("/etc/passwd", "/data") {
+		t.Fatal("/etc/passwd must not be under /data")
+	}
+}

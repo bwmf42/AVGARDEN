@@ -1,30 +1,50 @@
 # A/GARDEN Agent Guide
 
-本文件记录 A/GARDEN 项目专属规则，供 AI agent 或维护者快速理解、配置和验证项目。
+本文件是项目 **规则真身**（`CLAUDE.md` 为其软链）。供 AI agent 与维护者快速理解、配置和验证。
 
 ## 项目定位
 
-A/GARDEN 是面向 NAS 和家庭服务器的媒体下载、整理和浏览系统：
+面向 NAS / 家庭服务器的媒体下载、整理和浏览：
 
-- 用户输入内容编号或从每日推荐中选择条目。
-- Worker 优先使用 weekly 数据里的磁链并交给 qBittorrent。
-- 只有未找到磁链时，才 fallback 到在线流下载器。
-- 下载完成后刮削元数据，生成 Jellyfin NFO、封面和预览图。
-- Go 后端提供 API 并托管 Vue 前端。
-- Vue 前端负责媒体库、每日推荐、详情、下载管理、设置和日志。
+- 用户输入番号或从每日推荐选择；Worker 优先用 weekly 磁链交 qBittorrent，无磁链再 fallback 在线流。
+- 完成后刮削 NFO / 封面 / 预览；Go API + Vue 前端浏览管理。
+
+## 快速参考
+
+| 操作 | 命令 |
+|------|------|
+| 部署 | `AVGARDEN_PASS=… bash deploy.sh`（或 `ssh zspace` rsync + compose） |
+| 状态 | `curl -s http://192.168.5.14:31471/api/videos` |
+| Worker 日志 | `ssh zspace 'sudo docker logs avgarden-worker --tail 40'` |
+| 周更新 | `docker exec avgarden-worker … weekly_updater.py` |
+| 未看图回填 | worker 内 `plwt_art_backfill.py`（默认 `BACKFILL_UNWATCHED_ONLY=1`） |
 
 ## 关键入口
 
-- Go 后端：`backend/main.go`，端口 `31471`，同时服务 API 和 `frontend/dist`。
-- 后端处理器：`backend/handlers.go`。
-- Python Worker：`worker.py`，下载主流程。
-- Queue API：`queue_api.py`，端口 `31473`，负责队列、进度、失败记录和启动恢复。
-- 容器入口：`launcher.py`，协调 worker 与 Queue API，并调度每日刮削。
-- 每日推荐：`weekly_updater.py`，数据模块在 `src/weekly/`。
-- 元数据：`metadata.py`、`src/scraper.py`。
-- 前端：`frontend/`，Vue 3 + Vite，路由在 `frontend/src/router/index.js`。
-- 通用部署模板：`docker-compose.example.yml`。
-- NAS 生产部署目录：`/tmp/zfsv3/sata11/13049108160/data/docker/AVGARDEN`，对应极空间文件管理里的 `/42/docker/AVGARDEN`。
+| 组件 | 路径 / 端口 |
+|------|-------------|
+| Go API + 前端 | `backend/main.go`、`handlers.go` → **31471** |
+| Queue API | `queue_api.py` → **31473** |
+| Worker / 入口 | `worker.py`、`launcher.py` |
+| 每日推荐 | `weekly_updater.py` + `src/weekly/` |
+| 元数据 | `metadata.py`、`src/scraper.py` |
+| 前端 | `frontend/`（Vue 3 + Vite） |
+| NAS 部署 | `/tmp/zfsv3/sata11/13049108160/data/docker/AVGARDEN`（极空间 `/42/docker/AVGARDEN`） |
+| qB | NAS **8888** |
+
+### `src/weekly/` 模块
+
+- `sources.py` / `chinese_forum.py` — 列表（默认 plwt forum-37；中文 forum-103）
+- `artwork.py` — 封面预览：javdatabase → MGS → DMM
+- `javdatabase.py` / `mgs.py` / `dmm.py` / `javbus.py`
+- `enrich.py` / `genre_zh.py` — 元数据与标签中文映射
+- `sukebei.py` / `merge.py`
+
+## NAS 要点
+
+- IP `192.168.5.14`；SSH 常用别名 `zspace` 或 `13049108160@192.168.5.14 -p 10000`
+- 媒体库与 qB 保存目录须同一挂载；容器 `/data` `/db` `/app/cfg` `/app/logs`
+- 出站刮削依赖 `PROXY`（mihomo 日本节点）；javdatabase / MGS / DMM 直连常失败
 
 ## 配置边界
 
@@ -48,14 +68,27 @@ A/GARDEN 是面向 NAS 和家庭服务器的媒体下载、整理和浏览系统
 - 手动刮削按钮触发的是 worker 容器内的 `weekly_updater.py`，不要让 Go server 直接依赖 Python 环境。
 - 屏蔽演员、屏蔽标签、收藏演员、标题关键词是持久化配置，改动前要确认对应接口和文件。
 
-## 每日推荐图片刮削规则
+## 每日推荐列表与图片刮削规则
 
+- **列表源（默认）**：98堂 `https://plwt.kpqq4.com/forum-37-1.html`（`WEEKLY_FORUM_FID=37`，默认 **3 页** `WEEKLY_MAX_PAGES`）。实现：`sources.get_recent` → `chinese_forum.get_weekly_list`。
+- **中文资源日常**：同站 `forum-103`，默认 **2 页**（`CHINESE_FORUM_DAILY_PAGES`），`replace_chinese` 在 weekly 之后跑；缺中文才进帖取磁链。
+- 列表无封面时，单条详情可仍用 JavBus 补演员/标签；磁链默认 sukebei（中文板才论坛进帖）。
 - 每日推荐封面和详情预览图应尽量本地化到 `/data/__weekly__/{番号}/`，前端优先使用 `/file/__weekly__/...`，避免用户浏览时再等外站图片。
-- JavBus 详情页样张来自 `<a class="sample-box" ...>`；如果详情页没有 `sample-box`，不要把它当作下载失败，先确认源站是否本来没有预览图。
-- DMM 图片源优先保留现有 `.co.jp` 路径，但下载失败时要尝试 `.com` / `awsimgsrc.dmm.com` 变体。
-- MGStage 图片源常见域名是 `image.mgstage.com`；这类图不要只用 JavBus Referer 和代理下载，应优先直连，并尝试 `https://www.mgstage.com/product/product_detail/`、`https://www.mgstage.com/`、空 Referer，再兜底代理。
-- `queue_api.py` 的在线/weekly 精确番号归一化不能套用本地文件夹清洗规则；`300MIUM-1395` 这类数字开头的真实番号必须保留，只有本地文件夹名清洗场景才把 `857OMG-032` 这类源站前缀还原成 `OMG-032`。
-- 只补用户当前筛选出的 weekly 条目时，应从 `/api/weekly`、`/api/queue/`、`/api/weekly-watched` 复现前端筛选结果；不要扩大到全量 `weekly.json`。
+- **封面/预览图源优先级（`src/weekly/artwork.py`）**：
+  1. **javdatabase**：`https://www.javdatabase.com/movies/{番号小写}/` → DMM `pl.jpg` / `og:image` + 页内 `jp-N`（无年龄 Cookie；NAS **必须走 `PROXY`**，直连常超时）。
+  2. **MGS 商品图**（单页快路径）：`pb_e` / `cap_e_*` — **SIRO / ABF 等 MGS 独占** javdatabase 常 404，靠这一层；也是标签元数据主源。
+  3. **DMM CDN 猜 cid**（最慢，放最后）：`pl` / `jp-N`；**无真实封面的 cid 不要扫样片**；拒绝 NOW PRINTING 占位图。
+  4. **JavBus / 条目已有 URL** 兜底。
+- **详情元数据（`src/weekly/enrich.py`）**：
+  - 字段：演员、标签、发行日、时长、字幕、封面/预览、`titleZh`
+  - 顺序：MGS 表字段 → JavBus 补缺 → **artwork 下载图**（上表优先级）
+  - **仅 MGS 日文ジャンル** 经 `genre_zh.py` 对齐库内 JavBus 标签名；**NTR 保持 NTR**；JavBus 原标签不译
+  - 标题：`weekly_updater.batch_translate`（DeepSeek → `titleZh`）
+- 回退列表源：`WEEKLY_LIST_SOURCE=javbus`。
+- **回填范围**：默认只补前端 **未看**（`/api/weekly` 已滤屏蔽标签/演员 − 已看 − 队列 − 已下载）。脚本 `plwt_art_backfill.py`（`BACKFILL_UNWATCHED_ONLY=1`）；全量才设 `0`。元数据回填用 `weekly_backfill_details.py`（同 scope）。
+- JavBus 无 `sample-box` 时不要当下载失败。DMM 图优先 `.co.jp`，失败试 `.com` / `awsimgsrc`。
+- MGS：`PROXY` 只走日本代理，禁止直连优先。
+- `queue_api` 在线/weekly 番号归一化保留真实数字前缀（如 `300MIUM-1395`）；仅本地文件夹清洗可剥源站前缀。
 
 ## 前端设计规则
 
@@ -87,7 +120,12 @@ GOCACHE=/private/tmp/av-garden-gocache go test ./...
 Python 语法检查：
 
 ```bash
-PYTHONPYCACHEPREFIX=/private/tmp/av-garden-pycache python3 -m py_compile worker.py queue_api.py launcher.py weekly_updater.py metadata.py replace_chinese.py src/weekly/sukebei.py
+PYTHONPYCACHEPREFIX=/private/tmp/av-garden-pycache python3 -m py_compile \
+  worker.py queue_api.py launcher.py weekly_updater.py metadata.py replace_chinese.py \
+  plwt_art_backfill.py weekly_backfill_details.py \
+  src/weekly/artwork.py src/weekly/javdatabase.py src/weekly/dmm.py src/weekly/mgs.py \
+  src/weekly/enrich.py src/weekly/sukebei.py
+python3 -m unittest test_artwork_sources -v
 ```
 
 Compose 部署验证：
@@ -121,3 +159,10 @@ curl -sS http://127.0.0.1:31471/api/queue-status
 - 改下载策略、队列状态机、失败恢复、fallback 源或 qB 行为。
 - 改部署路径、端口、`.env`、Docker Compose 服务名或挂载。
 - 引入新服务、新依赖或新架构。
+
+## Agent 文档索引
+
+- Issue tracker：`docs/agents/issue-tracker.md`（GitHub Issues `bwmf42/AVGARDEN`）
+- Triage labels：`docs/agents/triage-labels.md`
+- Domain / ADR：`docs/agents/domain.md`
+- 交接快照：根目录 `handoff.md`（当前会话状态，可随功能更新）

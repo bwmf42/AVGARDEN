@@ -8,6 +8,19 @@
 
 ### Added
 
+- Switched daily recommendation **list** source to 98堂 `forum-37` (`WEEKLY_FORUM_FID=37`, default 3 pages via `WEEKLY_MAX_PAGES`); Chinese daily remains `forum-103` with 2 pages. JavBus list available via `WEEKLY_LIST_SOURCE=javbus`.
+- Cover/preview pipeline (`artwork.py`): **javdatabase** (`javdatabase.py`) → **MGS product images** (SIRO/ABF etc.) → **DMM CDN** (slow multi-cid last; skip sample probe when cover missing) → JavBus/item URLs. NAS modules inherit `PROXY` from env (javdatabase/MGS/DMM need Japan proxy).
+- SOAV-style metadata enrich (`enrich.py`, `genre_zh.py`): MGS table fields → JavBus gaps → artwork download; MGS ジャンル mapped via `genre_zh` (NTR kept).
+- `plwt_art_backfill.py`: bulk cover/fanart fill; default **`BACKFILL_UNWATCHED_ONLY=1`** scopes to frontend 未看 (`/api/weekly` − watched − queue − downloaded), not full `weekly.json`.
+- Added Chinese-subtitle forum backfill/daily modes in `replace_chinese.py`: scan local NFO premiered dates, list `forum-103` (stop at earliest work date for one-time `CHINESE_FORUM_BACKFILL=1`, or only 2 pages daily), open matching threads only for library items still missing Chinese, and pull in-post magnets into qB.
+- Added a Chinese-subtitle Discuz list source (`src/weekly/chinese_forum.py` + `chinese_forum_updater.py`): passes the site `_safe` gate once, reuses the session, paginates `forum-103` list pages only (no thread visits), extracts codes/titles with polite page delays, and writes local verification output under `work/chinese_scrape/`.
+
+### Changed
+
+- Replaced sukebei-based Chinese magnet search in `replace_chinese.py` with the Discuz Chinese-subtitle forum; daily launcher path stays `weekly_updater` then `replace_chinese` (default 2 forum list pages).
+- Hardened Chinese merge cleanup: after moving the Chinese video in, recursively delete non-Chinese videos and common promo junk in the target folder (no longer skip whole folders just because the directory name ends with `-C` / 中文); also sweep existing library leftovers that already have Chinese but still keep old non-Chinese files.
+- Chinese merge now keeps a strict media set only: Chinese main video, `.nfo`, poster/cover, and fanart previews; removes ads, `.url`/`.html`/`.txt`, and other torrent junk.
+
 - Added shared video ID normalization coverage across Vue, Go, and Python for dashed, compact, numeric-leading, FC2, multi-part, numeric-date, and selected special formats.
 - Added automated tests for video ID safety, queue file concurrency, tracked-process cancellation, exact qB task removal, Queue API polling, Go blocked-list concurrency, and JSON escaping.
 - Added one-time online code search: exact code searches can fetch a JavBus detail, show it in the weekly-card style, reuse download/favorite/block actions, and mark already-local items with a local badge.

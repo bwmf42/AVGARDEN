@@ -16,6 +16,11 @@ RUN cd backend &&     go mod tidy &&     CGO_ENABLED=1 go build -o /build/av-gar
 # =============================================
 FROM node:lts-alpine AS vue-builder
 
+# Bake the same key the Go server uses for /api/addvideo Bearer auth.
+# Pass at build: docker compose build --build-arg VITE_API_KEY="$API_KEY"
+ARG VITE_API_KEY=
+ENV VITE_API_KEY=$VITE_API_KEY
+
 WORKDIR /build
 COPY frontend/ ./frontend/
 RUN cd frontend &&     npm install &&     npm run build

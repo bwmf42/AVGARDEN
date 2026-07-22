@@ -644,9 +644,10 @@ def build_online_detail(raw_code):
     if not code:
         return None, "invalid code"
     try:
-        from src.weekly import javbus, sukebei
+        from src.weekly import artwork, javbus, sukebei
         javbus.set_proxy(ONLINE_PROXY)
         sukebei.set_proxy(ONLINE_PROXY)
+        artwork.set_proxy(ONLINE_PROXY)
         html = javbus.fetch_page(code)
         if not html:
             return None, "detail not found"
@@ -669,12 +670,16 @@ def build_online_detail(raw_code):
         remote_cover = item.get("cover", "")
         if remote_cover:
             item["remoteCover"] = remote_cover
-            item["cover"] = download_online_cover(code, remote_cover)
+
+        # Cover/previews: MGS first, DMM CDN rules, else JavBus URLs
+        artwork.download_for_item(item, ONLINE_DIR)
+        if item.get("cover"):
             item["poster"] = item["cover"]
         else:
             item.setdefault("poster", "")
-
-        item["fanarts"] = javbus.download_fanarts(code, item.get("fanarts", []), ONLINE_DIR)
+            if remote_cover:
+                item["cover"] = download_online_cover(code, remote_cover)
+                item["poster"] = item["cover"]
 
         if not item.get("magnet"):
             item["magnet"] = sukebei.search(code, html)
