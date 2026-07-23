@@ -8,15 +8,17 @@
 
 ### Added
 
+- Added exact DMM all-category search after the existing javdatabase and MGS sources, covering both mono DVD CIDs and digital products while rejecting similar codes and `NOW PRINTING` placeholders. DMM GraphQL now reads standard and amateur actress fields; when the search page misses a product, likely CIDs are queried in one batch and accepted only after exact `makerContentId` verification. Unknown maker prefixes can use javdatabase's exact `Content ID` as a resolver without blind CDN probing.
 - Switched daily recommendation **list** source to 98堂 `forum-37` (`WEEKLY_FORUM_FID=37`, default 3 pages via `WEEKLY_MAX_PAGES`); Chinese daily remains `forum-103` with 2 pages. JavBus list available via `WEEKLY_LIST_SOURCE=javbus`.
-- Cover/preview pipeline (`artwork.py`): **javdatabase** (`javdatabase.py`) → **MGS product images** (SIRO/ABF etc.) → **DMM CDN** (slow multi-cid last; skip sample probe when cover missing) → JavBus/item URLs. NAS modules inherit `PROXY` from env (javdatabase/MGS/DMM need Japan proxy).
-- SOAV-style metadata enrich (`enrich.py`, `genre_zh.py`): MGS table fields → JavBus gaps → artwork download; MGS ジャンル mapped via `genre_zh` (NTR kept).
+- Cover/preview pipeline (`artwork.py`): **javdatabase** (`javdatabase.py`) → **MGS product images** → **DMM exact GraphQL/CDN** → the item's already-known forum attachments → item URLs. JavBus request code remains available but is currently excluded from active candidates.
+- SOAV-style metadata enrich (`enrich.py`, `genre_zh.py`): MGS table fields → exact DMM metadata → exact javdatabase page fallback → artwork download; source-native Japanese/English genres are aligned through `genre_zh` (NTR kept).
 - `plwt_art_backfill.py`: bulk cover/fanart fill; default **`BACKFILL_UNWATCHED_ONLY=1`** scopes to frontend 未看 (`/api/weekly` − watched − queue − downloaded), not full `weekly.json`.
 - Added Chinese-subtitle forum backfill/daily modes in `replace_chinese.py`: scan local NFO premiered dates, list `forum-103` (stop at earliest work date for one-time `CHINESE_FORUM_BACKFILL=1`, or only 2 pages daily), open matching threads only for library items still missing Chinese, and pull in-post magnets into qB.
 - Added a Chinese-subtitle Discuz list source (`src/weekly/chinese_forum.py` + `chinese_forum_updater.py`): passes the site `_safe` gate once, reuses the session, paginates `forum-103` list pages only (no thread visits), extracts codes/titles with polite page delays, and writes local verification output under `work/chinese_scrape/`.
 
 ### Changed
 
+- Reconciled the current handoff, NAS deployment guide, frontend development guide, environment comments, and bundled operations skill with the deployed A/GARDEN runtime and active paths.
 - Replaced sukebei-based Chinese magnet search in `replace_chinese.py` with the Discuz Chinese-subtitle forum; daily launcher path stays `weekly_updater` then `replace_chinese` (default 2 forum list pages).
 - Hardened Chinese merge cleanup: after moving the Chinese video in, recursively delete non-Chinese videos and common promo junk in the target folder (no longer skip whole folders just because the directory name ends with `-C` / 中文); also sweep existing library leftovers that already have Chinese but still keep old non-Chinese files.
 - Chinese merge now keeps a strict media set only: Chinese main video, `.nfo`, poster/cover, and fanart previews; removes ads, `.url`/`.html`/`.txt`, and other torrent junk.
@@ -32,8 +34,6 @@
 - Added a visible-unwatched weekly backfill script for filling details, local covers, magnets, and translated titles only for items that pass current filters and are still 未看.
 - Added JavBus detail-page magnet list lookup as the first weekly magnet source, before Sukebei/Nyaa and MissAV fallbacks.
 
-### Changed
-
 - Moved the NAS deployment root to `/42/docker/AVGARDEN` and updated local deployment guidance to keep future deploys in the Docker app folder.
 - Limited normal weekly scraping to JavBus cards marked 今日新種; 昨日新種 can still be included via `WEEKLY_FRESHNESS_MARKERS` for one-off recovery runs.
 - Weekly merge now keeps undownloaded recommendations beyond the old 30-day window, so the 未看 pool can continue accumulating until you watch or download them.
@@ -43,8 +43,15 @@
 - Restyled the Vue frontend toward the 02 media-hub layout with a left navigation rail, central media workspace, and right activity rail.
 - Updated public-facing documentation wording to use more neutral media-library language.
 
+### Removed
+
+- Removed the rejected 05-07 design exploration artifacts while retaining the adopted 02 direction and the undecided 01/03/04 explorations.
+
 ### Fixed
 
+- Filled the DMM search-page blind spot with exact batched GraphQL CID lookup, parsed standard AV actresses in addition to amateur profiles, rejected generic empty MGS pages as false metadata hits, and added exact javdatabase metadata plus known-forum artwork fallbacks for the remaining weekly gaps.
+- Normalized MGS amateur performer profiles to nickname-only actress labels, repaired existing weekly labels during detail backfill, and limited metadata backfill to genuinely missing fields. Metadata now uses MGS as authoritative when it has genres and falls back to exact DMM product metadata only when MGS genres are absent; progress is saved per item with remaining-field and failure summaries.
+- Reduced scheduled cover refreshes from multi-minute CID/sample probing to exact cover-only searches, bounded fallback probes, and 1-3 second pacing. Weekly updater and backfill jobs now share a cross-process lock and unique atomic temp files so they cannot overwrite each other.
 - Fixed unsafe queue input handling by separating format recognition from path safety, rejecting control/path characters, and replacing shell-built downloader commands with argument-based subprocess execution.
 - Fixed queue deletion so it sends a cross-process cancellation request, terminates tracked online downloader/ffmpeg processes, removes matching tagged qB tasks, and only hides the frontend row after a successful API response.
 - Fixed queue and retry state races with locked, atomic queue/JSON writes shared by Queue API, Worker, and Launcher.

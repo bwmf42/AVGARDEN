@@ -1,5 +1,34 @@
-# Vue 3 + Vite
+# A/GARDEN Frontend
 
-This template should help get you started developing with Vue 3 in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+Vue 3 + Vite 前端。生产构建由 `Dockerfile.server` 打包，并由 Go server 在 `31471` 端口提供页面和 API。
 
-Learn more about IDE Support for Vue in the [Vue Docs Scaling up Guide](https://vuejs.org/guide/scaling-up/tooling.html#ide-support).
+## 本地开发
+
+```bash
+npm install
+npm run dev
+```
+
+Vite 默认把页面开在本地开发端口。需要真实数据时，使用项目现有的开发代理或直接访问 NAS 页面；不要在前端代码里写死账号、Token 或生产密钥。
+
+## 验证
+
+```bash
+npm test
+npm run build
+```
+
+- `npm test` 使用 Node 内置测试运行器。
+- `npm run build` 输出到 `dist/`，该目录是生成物，不提交。
+- 有视觉改动时，还要检查桌面和移动宽度下的空状态、溢出、资源加载和交互。
+
+## 目录
+
+```text
+src/api/         API 封装
+src/components/  复用组件
+src/router/      页面路由
+src/views/       媒体库、每日推荐、下载管理、设置等页面
+```
+
+视觉规则以 [DESIGN.md](DESIGN.md) 为准；项目和部署规则以根目录 `AGENTS.md` 为准。

@@ -1,94 +1,99 @@
-# AVGARDEN 交接（当前）
+# A/GARDEN 交接（当前）
 
 更新时间：2026-07-23
 
-## 规则真身
+## 权威入口
 
-- **`AGENTS.md` 为项目规则真身**；`CLAUDE.md` 是指向它的软链（勿再维护两份正文）。
-- 变更记录：`CHANGELOG.md` → `Unreleased`。
+- 项目规则真身：`AGENTS.md`；`CLAUDE.md` 是指向它的软链。
+- 变更记录：`CHANGELOG.md` 的 `Unreleased`。
+- 运维 skill：`codex-agent/skills/avgarden-ops/SKILL.md`，安装副本位于 `~/.codex/skills/avgarden-ops/SKILL.md`。
+- 历史交接：`docs/handoff-2026-06-10.md`，只用于查历史，不代表现役状态。
 
-## 当前能力摘要
+`docs/deploy-zspace.md` 和 `codex-agent/` 由 `.gitignore` 明确设为本机运维资料，不进入公开仓库；公开安装说明以 `README.md`、`INSTALL.md` 和示例配置为准。
 
-### 每日推荐
+## 当前发布状态
+
+- 本地 `main` 与 `origin/main` 当前都在 `7545ee1`。
+- 每日推荐元数据、图片和原子写入改动已经部署到 NAS worker，但仍在本地工作树中，尚未 commit/push。
+- 生产 worker 内相关 Python 文件与本地工作树 SHA-256 一致。
+- 2026-07-23 验证：43 项 weekly 相关测试通过，Python 编译与 `git diff --check` 通过。
+- 下一步是手动测试；确认后再按项目规则询问是否 commit/push。
+
+## 每日推荐现役流程
 
 | 项 | 现状 |
 |----|------|
-| 列表源 | 98堂 `forum-37`，默认 3 页（`WEEKLY_LIST_SOURCE=plwt`） |
-| 中文日常 | `forum-103`，默认 2 页 → `replace_chinese` 进帖取磁链 |
-| 封面/预览 | **javdatabase → MGS 图 → DMM CDN → JavBus/URL**（`src/weekly/artwork.py`） |
-| 元数据 | MGS 表字段 → JavBus 补缺 → artwork 落盘（`enrich.py` + `genre_zh.py`） |
-| 已看同步 | `/db/weekly_watched.json` + `/api/weekly-watched`（跨域名共享） |
-| 未看列表 | `/api/weekly`（已滤屏蔽标签/演员）− 已看 − 队列 − 已下载；前端约 **未看 492** |
+| 列表 | 98堂 `forum-37`，默认 3 页；`WEEKLY_LIST_SOURCE=javbus` 仅作回退 |
+| 中文资源 | `forum-103`，默认 2 页；只对缺中文的库内条目进已知帖子找磁链 |
+| 元数据 | MGS 有标签时以 MGS 为准；MGS 完全无标签才查精确 DMM；DMM 无商品时用 JAV Database 精确页兜底 |
+| 封面/预览 | JAV Database -> MGS 商品图 -> DMM 精确商品 -> 已知论坛帖子附件 -> 条目已有 URL |
+| 演员 | 同时读取 DMM 标准演员和素人演员字段；来源没有演员时保持空白，不从标题猜 |
+| 本地图片 | `/data/__weekly__/{番号}/`，前端优先使用 `/file/__weekly__/...` |
+| 未看 | 未下载条目长期累积；前端再减去已看、队列、已下载和屏蔽项 |
+| 写入安全 | `weekly_updater.py` 与回填脚本共用文件锁，并通过唯一临时文件原子替换 `weekly.json` |
 
-### 图源细节
+JavBus 的访问实现仍保留，但当前不参与主动元数据和图片候选。磁链日常默认走 Sukebei；中文资源只在已有论坛目标上进帖。
 
-- **javdatabase**：`/movies/{code小写}/`，无需年龄 Cookie；**NAS 必须 `PROXY`**（直连超时）。
-- **MGS**：`pb_e` / `cap_e_*`；SIRO/ABF 等独占片 javdatabase 常 404；日本代理 only。
-- **DMM**：cid 探测放最后；无真实封面的 cid 不扫 `jp-N`；拒绝 NOW PRINTING 占位。
-- 环境变量见 `.env.example`：`ARTWORK_SKIP_*`、`JAVDATABASE_DELAY`、`BACKFILL_*`。
-
-### 回填脚本
+## 回填脚本
 
 | 脚本 | 用途 |
 |------|------|
-| `plwt_art_backfill.py` | 封面+预览；默认 `BACKFILL_UNWATCHED_ONLY=1`（未看 scope） |
-| `weekly_backfill_details.py` | 元数据/磁链等，同未看 scope |
+| `plwt_art_backfill.py` | 补封面和预览；默认 `BACKFILL_UNWATCHED_ONLY=1` |
+| `weekly_backfill_details.py` | 补真正缺失的元数据、磁链、翻译和本地图片；逐条保存 |
 
-Worker 内示例：
+两个脚本均已由 `Dockerfile.worker` 复制到 worker 的 `/app/`，使用 `/app/venv/bin/python3` 运行。
 
-```bash
-# 日志 /tmp/plwt_art_backfill.log
-PYTHONPATH=/app JAVDATABASE_DELAY=0.25 BACKFILL_UNWATCHED_ONLY=1 \
-  /app/venv/bin/python3 -u /tmp/plwt_art_backfill.py
-```
-
-（脚本也可放在镜像 `/app/plwt_art_backfill.py`，视部署是否 COPY。）
+2026-07-23 运行态快照：`/api/weekly` 返回 963 条可见记录，缺封面 0 条、缺本地预览 8 条。演员为空不一定是失败，部分官方商品本来就不提供演员字段；数量会随每日更新变化，不应当作固定验收值。
 
 ## NAS 部署
 
-- 目录：`/tmp/zfsv3/sata11/13049108160/data/docker/AVGARDEN`
-- 访问：`http://192.168.5.14:31471`（远程视 zconnect）
-- 部署：`bash deploy.sh` 需 `AVGARDEN_PASS`；或 `ssh zspace` rsync + `docker compose build/up`
-- 容器：`avgarden-server`、`avgarden-worker`；worker 环境含 `PROXY=http://192.168.5.14:7890`
+- 本地仓库：`/Users/vigo/Desktop/code/AVGARDEN`
+- NAS 现役目录：`/tmp/zfsv3/sata11/13049108160/data/docker/AVGARDEN`
+- 极空间界面路径：`/42/docker/AVGARDEN`
+- 服务：`http://192.168.5.14:31471`
+- 部署：运行时传入 `AVGARDEN_PASS` 后执行 `bash deploy.sh`，或通过 `ssh zspace` 在现役目录执行 Compose。
 
-## 本阶段已落地（相对 2026-06 handoff）
+部署后必须先确认容器、版本、队列和相关页面/API 正常，再核对镜像引用，只删除本次替换且未被容器引用的 A/GARDEN 旧镜像。不要使用宽泛的 Docker prune。
 
-- [x] 已看服务端同步（`weekly_watched`）— 线上在用
-- [x] 列表改 plwt forum-37；中文 forum-103
-- [x] javdatabase 优先图源 + MGS/DMM 链路；PROXY 环境继承
-- [x] 未看范围图回填（非全量 1000+）
-- [x] AGENTS 真身 + CLAUDE 软链
+## 本轮工作树范围
 
-## 进行中 / 可跟进
+核心改动集中在：
 
-- [ ] 未看缺图回填跑完后，按需再开 **元数据 enrich** 回填（`weekly_backfill_details.py`）
-- [ ] 个别番号 javdatabase/MGS/DMM 皆无图时仅 JavBus 或空
-- [ ] `plwt_art_backfill.py` 是否正式 COPY 进 worker 镜像（当前可 docker cp / 挂载）
-
-## 相关文件（本能力）
-
-```
+```text
+Dockerfile.worker
+weekly_store.py
+weekly_updater.py
+weekly_backfill_details.py
+plwt_art_backfill.py
 src/weekly/artwork.py
-src/weekly/javdatabase.py
-src/weekly/mgs.py
+src/weekly/chinese_forum.py
 src/weekly/dmm.py
 src/weekly/enrich.py
 src/weekly/genre_zh.py
-src/weekly/chinese_forum.py
-plwt_art_backfill.py
-weekly_backfill_details.py
-weekly_updater.py
-replace_chinese.py
-AGENTS.md          # 真身
-CLAUDE.md          # -> AGENTS.md
-.env.example
-CHANGELOG.md
+src/weekly/javdatabase.py
+src/weekly/merge.py
+src/weekly/mgs.py
+test_artwork_sources.py
+test_genre_meta.py
+test_weekly_backfill_details.py
+test_weekly_store.py
 ```
 
-## 验证
+其中 `weekly_store.py`、`test_weekly_store.py`、`test_weekly_backfill_details.py` 当前尚未被 Git 跟踪，但生产 worker 已依赖 `weekly_store.py`，提交时必须纳入。
+
+## 验证命令
 
 ```bash
-python3 -m unittest test_artwork_sources -v
-curl -sS http://192.168.5.14:31471/api/weekly | python3 -c "import json,sys; print(len(json.load(sys.stdin)))"
-curl -sS http://192.168.5.14:31471/api/weekly-watched | python3 -c "import json,sys; print(len(json.load(sys.stdin)))"
+PYTHONPYCACHEPREFIX=/private/tmp/avgarden-pycache python3 -m py_compile \
+  weekly_updater.py weekly_backfill_details.py weekly_store.py \
+  src/weekly/artwork.py src/weekly/dmm.py src/weekly/enrich.py
+
+python3 -m unittest \
+  test_artwork_sources test_genre_meta \
+  test_weekly_backfill_details test_weekly_store -v
+
+ssh zspace 'cd /tmp/zfsv3/sata11/13049108160/data/docker/AVGARDEN && \
+  sudo /usr/bin/docker compose ps && \
+  curl -fsS http://127.0.0.1:31471/api/version && \
+  curl -fsS http://127.0.0.1:31471/api/queue-status'
 ```
