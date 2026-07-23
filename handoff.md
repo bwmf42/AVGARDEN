@@ -13,11 +13,11 @@
 
 ## 当前发布状态
 
-- 本地 `main` 与 `origin/main` 当前都在 `7545ee1`。
-- 每日推荐元数据、图片和原子写入改动已经部署到 NAS worker，但仍在本地工作树中，尚未 commit/push。
-- 生产 worker 内相关 Python 文件与本地工作树 SHA-256 一致。
+- 本地 `main` 与 `origin/main` 已包含 `cf53cfd`（weekly 功能）和 `b3d0317`（知识同步与设计清理）。
+- 每日推荐元数据、图片和原子写入功能已经部署到 NAS worker；功能代码与 `cf53cfd` 一致。
+- `b3d0317` 只包含文档和设计残留清理，没有因此重启生产服务。
 - 2026-07-23 验证：43 项 weekly 相关测试通过，Python 编译与 `git diff --check` 通过。
-- 下一步是手动测试；确认后再按项目规则询问是否 commit/push。
+- 下一步是手动检查每日推荐页面；若没有新的运行代码改动，不需要仅为文档再次部署。
 
 ## 每日推荐现役流程
 
@@ -79,7 +79,7 @@ test_weekly_backfill_details.py
 test_weekly_store.py
 ```
 
-其中 `weekly_store.py`、`test_weekly_store.py`、`test_weekly_backfill_details.py` 当前尚未被 Git 跟踪，但生产 worker 已依赖 `weekly_store.py`，提交时必须纳入。
+`weekly_store.py`、`test_weekly_store.py`、`test_weekly_backfill_details.py` 已随 `cf53cfd` 纳入 Git，生产依赖不再只存在于本地工作树。
 
 ## 验证命令
 
