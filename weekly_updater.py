@@ -4,6 +4,7 @@ import json, os, sys, time, random, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.weekly import sources, javbus, sukebei, merge, artwork, enrich
+from weekly_store import atomic_write_json, weekly_update_lock
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 WEEKLY_DIR = os.path.join(SAVE_PATH, "__weekly__")
@@ -53,7 +54,7 @@ def batch_translate(items):
         except Exception as e:
             log(f"Translate {item['id']} failed: {e}")
 
-def main():
+def _main_locked():
     log("=== Start ===")
     sources.set_proxy(PROXY)
     javbus.set_proxy(PROXY)
@@ -99,7 +100,7 @@ def main():
             item.setdefault("genres", [])
             item.setdefault("fanarts", [])
         else:
-            # SOAV-style metadata: MGS → JavBus → DMM images + genre ZH
+            # Exact source ordering is owned by enrich.py and artwork.py.
             if not item.get("title"):
                 item["title"] = avid
             enrich.enrich_item(
@@ -139,12 +140,13 @@ def main():
     if not LIST_ONLY:
         batch_translate(merged)
 
-    os.makedirs(WEEKLY_DIR, exist_ok=True)
-    tmp = WEEKLY_JSON + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(merged, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, WEEKLY_JSON)
+    atomic_write_json(WEEKLY_JSON, merged)
     log(f"=== Done: {len(merged)} items (+{len(new_items)} new) ===")
+
+
+def main():
+    with weekly_update_lock(WEEKLY_JSON):
+        _main_locked()
 
 if __name__ == "__main__":
     main()

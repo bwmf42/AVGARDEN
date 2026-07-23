@@ -6,11 +6,14 @@ import random
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.log_writer import write as log_write
-from src.weekly import artwork, enrich, javbus, sukebei
+from src.weekly import artwork, enrich, javbus, mgs, sukebei
+from weekly_store import atomic_write_json, weekly_update_lock
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 WEEKLY_DIR = os.path.join(SAVE_PATH, "__weekly__")
@@ -45,14 +48,44 @@ def load_weekly():
 
 
 def save_weekly(items):
-    tmp = WEEKLY_JSON + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, WEEKLY_JSON)
+    atomic_write_json(WEEKLY_JSON, items)
 
 
 def normalize_id(raw):
     return str(raw or "").strip().upper()
+
+
+def _local_file(url, min_bytes):
+    value = str(url or "")
+    if not value.startswith("/file/"):
+        return False
+    relative = urllib.parse.unquote(value[len("/file/") :]).lstrip("/")
+    path = os.path.normpath(os.path.join(SAVE_PATH, relative))
+    root = os.path.normpath(SAVE_PATH) + os.sep
+    if not path.startswith(root):
+        return False
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) > min_bytes
+    except OSError:
+        return False
+
+
+def has_local_cover(item):
+    return _local_file(item.get("cover"), 8000)
+
+
+def has_local_fanarts(item):
+    values = item.get("fanarts") if isinstance(item.get("fanarts"), list) else []
+    return any(_local_file(value, 3000) for value in values)
+
+
+def needs_metadata(item):
+    return (
+        not item.get("actresses")
+        or not item.get("genres")
+        or not item.get("duration")
+        or not item.get("releaseDate")
+    )
 
 
 def queue_codes():
@@ -81,49 +114,41 @@ def visible_unwatched_ids():
 
 
 def needs_backfill(item):
-    cover = str(item.get("cover") or "")
-    return (
-        not item.get("magnet")
-        or not item.get("duration")
-        or not item.get("genres")
-        or not item.get("fanarts")
-        or has_remote_fanarts(item)
-        or not item.get("titleZh")
-        or not cover
-        or cover.startswith("http")
-    )
-
-
-def has_remote_fanarts(item):
-    return bool(remote_fanart_source(item))
-
-
-def remote_fanart_source(item):
-    for key in ("remoteFanarts", "fanarts"):
-        fanarts = item.get(key)
-        if isinstance(fanarts, list) and any(str(url or "").startswith("http") for url in fanarts):
-            return fanarts
-    return []
+    return bool(missing_fields(item))
 
 
 def missing_fields(item):
     missing = []
-    cover = str(item.get("cover") or "")
+    if not item.get("actresses"):
+        missing.append("actresses")
     if not item.get("duration"):
         missing.append("duration")
     if not item.get("genres"):
         missing.append("genres")
-    if not item.get("fanarts"):
+    if not item.get("releaseDate"):
+        missing.append("releaseDate")
+    if not has_local_fanarts(item):
         missing.append("fanarts")
-    elif has_remote_fanarts(item):
-        missing.append("fanarts_local")
     if not item.get("magnet"):
         missing.append("magnet")
     if not item.get("titleZh"):
         missing.append("titleZh")
-    if not cover or cover.startswith("http"):
+    if not has_local_cover(item):
         missing.append("cover")
     return missing
+
+
+def normalize_existing_actresses(items):
+    changed = 0
+    for item in items:
+        values = item.get("actresses")
+        if not isinstance(values, list) or not values:
+            continue
+        normalized = mgs.normalize_actresses(values)
+        if normalized != values:
+            item["actresses"] = normalized
+            changed += 1
+    return changed
 
 
 def translate_title(item):
@@ -169,12 +194,16 @@ def backfill_item(item):
         "title": item.get("title") or "",
     }
 
-    if enrich.needs_enrich(item) or has_remote_fanarts(item) or not str(item.get("cover") or "").startswith("/file/"):
+    need_meta = needs_metadata(item)
+    need_images = not has_local_cover(item) or not has_local_fanarts(item)
+    if need_meta or need_images:
         enrich.enrich_item(
             item,
             save_dir=WEEKLY_DIR,
-            download_images=True,
-            force_images=javbus.cover_needs_refresh(avid, WEEKLY_DIR),
+            download_images=need_images,
+            force_images=(
+                need_images and javbus.cover_needs_refresh(avid, WEEKLY_DIR)
+            ),
         )
         for k, v in before.items():
             if item.get(k) != v:
@@ -200,12 +229,17 @@ def backfill_item(item):
     return changed
 
 
-def main():
+def _main_locked():
     javbus.set_proxy(PROXY)
     sukebei.set_proxy(PROXY)
     artwork.set_proxy(PROXY)
     enrich.set_proxy(PROXY)
     items = load_weekly()
+    normalized = normalize_existing_actresses(items)
+    if normalized:
+        save_weekly(items)
+    log(f"Normalized actress labels: {normalized}")
+
     by_id = {normalize_id(item.get("id")): item for item in items if normalize_id(item.get("id"))}
     targets = [avid for avid in visible_unwatched_ids() if avid in by_id and needs_backfill(by_id[avid])]
     if LIMIT > 0:
@@ -213,26 +247,65 @@ def main():
 
     log(f"Start visible-unwatched backfill: {len(targets)} items, delay {MIN_DELAY:g}-{MAX_DELAY:g}s")
     updated = 0
+    improved = 0
+    completed = 0
+    unchanged = 0
+    failed = 0
+    source_counts = Counter()
+    failure_reasons = Counter()
     for index, avid in enumerate(targets, 1):
         item = by_id[avid]
+        before_missing = set(missing_fields(item))
         try:
             changed = backfill_item(item)
             if changed:
                 updated += 1
                 save_weekly(items)
-            missing = missing_fields(item)
-            if changed:
-                status = "updated"
-            elif missing:
-                status = "still_missing=" + ",".join(missing)
-            else:
+            missing = set(missing_fields(item))
+            if len(missing) < len(before_missing):
+                improved += 1
+            if not missing:
+                completed += 1
                 status = "complete"
+            elif changed:
+                status = "updated still_missing=" + ",".join(sorted(missing))
+            else:
+                unchanged += 1
+                status = "still_missing=" + ",".join(sorted(missing))
+            if item.get("metaSource"):
+                source_counts[item["metaSource"]] += 1
+            if missing & {"actresses", "duration", "genres", "releaseDate"}:
+                failure_reasons["metadata_not_found"] += 1
+            if missing & {"cover", "fanarts"}:
+                failure_reasons["artwork_not_found"] += 1
+            if "magnet" in missing:
+                failure_reasons["magnet_not_found"] += 1
+            if "titleZh" in missing:
+                failure_reasons["translation_failed"] += 1
             log(f"{index}/{len(targets)} {avid} {status}")
         except Exception as e:
+            failed += 1
+            failure_reasons["exception"] += 1
             log(f"{index}/{len(targets)} {avid} failed: {e}")
         if index < len(targets):
             time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
-    log(f"Done visible-unwatched backfill: updated {updated}/{len(targets)}")
+
+    remaining = Counter()
+    for avid in targets:
+        remaining.update(missing_fields(by_id[avid]))
+    log(
+        "Done visible-unwatched backfill: "
+        f"targets={len(targets)} updated={updated} improved={improved} "
+        f"complete={completed} unchanged={unchanged} failed={failed}"
+    )
+    log(f"Remaining fields: {dict(sorted(remaining.items()))}")
+    log(f"Metadata sources: {dict(sorted(source_counts.items()))}")
+    log(f"Failure reasons: {dict(sorted(failure_reasons.items()))}")
+
+
+def main():
+    with weekly_update_lock(WEEKLY_JSON):
+        _main_locked()
 
 
 if __name__ == "__main__":

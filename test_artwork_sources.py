@@ -2,7 +2,7 @@
 """Unit tests for javdatabase/DMM artwork resolution (no network)."""
 import unittest
 
-from src.weekly import dmm, javdatabase, mgs
+from src.weekly import chinese_forum, dmm, javdatabase, mgs
 from src.weekly.artwork import prefer_urls, resolve
 
 
@@ -51,6 +51,10 @@ class TestJavdatabaseParse(unittest.TestCase):
         </head><body>
         <p class="mb-1"><b>DVD ID: </b>TENN-049</p>
         <p class="mb-1"><b>Content ID: </b>h_491tenn00049</p>
+        <p class="mb-1"><b>Release Date: </b>2026-07-17</p>
+        <p class="mb-1"><b>Runtime: </b>150 min.</p>
+        <p class="mb-1"><b>Genre(s): </b><a>Athlete</a> <a>Big Tits</a></p>
+        <p class="mb-1"><b>Idol(s)/Actress(es): </b><a>Mana Mochida</a></p>
         <div data-image-src="https://pics.dmm.co.jp/digital/video/h_491tenn00049/h_491tenn00049jp-2.jpg"></div>
         <div data-image-src="https://pics.dmm.co.jp/digital/video/h_491tenn00049/h_491tenn00049jp-1.jpg"></div>
         </body></html>
@@ -63,6 +67,11 @@ class TestJavdatabaseParse(unittest.TestCase):
         self.assertEqual(len(art["samples"]), 2)
         self.assertIn("jp-1", art["samples"][0])
         self.assertIn("jp-2", art["samples"][1])
+        meta = javdatabase.parse_metadata(html, "TENN-049")
+        self.assertEqual(meta["actresses"], ["Mana Mochida"])
+        self.assertEqual(meta["genres"], ["Athlete", "Big Tits"])
+        self.assertEqual(meta["duration"], "150分钟")
+        self.assertEqual(meta["releaseDate"], "2026-07-17")
 
     def test_parse_404_template(self):
         html = "<html><title>Page Not Found - JAV Database</title><body>" + ("x" * 600) + "</body></html>"
@@ -86,8 +95,207 @@ class TestDmmCid(unittest.TestCase):
     def test_is_real_image_rejects_tiny(self):
         self.assertFalse(dmm.is_real_image(b"\xff\xd8\xff" + b"\x00" * 100))
 
+    def test_all_search_filters_to_exact_code(self):
+        html = """
+        <a href="/mono/dvd/-/detail/=/cid=140gs2143/"><img src="other.jpg"></a>
+        <a href="https://www.dmm.co.jp/mono/dvd/-/detail/=/cid=140gs2144/"><img src="exact.jpg"></a>
+        <a href="/mono/dvd/-/detail/=/cid=140gs21440/"><img src="similar.jpg"></a>
+        """
+        products = dmm.parse_all_search_products(html, "GS-2144")
+        self.assertEqual([item["cid"] for item in products], ["140gs2144"])
+
+    def test_all_search_accepts_redirect_and_zero_padded_cid(self):
+        url = "https://www.dmm.co.jp/mono/dvd/-/detail/=/cid=h_173spsf00027/"
+        products = dmm.parse_all_search_products("", "SPSF-27", url)
+        self.assertEqual([item["cid"] for item in products], ["h_173spsf00027"])
+
+    def test_all_search_accepts_amateur_product_cover(self):
+        html = """
+        <a href="https://video.dmm.co.jp/amateur/content/?id=peep180&amp;i3_ref=search">
+          <img src="https://pics.dmm.co.jp/digital/amateur/peep180/peep180jp.jpg">
+        </a>
+        """
+        products = dmm.parse_all_search_products(html, "PEEP-180")
+        self.assertEqual(len(products), 1)
+        self.assertEqual(products[0]["kind"], "digital")
+        self.assertEqual(products[0]["cid"], "peep180")
+        self.assertIn("peep180jp.jpg", products[0]["cover"])
+
+    def test_cover_only_prefers_all_category_result(self):
+        original_search = dmm.search_all_products
+        original_first = dmm._first_real
+        original_candidates = dmm.cid_candidates
+        try:
+            product = {
+                "kind": "digital",
+                "cid": "peep180",
+                "page": "https://video.dmm.co.jp/amateur/content/?id=peep180",
+                "cover": "https://pics.dmm.co.jp/digital/amateur/peep180/peep180jp.jpg",
+            }
+            dmm.search_all_products = lambda code, with_status=False: (
+                ([product], True) if with_status else [product]
+            )
+            dmm._first_real = lambda urls, timeout=12: (urls[0], b"real")
+            dmm.cid_candidates = lambda code: self.fail("heuristics should not run after search hit")
+            art = dmm.fetch_cover_only("PEEP-180")
+            self.assertEqual(art["cid"], "peep180")
+            self.assertIn("peep180jp.jpg", art["cover"])
+        finally:
+            dmm.search_all_products = original_search
+            dmm._first_real = original_first
+            dmm.cid_candidates = original_candidates
+
+    def test_digital_search_uses_graphql_samples(self):
+        original_search = dmm.search_all_products
+        original_detail = dmm._fetch_digital_metadata
+        original_first = dmm._first_real
+        try:
+            product = {
+                "kind": "digital",
+                "cid": "peep180",
+                "page": "https://video.dmm.co.jp/amateur/content/?id=peep180",
+                "cover": "https://example.test/search-cover.jpg",
+            }
+            dmm.search_all_products = lambda code, with_status=False: (
+                ([product], True) if with_status else [product]
+            )
+            dmm._fetch_digital_metadata = lambda cid, code="", page="": {
+                "cover": "https://example.test/graphql-cover.jpg",
+                "samples": [
+                    "https://example.test/jp-001.jpg",
+                    "https://example.test/jp-002.jpg",
+                ],
+            }
+            dmm._first_real = lambda urls, timeout=12: (urls[0], b"real")
+            art = dmm.fetch_artwork("PEEP-180", samples=True)
+            self.assertEqual(art["cover"], "https://example.test/graphql-cover.jpg")
+            self.assertEqual(art["samples"], [
+                "https://example.test/jp-001.jpg",
+                "https://example.test/jp-002.jpg",
+            ])
+        finally:
+            dmm.search_all_products = original_search
+            dmm._fetch_digital_metadata = original_detail
+            dmm._first_real = original_first
+
+    def test_metadata_falls_back_to_verified_cid_candidates(self):
+        original_search = dmm.search_all_products
+        original_candidates = dmm.cid_candidates
+        original_digital = dmm.fetch_digital_metadata_candidates
+        try:
+            dmm.search_all_products = lambda code, with_status=False: []
+            dmm.cid_candidates = lambda code: ["pred00880", "pred880"]
+            dmm.fetch_digital_metadata_candidates = lambda code, cids, page="": {
+                "cid": "pred00880",
+                "actresses": ["音無鈴"],
+                "genres": ["中出し"],
+                "duration": "116分钟",
+                "releaseDate": "2026-07-21",
+            }
+            meta = dmm.fetch_metadata("PRED-880")
+            self.assertEqual(meta["cid"], "pred00880")
+            self.assertEqual(meta["actresses"], ["音無鈴"])
+        finally:
+            dmm.search_all_products = original_search
+            dmm.cid_candidates = original_candidates
+            dmm.fetch_digital_metadata_candidates = original_digital
+
+    def test_successful_empty_search_uses_verified_graphql_not_cdn_bruteforce(self):
+        original_search = dmm.search_all_products
+        original_candidates = dmm.cid_candidates
+        original_digital = dmm.fetch_digital_metadata_candidates
+        original_probe = dmm.probe_cid
+        try:
+            dmm.search_all_products = lambda code, with_status=False: (
+                ([], True) if with_status else []
+            )
+            dmm.cid_candidates = lambda code: ["none00999"]
+            dmm.fetch_digital_metadata_candidates = lambda code, cids, page="": None
+            dmm.probe_cid = lambda *args, **kwargs: self.fail("blind CDN probing must stay disabled")
+            self.assertIsNone(dmm.fetch_cover_only("NONE-999"))
+        finally:
+            dmm.search_all_products = original_search
+            dmm.cid_candidates = original_candidates
+            dmm.fetch_digital_metadata_candidates = original_digital
+            dmm.probe_cid = original_probe
+
+
+class TestForumArtwork(unittest.TestCase):
+    def test_extracts_full_first_post_images(self):
+        html = """
+        <td class="t_f" id="postmessage_1">
+        <img src="static/image/common/none.gif"
+             zoomfile="https://img.example.test/cover.jpg"
+             file="https://img.example.test/cover.jpg" inpost="1">
+        <img src="static/image/common/none.gif"
+             zoomfile="/attachments/sample.jpg" inpost="1">
+        </td>
+        <td class="t_f" id="postmessage_2">
+        <img zoomfile="https://img.example.test/reply.jpg" inpost="1">
+        </td>
+        <img src="/static/image/avatar.png">
+        """
+        self.assertEqual(
+            chinese_forum.extract_thread_images(html, "https://forum.example.test/thread-1.html"),
+            [
+                "https://img.example.test/cover.jpg",
+                "https://forum.example.test/attachments/sample.jpg",
+            ],
+        )
+
 
 class TestPreferOrder(unittest.TestCase):
+    def test_cover_only_prefers_mgs_before_dmm(self):
+        orig_jdb = javdatabase.fetch_artwork
+        orig_mgs = mgs.fetch_artwork
+        orig_dmm = dmm.fetch_artwork
+
+        try:
+            javdatabase.fetch_artwork = lambda code: None
+            mgs.fetch_artwork = lambda code: {
+                "source": "mgs",
+                "cover": "https://image.mgstage.com/example/pb_e.jpg",
+                "samples": [],
+            }
+            dmm.fetch_artwork = lambda code, samples=True: self.fail(
+                "DMM should not run after MGS cover hit"
+            )
+            cover, samples, src = prefer_urls("MGS-001", cover_only=True)
+            self.assertIn("mgstage.com", cover)
+            self.assertEqual(samples, [])
+            self.assertEqual(src, "mgs")
+        finally:
+            javdatabase.fetch_artwork = orig_jdb
+            mgs.fetch_artwork = orig_mgs
+            dmm.fetch_artwork = orig_dmm
+
+    def test_cover_only_dmm_does_not_probe_samples(self):
+        orig_jdb = javdatabase.fetch_artwork
+        orig_mgs = mgs.fetch_artwork
+        orig_dmm = dmm.fetch_artwork
+
+        try:
+            javdatabase.fetch_artwork = lambda code: None
+            mgs.fetch_artwork = lambda code: None
+
+            def fake_dmm(code, samples=True):
+                self.assertFalse(samples)
+                return {
+                    "source": "dmm",
+                    "cover": "https://pics.dmm.co.jp/mono/movie/adult/140gs2144/140gs2144pl.jpg",
+                    "samples": [],
+                }
+
+            dmm.fetch_artwork = fake_dmm
+            cover, samples, src = prefer_urls("GS-2144", cover_only=True)
+            self.assertIn("140gs2144", cover)
+            self.assertEqual(samples, [])
+            self.assertEqual(src, "dmm")
+        finally:
+            javdatabase.fetch_artwork = orig_jdb
+            mgs.fetch_artwork = orig_mgs
+            dmm.fetch_artwork = orig_dmm
+
     def test_prefer_javdatabase_over_dmm(self):
         orig_jdb = javdatabase.fetch_artwork
         orig_dmm = dmm.fetch_artwork

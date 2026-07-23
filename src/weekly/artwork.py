@@ -1,14 +1,15 @@
-"""Artwork resolution: javdatabase -> MGS images -> DMM CDN -> caller URLs.
+"""Artwork resolution: javdatabase -> MGS -> DMM -> forum -> caller URLs.
 
 Primary cover/samples: javdatabase. MGS product images are a fast single-page
-fallback (also used for tags via enrich). DMM multi-cid probe is last (slow).
+fallback (also used for tags via enrich). Forum attachments are last-resort art.
 """
 import os
 
-from . import dmm, javbus, javdatabase, mgs
+from . import chinese_forum, dmm, javbus, javdatabase, mgs
 
 
 def set_proxy(proxy):
+    chinese_forum.set_proxy(proxy)
     javdatabase.set_proxy(proxy)
     dmm.set_proxy(proxy)
     javbus.set_proxy(proxy)
@@ -19,8 +20,8 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def resolve(code, proxy=None):
-    """Resolve remote cover + sample URLs. javdatabase -> MGS -> DMM."""
+def resolve(code, proxy=None, cover_only=False):
+    """Resolve artwork in source order: javdatabase -> MGS -> exact DMM search."""
     if proxy is not None:
         set_proxy(proxy)
     code = (code or "").strip().upper()
@@ -32,7 +33,7 @@ def resolve(code, proxy=None):
 
     if not skip_jdb:
         art = javdatabase.fetch_artwork(code)
-        if art and art.get("cover") and art.get("samples"):
+        if art and art.get("cover") and (cover_only or art.get("samples")):
             return art
         if art and (art.get("cover") or art.get("samples")):
             # Partial: try MGS then DMM to fill the missing side
@@ -51,7 +52,7 @@ def resolve(code, proxy=None):
                         merged["source"] = "javdatabase+mgs"
                         return merged
                     art = merged
-            if not skip_dmm and art.get("cover") and not art.get("samples"):
+            if not skip_dmm and not cover_only and art.get("cover") and not art.get("samples"):
                 dmm_art = dmm.fetch_artwork(code, samples=True)
                 if dmm_art and dmm_art.get("samples"):
                     merged = dict(art)
@@ -70,22 +71,22 @@ def resolve(code, proxy=None):
     if use_mgs_img:
         try:
             art = mgs.fetch_artwork(code)
-            if art and (art.get("cover") or art.get("samples")):
+            if art and (art.get("cover") or (art.get("samples") and not cover_only)):
                 return art
         except Exception as e:
             print(f"[artwork] MGS image {code}: {e}")
 
     if not skip_dmm:
-        art = dmm.fetch_artwork(code)
+        art = dmm.fetch_artwork(code, samples=not cover_only)
         if art and (art.get("cover") or art.get("samples")):
             return art
     return None
 
 
-def prefer_urls(code, cover="", fanarts=None, proxy=None):
+def prefer_urls(code, cover="", fanarts=None, proxy=None, cover_only=False):
     """Return (cover_url, sample_urls, source) preferring javdatabase/DMM over JavBus."""
     fanarts = list(fanarts or []) if isinstance(fanarts, list) else []
-    art = resolve(code, proxy=proxy)
+    art = resolve(code, proxy=proxy, cover_only=cover_only)
     if not art:
         return cover or "", fanarts, ""
     src = art.get("source") or ""
@@ -114,7 +115,15 @@ def _local_fanart_count(avid, save_dir):
     return n
 
 
-def download_for_item(item, save_dir, force_cover=False, force_fanarts=False, limit=0, proxy=None):
+def download_for_item(
+    item,
+    save_dir,
+    force_cover=False,
+    force_fanarts=False,
+    limit=0,
+    proxy=None,
+    cover_only=False,
+):
     """Resolve javdatabase/DMM then download cover + fanarts into save_dir.
 
     Mutates item keys: cover, fanarts, remoteFanarts, artworkSource.
@@ -140,7 +149,32 @@ def download_for_item(item, save_dir, force_cover=False, force_fanarts=False, li
         avid,
         cover=existing_cover if isinstance(existing_cover, str) and existing_cover.startswith("http") else "",
         fanarts=fallback_fanarts,
+        cover_only=cover_only,
     )
+    local_fanart_count = _local_fanart_count(avid, save_dir)
+    need_forum_cover = not cover_url and (
+        not existing_cover
+        or (isinstance(existing_cover, str) and existing_cover.startswith("http"))
+    )
+    need_forum_samples = (
+        not cover_only
+        and not sample_urls
+        and (force_fanarts or local_fanart_count == 0)
+    )
+    forum_url = str(item.get("forumUrl") or "").strip()
+    if forum_url and (need_forum_cover or need_forum_samples):
+        try:
+            forum_art = chinese_forum.fetch_thread_artwork(forum_url)
+        except Exception as e:
+            print(f"[artwork] forum image {avid}: {e}")
+            forum_art = None
+        if forum_art:
+            if need_forum_cover and forum_art.get("cover"):
+                cover_url = forum_art["cover"]
+            if need_forum_samples and forum_art.get("samples"):
+                sample_urls = list(forum_art["samples"])
+            if cover_url or sample_urls:
+                source = f"{source}+forum" if source else "forum"
     if not cover_url and isinstance(existing_cover, str):
         cover_url = existing_cover
     if not sample_urls:
@@ -162,7 +196,7 @@ def download_for_item(item, save_dir, force_cover=False, force_fanarts=False, li
     elif cover_url and not item.get("cover"):
         item["cover"] = cover_url
 
-    if sample_urls:
+    if sample_urls and not cover_only:
         item["remoteFanarts"] = sample_urls
         local_n = _local_fanart_count(avid, save_dir)
         fanarts_val = item.get("fanarts")

@@ -13,6 +13,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or "/app")
 from src.weekly import artwork
+from weekly_store import atomic_write_json, weekly_update_lock
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 WEEKLY_DIR = os.path.join(SAVE_PATH, "__weekly__")
@@ -128,7 +129,7 @@ def needs(item):
     return need_c, need_f
 
 
-def main():
+def _main_locked():
     open(_LOG_PATH, "w").close()
     artwork.set_proxy(PROXY)
     log(
@@ -171,6 +172,7 @@ def main():
                 force_cover=nc,
                 force_fanarts=nf,
                 limit=FANART_LIMIT if nf else 0,
+                cover_only=ONLY_MISSING_COVER,
             )
             got_c = has_local_cover(item)
             n_f = local_fanart_count(item)
@@ -191,10 +193,7 @@ def main():
             traceback.print_exc()
 
         if i % SAVE_EVERY == 0 or i == len(todo):
-            tmp = WEEKLY_JSON + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(items, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, WEEKLY_JSON)
+            atomic_write_json(WEEKLY_JSON, items)
             elapsed = time.time() - t0
             rate = i / elapsed if elapsed else 0
             log(
@@ -205,6 +204,11 @@ def main():
         f"=== DONE ok_c={ok_c} ok_f={ok_f} fail={fail} "
         f"elapsed={time.time() - t0:.0f}s ==="
     )
+
+
+def main():
+    with weekly_update_lock(WEEKLY_JSON):
+        _main_locked()
 
 
 if __name__ == "__main__":

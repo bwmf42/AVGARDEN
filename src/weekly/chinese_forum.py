@@ -13,6 +13,7 @@ import random
 import re
 import sys
 import time
+import html as html_lib
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin
@@ -264,6 +265,39 @@ def extract_magnets(html: str) -> List[str]:
     return found
 
 
+def extract_thread_images(value: str, base: str = BASE) -> List[str]:
+    """Extract first-post attachment images, preferring full zoom/file URLs."""
+    first_post = re.search(
+        r'<td\b[^>]*\bid=["\']postmessage_\d+["\'][^>]*>(.*?)</td>',
+        value or "",
+        re.I | re.S,
+    )
+    scope = first_post.group(1) if first_post else (value or "")
+    found = []
+    seen = set()
+    for tag in re.findall(r"<img\b[^>]*>", scope, re.I):
+        if not re.search(r"\b(?:inpost|zoomfile|file)=", tag, re.I):
+            continue
+        selected = ""
+        for key in ("zoomfile", "file", "src"):
+            match = re.search(rf"\b{key}=[\"']([^\"']+)", tag, re.I)
+            if match:
+                selected = html_lib.unescape(match.group(1)).strip()
+                if selected:
+                    break
+        if not selected:
+            continue
+        url = urljoin(base.rstrip("/") + "/", selected)
+        path = url.split("?", 1)[0].lower()
+        if not path.endswith((".jpg", ".jpeg", ".png", ".webp")):
+            continue
+        if "static/image/" in path or url in seen:
+            continue
+        seen.add(url)
+        found.append(url)
+    return found
+
+
 class ForumClient:
     """带安全门的串行客户端。"""
 
@@ -420,6 +454,25 @@ class ForumClient:
         if not magnets:
             return ""
         return magnets[0]
+
+    def fetch_thread_artwork(self, forum_url: str) -> dict | None:
+        html = self.fetch_thread_html(forum_url)
+        images = extract_thread_images(html or "", forum_url or self.base)
+        if not images:
+            return None
+        return {
+            "source": "forum",
+            "page": forum_url,
+            "cover": images[0],
+            "samples": images[1:],
+        }
+
+
+def fetch_thread_artwork(forum_url: str) -> dict | None:
+    """Fetch final-fallback artwork from an already-known same-site thread."""
+    if not forum_url:
+        return None
+    return ForumClient().fetch_thread_artwork(forum_url)
 
 
 def get_list_until(

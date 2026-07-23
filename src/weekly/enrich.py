@@ -1,18 +1,19 @@
-"""SOAV-style weekly item enrichment: MGS/JavBus metadata + artwork download.
+"""SOAV-style weekly item enrichment: exact metadata + artwork download.
 
-Metadata: MGS (tags/actresses/duration) → JavBus gaps.
-Images: artwork module (javdatabase → DMM → existing URLs). MGS is not used for images.
+Metadata: MGS with genres, then exact DMM, then exact javdatabase fallback.
+Images: artwork module (javdatabase → MGS → DMM → forum → existing URLs).
 """
 from __future__ import annotations
 
 import os
 from typing import Optional
 
-from . import genre_zh, javbus, mgs
+from . import dmm, genre_zh, javbus, javdatabase, mgs
 
 
 def set_proxy(proxy):
     mgs.set_proxy(proxy)
+    dmm.set_proxy(proxy)
     javbus.set_proxy(proxy)
     try:
         from . import artwork
@@ -89,11 +90,13 @@ def apply_mgs_meta(item: dict, meta: dict) -> bool:
 
     # Images intentionally not applied from MGS (javdatabase/DMM via artwork).
 
-    item["metaSource"] = "mgs"
+    if changed:
+        item["metaSource"] = "mgs"
     return changed
 
 
 def apply_javbus_meta(item: dict, detail: dict) -> bool:
+    """Retained for an explicit future fallback; not in the active source chain."""
     if not detail:
         return False
     changed = False
@@ -147,6 +150,56 @@ def apply_javbus_meta(item: dict, detail: dict) -> bool:
     return changed
 
 
+def apply_dmm_meta(item: dict, meta: dict) -> bool:
+    """Fill only empty metadata fields from an exact DMM product."""
+    if not meta:
+        return False
+    changed = False
+
+    if meta.get("actresses") and not item.get("actresses"):
+        item["actresses"] = _as_list(meta["actresses"])
+        changed = True
+    if meta.get("genres") and not item.get("genres"):
+        item["genres"] = genre_zh.translate_genres(meta["genres"])
+        changed = True
+    if meta.get("duration") and not item.get("duration"):
+        item["duration"] = meta["duration"]
+        changed = True
+    if meta.get("releaseDate") and not item.get("releaseDate"):
+        item["releaseDate"] = meta["releaseDate"]
+        changed = True
+
+    if changed:
+        current = item.get("metaSource") or ""
+        item["metaSource"] = "mgs+dmm" if current == "mgs" else "dmm"
+    return changed
+
+
+def apply_javdatabase_meta(item: dict, meta: dict) -> bool:
+    """Final exact-page fallback after both MGS and DMM have no metadata."""
+    if not meta:
+        return False
+    changed = False
+    if meta.get("actresses") and not item.get("actresses"):
+        item["actresses"] = _as_list(meta["actresses"])
+        changed = True
+    if meta.get("genres") and not item.get("genres"):
+        item["genres"] = genre_zh.translate_genres(meta["genres"])
+        changed = True
+    if meta.get("duration") and not item.get("duration"):
+        item["duration"] = meta["duration"]
+        changed = True
+    if meta.get("releaseDate") and not item.get("releaseDate"):
+        item["releaseDate"] = meta["releaseDate"]
+        changed = True
+    if changed:
+        current = item.get("metaSource") or ""
+        item["metaSource"] = (
+            "mgs+javdatabase" if current == "mgs" else "javdatabase"
+        )
+    return changed
+
+
 def enrich_item(
     item: dict,
     save_dir: Optional[str] = None,
@@ -156,8 +209,7 @@ def enrich_item(
 ) -> dict:
     """Fill SOAV-style fields on item in place.
 
-    Order: MGS detail (tags/meta) → JavBus gaps → artwork download
-    (javdatabase → DMM → existing URLs).
+    Order: MGS detail → exact DMM/JAV Database gaps → artwork.
     """
     if proxy is not None:
         set_proxy(proxy)
@@ -169,32 +221,41 @@ def enrich_item(
 
     skip_mgs = os.environ.get("ARTWORK_SKIP_MGS", "").strip().lower() in ("1", "true", "yes", "on")
 
-    # 1) MGS metadata only (genres/actresses/duration/date) — not images
+    # 1) MGS metadata only (genres/actresses/duration/date) — not images.
+    mgs_has_genres = False
     if not skip_mgs:
         try:
             meta = mgs.fetch_detail(avid)
             if meta:
                 apply_mgs_meta(item, meta)
+                mgs_has_genres = bool(meta.get("genres"))
         except Exception as e:
             print(f"[Enrich] MGS {avid}: {e}")
 
-    # 2) JavBus for metadata gaps (and weak image URL fallback before download)
-    need_jb = (
-        not item.get("actresses")
-        or not item.get("genres")
-        or not item.get("duration")
-        or not item.get("cover")
-        or not item.get("fanarts")
-    )
-    if need_jb:
+    # 2) DMM is a whole-source fallback. Never merge DMM tags when MGS has tags.
+    if not mgs_has_genres:
+        dmm_meta = None
+        javdatabase_meta = None
         try:
-            html = javbus.fetch_page(avid)
-            detail = javbus.parse_page(html) if html else {}
-            apply_javbus_meta(item, detail)
+            dmm_meta = dmm.fetch_metadata(avid)
         except Exception as e:
-            print(f"[Enrich] JavBus {avid}: {e}")
+            print(f"[Enrich] DMM {avid}: {e}")
+        if not dmm_meta:
+            try:
+                javdatabase_meta = javdatabase.fetch_detail(avid)
+                cid = (javdatabase_meta or {}).get("cid") or ""
+                if cid:
+                    dmm_meta = dmm.fetch_digital_metadata_candidates(
+                        avid, [cid], page=(javdatabase_meta or {}).get("page") or ""
+                    )
+            except Exception as e:
+                print(f"[Enrich] JAV Database {avid}: {e}")
+        if dmm_meta:
+            apply_dmm_meta(item, dmm_meta)
+        elif javdatabase_meta:
+            apply_javdatabase_meta(item, javdatabase_meta)
 
-    # 3) Download images: javdatabase → DMM → item/JavBus URLs
+    # 3) Download images with the independent established artwork source order.
     if download_images and save_dir:
         from . import artwork
 

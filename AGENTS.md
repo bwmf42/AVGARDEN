@@ -35,7 +35,7 @@
 ### `src/weekly/` 模块
 
 - `sources.py` / `chinese_forum.py` — 列表（默认 plwt forum-37；中文 forum-103）
-- `artwork.py` — 封面预览：javdatabase → MGS → DMM
+- `artwork.py` — 封面预览：javdatabase → MGS → DMM → 已知论坛帖附件
 - `javdatabase.py` / `mgs.py` / `dmm.py` / `javbus.py`
 - `enrich.py` / `genre_zh.py` — 元数据与标签中文映射
 - `sukebei.py` / `merge.py`
@@ -72,17 +72,18 @@
 
 - **列表源（默认）**：98堂 `https://plwt.kpqq4.com/forum-37-1.html`（`WEEKLY_FORUM_FID=37`，默认 **3 页** `WEEKLY_MAX_PAGES`）。实现：`sources.get_recent` → `chinese_forum.get_weekly_list`。
 - **中文资源日常**：同站 `forum-103`，默认 **2 页**（`CHINESE_FORUM_DAILY_PAGES`），`replace_chinese` 在 weekly 之后跑；缺中文才进帖取磁链。
-- 列表无封面时，单条详情可仍用 JavBus 补演员/标签；磁链默认 sukebei（中文板才论坛进帖）。
+- JavBus 访问代码保留但当前不参与元数据和主动图片候选；磁链默认 sukebei（中文板缺磁链时才进帖）。
 - 每日推荐封面和详情预览图应尽量本地化到 `/data/__weekly__/{番号}/`，前端优先使用 `/file/__weekly__/...`，避免用户浏览时再等外站图片。
 - **封面/预览图源优先级（`src/weekly/artwork.py`）**：
   1. **javdatabase**：`https://www.javdatabase.com/movies/{番号小写}/` → DMM `pl.jpg` / `og:image` + 页内 `jp-N`（无年龄 Cookie；NAS **必须走 `PROXY`**，直连常超时）。
   2. **MGS 商品图**（单页快路径）：`pb_e` / `cap_e_*` — **SIRO / ABF 等 MGS 独占** javdatabase 常 404，靠这一层；也是标签元数据主源。
-  3. **DMM CDN 猜 cid**（最慢，放最后）：`pl` / `jp-N`；**无真实封面的 cid 不要扫样片**；拒绝 NOW PRINTING 占位图。
-  4. **JavBus / 条目已有 URL** 兜底。
+  3. **DMM 精确搜索**（放最后）：传统 DVD 读静态商品表格；数字商品走 `https://api.video.dmm.co.jp/graphql`，同时读取标准 `actresses` 和素人 `amateurActress`。搜索页漏结果时把常见 CID 在一次 GraphQL 请求内批量查询，并以 `makerContentId` 二次校验番号；未知厂商前缀只借 javdatabase 页内真实 `Content ID` 定位。**无真实封面的 cid 不要扫样片**；拒绝 NOW PRINTING 占位图。
+  4. **已知 98堂帖子附件**：前三层都没有所需图片时，才进该条已有 `forumUrl`，首图作封面、后续附件作预览；不为此扫描无关帖子。
+  5. **条目已有 URL** 兜底。JavBus 访问技巧保留，但当前不主动请求。
 - **详情元数据（`src/weekly/enrich.py`）**：
   - 字段：演员、标签、发行日、时长、字幕、封面/预览、`titleZh`
-  - 顺序：MGS 表字段 → JavBus 补缺 → **artwork 下载图**（上表优先级）
-  - **仅 MGS 日文ジャンル** 经 `genre_zh.py` 对齐库内 JavBus 标签名；**NTR 保持 NTR**；JavBus 原标签不译
+  - 顺序：MGS 表字段；MGS 完全没有标签时才用 DMM 精确商品元数据补空字段；DMM 搜索与精确 CID 均没有商品时，最后使用 javdatabase 精确番号页的演员、标签、时长 → **artwork 下载图**（上表优先级）。JavBus 代码保留但当前不参与候选。
+  - MGS/DMM 日文标签和 javdatabase 英文标签经 `genre_zh.py` 对齐库内名称；**NTR 保持 NTR**；来源没有演员时保持空白，不从标题猜名字。
   - 标题：`weekly_updater.batch_translate`（DeepSeek → `titleZh`）
 - 回退列表源：`WEEKLY_LIST_SOURCE=javbus`。
 - **回填范围**：默认只补前端 **未看**（`/api/weekly` 已滤屏蔽标签/演员 − 已看 − 队列 − 已下载）。脚本 `plwt_art_backfill.py`（`BACKFILL_UNWATCHED_ONLY=1`）；全量才设 `0`。元数据回填用 `weekly_backfill_details.py`（同 scope）。

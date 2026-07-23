@@ -20,7 +20,9 @@ COPY launcher.py /app/
 COPY process_control.py /app/
 COPY queue_store.py /app/
 COPY video_id.py /app/
+COPY weekly_store.py /app/
 COPY weekly_updater.py /app/
+COPY plwt_art_backfill.py /app/
 COPY weekly_backfill_details.py /app/
 COPY replace_chinese.py /app/
 RUN mkdir -p /data /db /cfg /logs

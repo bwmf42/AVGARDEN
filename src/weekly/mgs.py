@@ -53,6 +53,45 @@ def _norm_code(code):
     return (code or "").strip().upper()
 
 
+_PROFILE_AGE_RE = re.compile(r"(?:[（(]\s*)?\d{1,3}\s*歳(?:\s*[）)])?")
+_PROFILE_SUFFIX_PATTERNS = (
+    re.compile(r"^(\S+)\s+新規\s+\d+\s*分コース(?:\s.*)?$"),
+    re.compile(r"^(\S+)\s+腋もアナルも綺麗(?:\s.*)?$"),
+)
+
+
+def normalize_actress_label(value):
+    """Reduce MGS amateur profile labels to the displayed nickname."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+
+    age = _PROFILE_AGE_RE.search(text)
+    if age:
+        before_age = text[: age.start()].strip(" -‐–—・:：()（）[]【】")
+        if before_age:
+            # Amateur profiles can put prose before the nickname. The token
+            # nearest the age marker is the stable name portion.
+            return before_age.split()[-1]
+
+    for pattern in _PROFILE_SUFFIX_PATTERNS:
+        match = pattern.match(text)
+        if match:
+            return match.group(1)
+    return text
+
+
+def normalize_actresses(values):
+    out = []
+    seen = set()
+    for value in values or []:
+        name = normalize_actress_label(value)
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
 def _code_token(code):
     return _norm_code(code).lower()
 
@@ -251,8 +290,10 @@ def parse_metadata(html: str, code: str = "") -> dict:
 
     cover, samples = _classify(_extract_urls(html), code)
 
-    # Drop device / review noise from actresses if misparsed
-    actresses = [a for a in actresses if a and "Windows" not in a and "レビュー" not in a]
+    # Drop device/review noise, then reduce amateur profile labels to nicknames.
+    actresses = normalize_actresses(
+        a for a in actresses if a and "Windows" not in a and "レビュー" not in a
+    )
 
     out = {
         "source": "mgs",
@@ -269,11 +310,12 @@ def parse_metadata(html: str, code: str = "") -> dict:
         "series": series,
         "label": label,
     }
-    # empty cleanup
-    if not out["cover"] and not out["samples"] and not out["genres"] and not out["actresses"]:
-        # might be empty product / age wall
-        if "product_detail" not in (html or "") and "detail_data" not in (html or ""):
-            return {}
+    meaningful = (
+        "title", "cover", "samples", "actresses", "genres", "duration",
+        "releaseDate", "maker", "series", "label",
+    )
+    if not any(out.get(key) for key in meaningful):
+        return {}
     return out
 
 
