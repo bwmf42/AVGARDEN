@@ -62,6 +62,63 @@ def clean_avid(name):
         return f"{search.group(1).upper()}-{search.group(2)}"
     return name
 
+
+# qB states that mean "still our job" (must include queuedDL — waiting for a slot)
+_QB_ACTIVE_DL = frozenset({
+    "downloading", "stalledDL", "metaDL", "forcedDL", "queuedDL",
+    "checkingDL", "allocating", "moving", "checkingResumeData",
+})
+_QB_DONE_UP = frozenset({
+    "queuedUP", "uploading", "stalledUP", "pausedUP", "forcedUP",
+})
+
+
+def code_from_qb_torrent(torrent):
+    """Resolve DVD code from qB torrent: tags (worker sets tags=番号) then name/path."""
+    tags = str(torrent.get("tags") or "")
+    for tag in tags.split(","):
+        tag = tag.strip().upper()
+        if not tag:
+            continue
+        normalized = normalize_video_id(tag) or clean_avid(tag)
+        if normalized and re.match(r"^[A-Z0-9]+-\d+", normalized):
+            return normalized
+    for field in (
+        torrent.get("name", ""),
+        torrent.get("content_path", ""),
+        os.path.basename(str(torrent.get("save_path", "")).rstrip("/")),
+    ):
+        code = clean_avid(str(field or ""))
+        if code and re.match(r"^[A-Z0-9]+-\d+", code):
+            return code
+    return ""
+
+
+def qb_status_from_state(torrent_state):
+    """Map qB state → queue API status string."""
+    if torrent_state in _QB_DONE_UP:
+        return "done"
+    if torrent_state in _QB_ACTIVE_DL:
+        if torrent_state == "queuedDL":
+            return "queued"
+        return "downloading"
+    return ""
+
+
+def codes_in_qb(torrents):
+    """Set of active/recent DVD codes present in AV_GARDEN category."""
+    out = set()
+    if not isinstance(torrents, list):
+        return out
+    for t in torrents:
+        st = str(t.get("state") or "")
+        if st not in _QB_ACTIVE_DL and st not in _QB_DONE_UP:
+            continue
+        code = code_from_qb_torrent(t)
+        if code:
+            out.add(code)
+    return out
+
 _speed_cache = {}
 _speed_cache_lock = threading.Lock()
 
@@ -157,6 +214,13 @@ def get_qb_progress(save_dir, torrents=None):
         return None
     code = os.path.basename(save_dir.rstrip("/")).upper()
     for t in torrents:
+        t_code = code_from_qb_torrent(t)
+        if t_code and (t_code == code or clean_avid(t_code) == clean_avid(code)):
+            return {
+                "size": t.get("completed", 0),
+                "speed": t.get("dlspeed", 0),
+                "progress_pct": int(t.get("progress", 0) * 100),
+            }
         cp = (t.get("content_path", "") or t.get("name", "")).upper()
         if code in cp:
             return {
@@ -848,51 +912,59 @@ class QueueHandler(BaseHTTPRequestHandler):
                                 log(f"Discovered download from disk: {d}")
                                 break
 
-        # Scan qBittorrent for active downloads not in queue/state
+        # Scan qBittorrent (incl. queuedDL — waiting for download slot)
+        qb_codes = codes_in_qb(qb_torrents)
         if qb_torrents:
             for t in qb_torrents:
-                if t.get("state") not in ("downloading", "stalledDL", "metaDL", "forcedDL", "queuedUP", "uploading", "stalledUP", "pausedUP"):
+                torrent_state = str(t.get("state") or "")
+                status = qb_status_from_state(torrent_state)
+                if not status:
                     continue
-                name = t.get("name", "")
-                if not name:
+                code = code_from_qb_torrent(t)
+                if not code:
                     continue
-                # 用 clean_avid 标准化车号 (abf-348ch → ABF-348)
-                code = clean_avid(name)
-                sp = t.get("save_path", "").rstrip("/")
-                if sp and sp != "/data":
-                    sp_code = clean_avid(os.path.basename(sp))
-                    if len(sp_code) > len(code):
-                        code = sp_code
+                if status == "done" and not is_recent_timestamp(
+                    t.get("completion_on") or t.get("seen_complete") or t.get("added_on")
+                ):
+                    continue
 
-                # 检查 result 中是否已有相同车号（可能是 CH 后缀等变体）
-                already = False
+                # Prefer longer/cleaner code if already present under a variant
+                already_key = None
                 for k in list(result.keys()):
-                    if clean_avid(k) == code:
-                        already = True
+                    if clean_avid(k) == code or clean_avid(code) == clean_avid(k):
+                        already_key = k
                         break
-                if already:
+                if already_key:
+                    # Upgrade queued → downloading if qB is actively transferring
+                    if status == "downloading" and result[already_key].get("status") == "queued":
+                        result[already_key] = {
+                            "code": already_key,
+                            "status": "downloading",
+                            "size": t.get("completed", 0),
+                            "speed": t.get("dlspeed", 0),
+                            "progress_pct": min(99, int(t.get("progress", 0) * 100)),
+                        }
                     continue
 
-                size = t.get("completed", 0)
                 progress_pct = int(t.get("progress", 0) * 100)
-                torrent_state = t.get("state", "")
-                status = "done" if torrent_state in ("queuedUP", "uploading", "stalledUP", "pausedUP") else "downloading"
-                if status == "done" and not is_recent_timestamp(t.get("completion_on") or t.get("seen_complete") or t.get("added_on")):
-                    continue
+                if status == "queued":
+                    progress_pct = 0
+                elif status == "downloading" and progress_pct >= 100:
+                    progress_pct = 99
                 result[code] = {
                     "code": code,
                     "status": status,
-                    "size": size,
-                    "speed": t.get("dlspeed", 0),
-                    "progress_pct": min(99, progress_pct) if progress_pct < 100 else 99,
+                    "size": t.get("completed", 0),
+                    "speed": t.get("dlspeed", 0) if status == "downloading" else 0,
+                    "progress_pct": progress_pct if status != "done" else 100,
                 }
-                log(f"Discovered from qBittorrent: {name} -> {code} ({progress_pct}%)")
+                log(f"Discovered from qBittorrent: {t.get('name', '')[:60]} -> {code} ({status} {progress_pct}%)")
 
-        # Items from state (including done)
+        # Items from state (registration file is primary for "已加入队列")
         for item in state:
             c = item["code"]
             if c in result:
-                continue  # Already in result from queue.txt or current download
+                continue  # Already in result from queue.txt or qB
 
             mp4 = find_mp4_path(c)
             if mp4:
@@ -902,11 +974,11 @@ class QueueHandler(BaseHTTPRequestHandler):
                     clear_failure_record(c)
                     failed_codes.discard(c.upper())
             elif item.get("status") == "downloading" and not is_locked:
-                # Stale download: no mp4, no active lock → assume failed/cleaned
+                # Stale download: no mp4, no active lock, not in qB → clean
                 has_ts = find_ts_path(c) is not None
                 dir_size = get_dir_size(get_code_dir(c)) if os.path.isdir(get_code_dir(c)) else 0
-                if not has_ts and dir_size == 0:
-                    log(f"Removing stale download state: {c} (no files, no lock)")
+                if not has_ts and dir_size == 0 and c not in qb_codes:
+                    log(f"Removing stale download state: {c} (no files, no lock, not in qB)")
                     state = [s for s in state if s["code"] != c]
                     save_state(state)
                     continue
@@ -914,8 +986,17 @@ class QueueHandler(BaseHTTPRequestHandler):
                     info = get_download_info(c)
                     result[c] = {"code": c, "status": item.get("status", "queued"), **info}
             elif item.get("status") == "queued" and c not in queue_codes:
-                # queue.txt/qB/current are the live sources for queued work.
-                # A queued state with only scraped sidecar files is an orphan.
+                # Keep registration if still in qB (e.g. queuedDL) or worker current
+                if c in qb_codes or c == current_code:
+                    result[c] = {
+                        "code": c,
+                        "status": "queued",
+                        "size": 0,
+                        "speed": 0,
+                        "progress_pct": 0,
+                    }
+                    continue
+                # Orphan: only scraped sidecar under __weekly__ etc., no real job
                 if find_ts_path(c) is None:
                     log(f"Removing stale queued state: {c} (not in queue/qB/current)")
                     state = [s for s in state if s["code"] != c]
@@ -998,24 +1079,38 @@ class QueueHandler(BaseHTTPRequestHandler):
             clear_cancel_request(code)
         clear_failure_record(code)
 
-        # 检查 qBittorrent 是否已在下载此车号
+        # 检查 qBittorrent 是否已有此番号（含 queuedDL + tags）
         qb_torrents = qb_api("/api/v2/torrents/info?category=AV_GARDEN")
-        if qb_torrents:
-            cleaned = clean_avid(code)
+        cleaned = clean_avid(code)
+        if isinstance(qb_torrents, list):
             for t in qb_torrents:
-                t_code = clean_avid(t.get("name", ""))
-                if t_code == cleaned:
+                st = str(t.get("state") or "")
+                if st not in _QB_ACTIVE_DL and st not in _QB_DONE_UP:
+                    continue
+                t_code = code_from_qb_torrent(t)
+                if t_code and (t_code == cleaned or clean_avid(t_code) == cleaned):
+                    # Ensure registration file still shows "已加入"
+                    state = load_state()
+                    if code not in [s["code"] for s in state]:
+                        state.append({"code": code, "status": "queued", "added_at": time.time()})
+                        save_state(state)
                     self._json({"status": "already in qBittorrent", "code": code})
                     return
 
         append_unique(QUEUE_PATH, code)
 
+        # Registration file is UI source of truth (write-through on add)
         state = load_state()
-        if code not in [s["code"] for s in state]:
+        existing = next((s for s in state if s.get("code") == code), None)
+        if existing is None:
             state.append({"code": code, "status": "queued", "added_at": time.time()})
             save_state(state)
             self._json({"status": "added", "code": code})
         else:
+            existing["status"] = "queued"
+            if not existing.get("added_at"):
+                existing["added_at"] = time.time()
+            save_state(state)
             self._json({"status": "already in queue", "code": code})
 
     @queue_route_locked

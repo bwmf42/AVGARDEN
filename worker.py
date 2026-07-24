@@ -204,6 +204,9 @@ def has_active_qb_task(avid):
         state = str(torrent.get("state", ""))
         if state not in active_states and state not in done_states:
             continue
+        tags = {x.strip().upper() for x in str(torrent.get("tags") or "").split(",") if x.strip()}
+        if target in tags:
+            return True
         fields = [
             torrent.get("name", ""),
             torrent.get("content_path", ""),
@@ -216,7 +219,7 @@ def has_active_qb_task(avid):
                 return True
             # 用分隔符边界匹配，避免 ABF-361 误匹配 ABF-3612
             import re as _re
-            if _re.search(r'(?:^|[/\s\-_.,])' + _re.escape(target) + r'(?:[/\s\-_.,]|$)', value):
+            if _re.search(r'(?:^|[/\s\-_.,\[\]+])' + _re.escape(target) + r'(?:[/\s\-_.,\[\]]|$)', value):
                 return True
     return False
 
@@ -571,16 +574,32 @@ def try_magnet_download(avid, save_dir, magnet=None):
             time.sleep(5)
             continue
 
-        # 找到我们的 torrent
+        # 找到我们的 torrent：tags=番号 / magnet / save_path 子目录
         target = None
+        avid_u = avid.upper().strip()
         for t in torrents:
-            if t.get("save_path", "").rstrip("/") == save_dir.rstrip("/"):
+            tags = {x.strip().upper() for x in str(t.get("tags") or "").split(",") if x.strip()}
+            if avid_u in tags:
                 target = t
                 break
         if target is None and torrents:
-            # 可能 save_path 有尾部斜杠差异，用磁链匹配
             for t in torrents:
                 if t.get("magnet_uri", "") == magnet:
+                    target = t
+                    break
+        if target is None and torrents:
+            for t in torrents:
+                if t.get("save_path", "").rstrip("/") == save_dir.rstrip("/"):
+                    target = t
+                    break
+        if target is None and torrents:
+            # 名称里带番号（+++ [FHD] ABF-372 ...）
+            import re as _re
+            pat = _re.compile(
+                r"(?:^|[/\s\-_.,\[\]+])" + _re.escape(avid_u) + r"(?:[/\s\-_.,\[\]]|$)"
+            )
+            for t in torrents:
+                if pat.search(str(t.get("name") or "").upper()):
                     target = t
                     break
 

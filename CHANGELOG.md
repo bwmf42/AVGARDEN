@@ -18,6 +18,7 @@
 
 ### Changed
 
+- Queue status: treat qB `queuedDL` as active; resolve codes from torrent **tags** first; keep `queue_state.json` until job is gone from queue/qB (fixes UI「加入下载队列」while already queued). Worker finds magnets by tags/name, not only save_path.
 - Reconciled the current handoff, NAS deployment guide, frontend development guide, environment comments, and bundled operations skill with the deployed A/GARDEN runtime and active paths.
 - Replaced sukebei-based Chinese magnet search in `replace_chinese.py` with the Discuz Chinese-subtitle forum; daily launcher path stays `weekly_updater` then `replace_chinese` (default 2 forum list pages).
 - Hardened Chinese merge cleanup: after moving the Chinese video in, recursively delete non-Chinese videos and common promo junk in the target folder (no longer skip whole folders just because the directory name ends with `-C` / 中文); also sweep existing library leftovers that already have Chinese but still keep old non-Chinese files.
