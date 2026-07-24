@@ -8,6 +8,7 @@ import hashlib
 import html as html_lib
 import re
 import struct
+import time
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, quote, urlparse
@@ -31,7 +32,12 @@ HEADERS = {
 _MIN_BYTES = 8000
 _MIN_SHORT = 200
 _MIN_LONG = 300
-_MAX_SAMPLE_PROBE = 12
+# Cap sample still probes and HTTP pace (env-overridable) to reduce FANZA rate limits.
+_MAX_SAMPLE_PROBE = int(os.environ.get("DMM_MAX_SAMPLES", "8"))
+_CID_FALLBACK_LIMIT = int(os.environ.get("DMM_CID_FALLBACK_LIMIT", "1"))
+_GRAPHQL_CANDIDATE_LIMIT = int(os.environ.get("DMM_GRAPHQL_CANDIDATE_LIMIT", "3"))
+_LAST_FETCH = 0.0
+_FAIL_STREAK = 0
 # DMM generic "no package / NOW PRINTING" (also returned for missing cids).
 _PLACEHOLDER_MD5 = {
     "8c6455760bf9c0c487142280fcef1877",  # 19378 bytes, ~590x800
@@ -95,6 +101,32 @@ def set_proxy(proxy):
 def _proxies():
     p = PROXY or os.environ.get("PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
     return {"http": p, "https": p} if p else None
+
+
+def _pace_delay():
+    """Global polite gap between DMM HTML/CDN/GraphQL requests."""
+    global _LAST_FETCH, _FAIL_STREAK
+    try:
+        delay = float(os.environ.get("DMM_DELAY", "0.9") or "0.9")
+    except ValueError:
+        delay = 0.9
+    # After consecutive failures, back off harder (up to +3s)
+    delay += min(3.0, 0.4 * _FAIL_STREAK)
+    if delay <= 0:
+        return
+    now = time.time()
+    wait = delay - (now - _LAST_FETCH)
+    if wait > 0:
+        time.sleep(wait)
+    _LAST_FETCH = time.time()
+
+
+def _note_request(ok: bool):
+    global _FAIL_STREAK
+    if ok:
+        _FAIL_STREAK = 0
+    else:
+        _FAIL_STREAK = min(12, _FAIL_STREAK + 1)
 
 
 def _norm_code(code):
@@ -274,6 +306,7 @@ def _fetch_digital_metadata(cid, code="", page=""):
         return _DIGITAL_DETAIL_CACHE[key]
 
     try:
+        _pace_delay()
         response = requests.post(
             _GRAPHQL_URL,
             json={
@@ -287,11 +320,14 @@ def _fetch_digital_metadata(cid, code="", page=""):
             timeout=20,
         )
         if response.status_code >= 400:
+            _note_request(False)
             return None
         meta = parse_digital_metadata(response.json(), code, page, cid)
         _cache_digital(key, meta)
+        _note_request(bool(meta))
         return meta
     except Exception:
+        _note_request(False)
         return None
 
 
@@ -315,6 +351,8 @@ def fetch_digital_metadata_candidates(code, cids, page=""):
                 return meta
         else:
             pending.append(cid)
+    # Cap batch size — large multi-id GraphQL looks aggressive
+    pending = pending[: max(1, _GRAPHQL_CANDIDATE_LIMIT)]
     if not pending:
         return None
 
@@ -326,6 +364,7 @@ def fetch_digital_metadata_candidates(code, cids, page=""):
     )
     query = f"query CandidateContent({declarations}) {{ {selections} }}"
     try:
+        _pace_delay()
         response = requests.post(
             _GRAPHQL_URL,
             json={
@@ -339,10 +378,12 @@ def fetch_digital_metadata_candidates(code, cids, page=""):
             timeout=20,
         )
         if response.status_code >= 400:
+            _note_request(False)
             return None
         payload = response.json()
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, dict):
+            _note_request(False)
             return None
         first = None
         for index, cid in enumerate(pending):
@@ -353,8 +394,10 @@ def fetch_digital_metadata_candidates(code, cids, page=""):
             _cache_digital((cid, code), meta)
             if first is None and meta:
                 first = meta
+        _note_request(bool(first))
         return first
     except Exception:
+        _note_request(False)
         return None
 
 
@@ -522,6 +565,7 @@ def search_all_products(code, with_status=False):
     headers = dict(HEADERS)
     headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     try:
+        _pace_delay()
         response = requests.get(
             url,
             proxies=_proxies(),
@@ -531,15 +575,19 @@ def search_all_products(code, with_status=False):
             timeout=15,
         )
         if response.status_code >= 400:
+            _note_request(False)
             return ([], False) if with_status else []
         if "お住まいの地域から" in response.text:
+            _note_request(False)
             return ([], False) if with_status else []
         products = parse_all_search_products(response.text, code, str(response.url))
         if products:
             summary = ",".join(f"{item['kind']}:{item['cid']}" for item in products)
             print(f"[DMM] {code}: all-category search={summary}")
+        _note_request(True)
         return (products, True) if with_status else products
     except Exception:
+        _note_request(False)
         return ([], False) if with_status else []
 
 
@@ -556,6 +604,7 @@ def _fetch_detail_html(url, timeout=20):
     headers = dict(HEADERS)
     headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     try:
+        _pace_delay()
         response = requests.get(
             url,
             proxies=_proxies(),
@@ -565,9 +614,12 @@ def _fetch_detail_html(url, timeout=20):
             timeout=timeout,
         )
         if response.status_code >= 400 or not response.text:
+            _note_request(False)
             return None
+        _note_request(True)
         return response.text
     except Exception:
+        _note_request(False)
         return None
 
 
@@ -615,15 +667,16 @@ def _cover_urls(cid):
 
 
 def _sample_urls(cid, index):
+    # Prefer co.jp only first — fewer hosts, less probe noise
     return [
-        f"https://pics.dmm.com/digital/video/{cid}/{cid}jp-{index}.jpg",
         f"https://pics.dmm.co.jp/digital/video/{cid}/{cid}jp-{index}.jpg",
-        f"https://awsimgsrc.dmm.com/pics_dig/digital/video/{cid}/{cid}jp-{index}.jpg",
+        f"https://pics.dmm.com/digital/video/{cid}/{cid}jp-{index}.jpg",
     ]
 
 
-def _fetch_bytes(url, timeout=12):
+def _fetch_bytes(url, timeout=10):
     try:
+        _pace_delay()
         r = requests.get(
             url,
             proxies=_proxies(),
@@ -632,13 +685,16 @@ def _fetch_bytes(url, timeout=12):
             timeout=timeout,
         )
         if r.status_code < 400 and r.content:
+            _note_request(True)
             return r.content
+        _note_request(False)
     except Exception:
+        _note_request(False)
         return None
     return None
 
 
-def _first_real(urls, timeout=12):
+def _first_real(urls, timeout=10):
     for url in urls:
         if not url:
             continue
@@ -707,23 +763,28 @@ def _fallback_cover_urls(cid):
     return [
         f"https://pics.dmm.co.jp/digital/video/{cid}/{cid}pl.jpg",
         f"https://pics.dmm.co.jp/mono/movie/adult/{cid}/{cid}pl.jpg",
-        f"https://awsimgsrc.dmm.com/pics_dig/digital/video/{cid}/{cid}pl.jpg",
     ]
 
 
 def probe_cid(cid, samples=True):
-    cover_url, _ = _first_real(_cover_urls(cid))
+    # Prefer fewer cover hosts first
+    cover_url, _ = _first_real(_fallback_cover_urls(cid) + _cover_urls(cid)[:2])
     # Wrong cids return placeholder covers; do not also burn N sample probes.
     if not cover_url:
         return None
     sample_list = []
     if samples:
+        miss = 0
         for i in range(1, _MAX_SAMPLE_PROBE + 1):
             url, data = _first_real(_sample_urls(cid, i))
             if not url:
-                if sample_list and i > len(sample_list) + 2:
+                miss += 1
+                if sample_list and miss >= 2:
+                    break
+                if not sample_list and miss >= 2:
                     break
                 continue
+            miss = 0
             sample_list.append(url)
     return {
         "cid": cid,
@@ -741,7 +802,7 @@ def fetch_cover_only(code):
         return search_hit
     if search_ok:
         return None
-    for cid in cid_candidates(code)[:2]:
+    for cid in cid_candidates(code)[: max(1, _CID_FALLBACK_LIMIT)]:
         cover_url, data = _first_real(_fallback_cover_urls(cid), timeout=6)
         if cover_url and data:
             print(f"[DMM] {code}: cid={cid} cover-only yes")
@@ -772,7 +833,7 @@ def fetch_artwork(code, samples=True):
         return search_hit
     if search_ok:
         return None
-    cids = cid_candidates(code)[:2]
+    cids = cid_candidates(code)[: max(1, _CID_FALLBACK_LIMIT)]
     if not cids:
         return None
     for cid in cids:

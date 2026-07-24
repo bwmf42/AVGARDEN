@@ -98,13 +98,13 @@ def parse_metadata(value: str, code: str = "") -> dict | None:
 
 
 def _delay():
-    """Polite gap between requests (env JAVDATABASE_DELAY seconds, default 0.4)."""
+    """Polite gap between requests (env JAVDATABASE_DELAY seconds, default 0.85)."""
     global _LAST_FETCH
-    raw = os.environ.get("JAVDATABASE_DELAY", "0.4").strip()
+    raw = os.environ.get("JAVDATABASE_DELAY", "0.85").strip()
     try:
         delay = float(raw) if raw else 0.0
     except ValueError:
-        delay = 0.4
+        delay = 0.85
     if delay <= 0:
         return
     now = time.time()
