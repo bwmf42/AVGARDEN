@@ -114,9 +114,11 @@ def apply_javbus_meta(item: dict, detail: dict) -> bool:
                 changed = True
 
     if detail.get("genres"):
-        # JavBus genres are already Chinese (or site-native) — keep as-is, no JP map
+        # Still run through genre_zh (memory + map) so leftover JP becomes ZH
         before = list(item.get("genres") or [])
-        item["genres"] = _merge_unique(before, detail["genres"])
+        item["genres"] = _merge_unique(
+            before, genre_zh.translate_genres(detail["genres"], persist=False)
+        )
         if item["genres"] != before:
             changed = True
 
@@ -277,6 +279,9 @@ def enrich_item(
     item.setdefault("downloaded", False)
     if item.get("cover") and not item.get("poster"):
         item["poster"] = item["cover"]
+
+    # Always normalize genres via static map + persistent memory (no per-scrape AI)
+    genre_zh.normalize_item_genres(item)
 
     return item
 

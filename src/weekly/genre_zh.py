@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 from typing import Iterable, List
 
@@ -120,9 +122,9 @@ _GENRE_MAP = {
     "爆乳": "超乳",
     "超乳": "超乳",
     "美乳": "巨乳",
-    "貧乳・微乳": "貧乳・微乳",
-    "貧乳": "貧乳・微乳",
-    "贫乳": "貧乳・微乳",
+    "貧乳・微乳": "貧乳",
+    "貧乳": "貧乳",
+    "贫乳": "貧乳",
     "乳房": "乳房",
     "美尻": "美尻",
     "巨尻": "巨尻",
@@ -228,10 +230,11 @@ _GENRE_MAP = {
     "騎乗位": "女上位",
     "女上位": "女上位",
     "骑乘位": "女上位",
-    "バック": "バック",
-    "后入": "バック",
-    "デカチン・巨根": "デカチン・巨根",
-    "巨根": "デカチン・巨根",
+    "バック": "後入",
+    "后入": "後入",
+    "後入": "後入",
+    "デカチン・巨根": "巨根",
+    "巨根": "巨根",
     "処女": "處女",
     "初撮り": "首次亮相",
     "初拍": "首次亮相",
@@ -273,9 +276,9 @@ _GENRE_MAP = {
     "エステ": "美容院",
     "美容院": "美容院",
     "性教育": "介紹影片",
-    "キス・接吻": "キス・接吻",
-    "キス": "キス・接吻",
-    "接吻": "キス・接吻",
+    "キス・接吻": "接吻",
+    "キス": "接吻",
+    "接吻": "接吻",
     "クンニ": "舔陰",
     "舔阴": "舔陰",
     "舔陰": "舔陰",
@@ -294,16 +297,27 @@ _GENRE_MAP = {
     "药物": "藥物",
     "藥物": "藥物",
     "泥酔": "粗暴",
-    "アクメ・オーガズム": "アクメ・オーガズム",
+    "アクメ・オーガズム": "高潮",
+    "アクメ": "高潮",
+    "オーガズム": "高潮",
+    "高潮": "高潮",
+    "サンプル動画": "樣片",
+    "サンプル": "樣片",
+    "样片": "樣片",
+    "樣片": "樣片",
+    "预览": "樣片",
     "淫語": "淫語",
     "自慰": "自慰",
     "乳交": "乳交",
+    "パイズリ": "乳交",
     "戏剧": "戲劇",
     "戲劇": "戲劇",
     "4小时以上作品": "4小時以上作品",
     "4小時以上作品": "4小時以上作品",
     "4時間以上作品": "4小時以上作品",
     "カップル": "情侶",
+    "情侣": "情侶",
+    "情侶": "情侶",
     "连裤袜": "連褲襪",
     "連褲襪": "連褲襪",
     "恋腿": "戀腿癖",
@@ -314,18 +328,40 @@ _GENRE_MAP = {
     "惡作劇": "惡作劇",
     "其他恋物癖": "其他戀物癖",
     "其他戀物癖": "其他戀物癖",
+    "その他フェチ": "其他戀物癖",
     "妄想族": "妄想族",
     "合集": "合集",
     "介绍影片": "介紹影片",
     "介紹影片": "介紹影片",
     "迷你系列": "迷你係列",
     "迷你係列": "迷你係列",
-    "エマニエル": "エマニエル",
-    "Emaniel": "エマニエル",
-    "ハーレム": "ハーレム",
-    "汗だく": "汗だく",
+    "エマニエル": "情色",
+    "Emaniel": "情色",
+    "ハーレム": "後宮",
+    "后宫": "後宮",
+    "後宮": "後宮",
+    "汗だく": "大汗",
+    "大汗": "大汗",
     "Athlete": "運動員",
-    "オナサポ": "オナサポ",
+    "オナサポ": "自慰輔助",
+    "自慰辅助": "自慰輔助",
+    "自慰輔助": "自慰輔助",
+    "ハイクオリティVR": "高品質VR",
+    "高品质VR": "高品質VR",
+    "高品質VR": "高品質VR",
+    "特典付き・セット商品": "特典套組",
+    "特典套组": "特典套組",
+    "特典套組": "特典套組",
+    "アクション・格闘": "動作格鬥",
+    "アクション": "動作",
+    "动作": "動作",
+    "動作": "動作",
+    "動作格鬥": "動作格鬥",
+    "アナルセックス（男の娘）": "肛交",
+    "尻フェチ": "美尻",
+    "ビッチ": "蕩婦",
+    "女優按摩棒": "女優按摩棒",
+    "女优按摩棒": "女優按摩棒",
     "颜面骑乘": "顏面騎乘",
     "顏面騎乘": "顏面騎乘",
     "清楚": "清楚",
@@ -337,7 +373,130 @@ _GENRE_MAP = {
     "處女": "處女",
     "处男": "處男",
     "處男": "處男",
+    "オナニー": "自慰",
+    "デート": "約會",
+    "约会": "約會",
+    "約會": "約會",
+    "パンスト・タイツ": "連褲襪",
+    "パンスト": "連褲襪",
+    "タイツ": "連褲襪",
+    "盗撮・のぞき": "偷窥",
+    "のぞき": "偷窥",
+    "ミニ系": "嬌小的",
+    "脚フェチ": "戀腿癖",
+    "エステ・マッサージ": "按摩",
+    "マッサージ・リフレ": "按摩",
+    "孕ませ": "中出",
+    "巨乳フェチ": "巨乳",
+    "ヘルス・ソープ": "風俗店",
+    "風俗店": "風俗店",
+    "お風呂": "洗澡",
+    "洗澡": "洗澡",
+    "縛り・緊縛": "紧缚",
+    "縛り": "紧缚",
+    "部活・マネージャー": "社團",
+    "社團": "社團",
+    "ディルド": "假陽具",
+    "假阳具": "假陽具",
+    "假陽具": "假陽具",
+    "デジモ": "數位馬賽克",
+    "数位马赛克": "數位馬賽克",
+    "數位馬賽克": "數位馬賽克",
+    "ニューハーフ": "變性者",
+    "パンチラ": "走光",
+    "走光": "走光",
+    "アスリート": "運動員",
+    "运动员": "運動員",
+    "運動員": "運動員",
+    "お母さん": "母親",
+    "ホテル": "酒店",
+    "酒店": "酒店",
+    "ビジネススーツ": "OL",
+    "ベスト・総集編": "合集",
+    "総集編": "合集",
+    "叔母さん": "叔母",
+    "叔母": "叔母",
+    "セーラー服": "水手服",
+    "水手服": "水手服",
+    "イメージビデオ": "形象影片",
+    "形象影片": "形象影片",
+    "放尿・お漏らし": "放尿",
+    "お漏らし": "放尿",
+    "病院・クリニック": "醫院",
+    "医院": "醫院",
+    "醫院": "醫院",
+    "飲み会・合コン": "聯誼",
+    "联谊": "聯誼",
+    "聯誼": "聯誼",
+    "ノーブラ": "無胸罩",
+    "无胸罩": "無胸罩",
+    "無胸罩": "無胸罩",
+    "セクシー": "性感",
+    "性感": "性感",
+    "競泳・スクール水着": "學校泳裝",
+    "女装・男の娘": "女裝人妖",
+    "着エロ": "情趣衣著",
+    "情趣衣着": "情趣衣著",
+    "情趣衣著": "情趣衣著",
+    "イタズラ": "惡作劇",
+    "スパンキング": "打屁股",
+    "打屁股": "打屁股",
+    "看護婦・ナース": "护士",
+    "ナース": "护士",
+    "原作コラボ": "原作聯動",
+    "原作联动": "原作聯動",
+    "原作聯動": "原作聯動",
+    "Gカップ": "G罩杯",
+    "Fカップ": "F罩杯",
+    "Hカップ": "H罩杯",
+    "Iカップ": "I罩杯",
+    "Eカップ": "E罩杯",
+    "Dカップ": "D罩杯",
+    "Cカップ": "C罩杯",
+    "局部アップ": "局部特寫",
+    "アイドル・芸能人": "偶像藝人",
+    "アイドル": "偶像藝人",
+    "お爺ちゃん": "爺爺",
+    "爷爷": "爺爺",
+    "爺爺": "爺爺",
+    "体操着・ブルマ": "體操服",
+    "体操服": "體操服",
+    "體操服": "體操服",
+    "鼻フック": "鼻鉤",
+    "鼻钩": "鼻鉤",
+    "鼻鉤": "鼻鉤",
+    "Blu-ray（ブルーレイ）": "藍光",
+    "ブルーレイ": "藍光",
+    "蓝光": "藍光",
+    "藍光": "藍光",
+    "レオタード": "連體緊身衣",
+    "胸チラ": "走光",
+    "女優ベスト・総集編": "女優合集",
+    "女优合集": "女優合集",
+    "女優合集": "女優合集",
 }
+
+def _default_memory_path() -> str:
+    env = (os.environ.get("GENRE_ZH_MEMORY") or "").strip()
+    if env:
+        return env
+    db = (os.environ.get("DB_PATH") or "").strip()
+    if db:
+        # DB_PATH may be a file (/db/downloaded.db) or a directory (/db)
+        base = db if os.path.isdir(db) else (os.path.dirname(db) or "")
+        if base and (os.path.isdir(base) or base.startswith("/db")):
+            return os.path.join(base, "genre_zh_memory.json")
+    # local dev: project ./db/
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(root, "db", "genre_zh_memory.json")
+
+
+# Persistent learned map (NAS /db). Only grows on new keys — not re-AI each scrape.
+_MEMORY_PATH = _default_memory_path()
+
+_memory: dict = {}
+_memory_loaded = False
+_memory_dirty = False
 
 
 def _norm_key(text: str) -> str:
@@ -347,12 +506,67 @@ def _norm_key(text: str) -> str:
     return t
 
 
-def translate_genre(name: str) -> str:
-    """Map one genre string to the canonical JavBus-aligned label."""
-    raw = (name or "").strip()
-    if not raw:
-        return ""
-    key = _norm_key(raw)
+def _looks_japanese(text: str) -> bool:
+    """True if string still has hiragana/katakana (needs mapping)."""
+    return bool(re.search(r"[\u3040-\u30ff]", text or ""))
+
+
+def load_memory(force: bool = False) -> dict:
+    """Load genre memory file once (or force reload)."""
+    global _memory, _memory_loaded
+    if _memory_loaded and not force:
+        return _memory
+    _memory = {}
+    path = _MEMORY_PATH
+    try:
+        if path and os.path.isfile(path) and os.path.getsize(path) > 2:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                _memory = {str(k): str(v) for k, v in data.items() if k and v}
+    except Exception as e:
+        print(f"[genre_zh] load memory failed: {e}")
+        _memory = {}
+    _memory_loaded = True
+    return _memory
+
+
+def save_memory() -> bool:
+    """Persist dirty memory to disk."""
+    global _memory_dirty
+    if not _memory_dirty:
+        return True
+    path = _MEMORY_PATH
+    if not path:
+        return False
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_memory, f, ensure_ascii=False, indent=2, sort_keys=True)
+        os.replace(tmp, path)
+        _memory_dirty = False
+        return True
+    except Exception as e:
+        print(f"[genre_zh] save memory failed: {e}")
+        return False
+
+
+def remember(src: str, zh: str) -> None:
+    """Record src→zh in memory if new (survives restarts, not re-translated)."""
+    global _memory_dirty
+    load_memory()
+    key = _norm_key(src)
+    val = (zh or "").strip()
+    if not key or not val:
+        return
+    if _memory.get(key) == val:
+        return
+    _memory[key] = val
+    _memory_dirty = True
+
+
+def _lookup_static(key: str) -> str:
     if key in _GENRE_MAP:
         return _GENRE_MAP[key]
     low = key.lower()
@@ -366,12 +580,38 @@ def translate_genre(name: str) -> str:
         for k, v in _GENRE_MAP.items():
             if _norm_key(k).lower() == key2.lower():
                 return v
-    # already Chinese / mixed site tag: keep as-is (do not invent simplified)
+    return ""
+
+
+def translate_genre(name: str) -> str:
+    """Map one genre string to the canonical Chinese/JavBus-aligned label.
+
+    Order: persistent memory → static map → original (no live API every scrape).
+    When static map hits, also seed memory so future scrapes only read the file.
+    """
+    raw = (name or "").strip()
+    if not raw:
+        return ""
+    load_memory()
+    key = _norm_key(raw)
+    hit = _lookup_static(key)
+    mem_val = _memory.get(key)
+    # Static map wins when memory still holds Japanese (stale self-map)
+    if hit:
+        if mem_val != hit:
+            remember(raw, hit)
+        return hit
+    if mem_val:
+        return mem_val
+    # already Chinese / library tag: keep
+    if not _looks_japanese(raw):
+        return raw
+    # unknown Japanese: leave as-is until mapped into static/memory
     return raw
 
 
-def translate_genres(genres: Iterable[str]) -> List[str]:
-    """Translate/normalize and de-dupe, preserve order."""
+def translate_genres(genres: Iterable[str], persist: bool = True) -> List[str]:
+    """Translate/normalize and de-dupe, preserve order. Optionally flush memory."""
     out: List[str] = []
     seen = set()
     for g in genres or []:
@@ -380,6 +620,8 @@ def translate_genres(genres: Iterable[str]) -> List[str]:
             continue
         seen.add(zh)
         out.append(zh)
+    if persist:
+        save_memory()
     return out
 
 
@@ -393,3 +635,13 @@ def merge_genres(*lists: Iterable[str]) -> List[str]:
             if g:
                 combined.append(str(g))
     return translate_genres(combined)
+
+
+def normalize_item_genres(item: dict) -> bool:
+    """Rewrite item['genres'] through translate_genres. Returns True if changed."""
+    before = list(item.get("genres") or [])
+    after = translate_genres(before)
+    if after != before:
+        item["genres"] = after
+        return True
+    return False

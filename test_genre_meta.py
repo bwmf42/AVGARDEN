@@ -18,6 +18,9 @@ class TestGenreZh(unittest.TestCase):
         self.assertEqual(genre_zh.translate_genre("寝取り・寝取られ・NTR"), "NTR")
         self.assertEqual(genre_zh.translate_genre("NTR"), "NTR")
         self.assertEqual(genre_zh.translate_genre("寝取り・寝取られ"), "NTR")
+        self.assertEqual(genre_zh.translate_genre("サンプル動画"), "樣片")
+        self.assertEqual(genre_zh.translate_genre("アクメ・オーガズム"), "高潮")
+        self.assertEqual(genre_zh.translate_genre("バイブ"), "按摩棒")
 
     def test_javbus_passthrough(self):
         # already-library tags stay the same
@@ -31,6 +34,32 @@ class TestGenreZh(unittest.TestCase):
     def test_merge(self):
         out = genre_zh.merge_genres(["已婚婦女"], ["中出し", "人妻"])
         self.assertEqual(out, ["已婚婦女", "中出"])
+
+    def test_memory_persist(self):
+        import os
+        import tempfile
+
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        try:
+            old = genre_zh._MEMORY_PATH
+            genre_zh._MEMORY_PATH = path
+            genre_zh._memory = {}
+            genre_zh._memory_loaded = False
+            genre_zh._memory_dirty = False
+            genre_zh.remember("テストタグXYZ", "測試標籤")
+            self.assertTrue(genre_zh.save_memory())
+            genre_zh._memory = {}
+            genre_zh._memory_loaded = False
+            genre_zh.load_memory(force=True)
+            self.assertEqual(genre_zh.translate_genre("テストタグXYZ"), "測試標籤")
+        finally:
+            genre_zh._MEMORY_PATH = old
+            genre_zh._memory_loaded = False
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 class TestMgsParse(unittest.TestCase):
