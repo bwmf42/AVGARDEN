@@ -61,6 +61,34 @@ class TestGenreZh(unittest.TestCase):
             except OSError:
                 pass
 
+    def test_snap_to_blocked_spelling(self):
+        import os
+        import tempfile
+
+        fd, path = tempfile.mkstemp(suffix=".txt")
+        os.close(fd)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("觸手\n紧缚\n變性者\n超乳\n")
+            # force path via env-like override
+            genre_zh._blocked_loaded = False
+            old_fn = genre_zh._default_blocked_path
+            genre_zh._default_blocked_path = lambda: path
+            try:
+                self.assertEqual(genre_zh.snap_to_blocked("触手"), "觸手")
+                self.assertEqual(genre_zh.snap_to_blocked("緊縛"), "紧缚")
+                self.assertEqual(genre_zh.translate_genre("触手"), "觸手")
+                self.assertEqual(genre_zh.translate_genre("変性者"), "變性者")
+                self.assertEqual(genre_zh.translate_genre("爆乳"), "超乳")
+            finally:
+                genre_zh._default_blocked_path = old_fn
+                genre_zh._blocked_loaded = False
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
 
 class TestMgsParse(unittest.TestCase):
     def test_normalize_known_amateur_profile_labels(self):

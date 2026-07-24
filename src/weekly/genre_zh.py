@@ -110,12 +110,17 @@ _GENRE_MAP = {
     "内衣": "內衣",
     "內衣": "內衣",
     "变性者": "變性者",
+    "変性者": "變性者",
     "變性者": "變性者",
     "女装人妖": "女裝人妖",
     "女裝人妖": "女裝人妖",
     "偶像艺人": "偶像藝人",
     "偶像藝人": "偶像藝人",
     "妓女": "妓女",
+    "触手": "觸手",
+    "觸手": "觸手",
+    "女战士": "女戰士",
+    "女戰士": "女戰士",
     # ----- body -----
     "巨乳": "巨乳",
     "Big Tits": "巨乳",
@@ -215,6 +220,7 @@ _GENRE_MAP = {
     "拘束": "拘束",
     "緊縛": "紧缚",
     "紧缚": "紧缚",
+    "拘束プレイ": "紧缚",
     "調教": "SM",
     "SM": "SM",
     "イラマチオ": "深喉",
@@ -498,6 +504,25 @@ _memory: dict = {}
 _memory_loaded = False
 _memory_dirty = False
 
+# User blocked genres (exact spellings from blocked_genres.txt) — canonical for filter match
+_blocked_list: list = []
+_blocked_fold: dict = {}  # fold(label) -> exact blocked string
+_blocked_mtime = None
+_blocked_path = ""
+_blocked_loaded = False
+
+# Minimal 繁简 folding so 触手≈觸手, 变≈變, without external deps
+_FOLD_CHARS = str.maketrans({
+    "觸": "触", "緊": "紧", "縛": "缚", "變": "变", "専": "专", "專": "专",
+    "戰": "战", "紹": "绍", "裡": "里", "內": "内", "術": "术", "係": "系",
+    "畫": "画", "質": "质", "體": "体", "獨": "独", "業": "业", "餘": "余",
+    "婦": "妇", "與": "与", "無": "无", "髮": "发", "後": "后", "國": "国",
+    "藝": "艺", "優": "优", "兒": "儿", "媽": "妈", "爺": "爷", "藍": "蓝",
+    "鉤": "钩", "陽": "阳", "數": "数", "碼": "码", "聯": "联", "動": "动",
+    "處": "处", "導": "导", "護": "护", "顏": "颜", "慾": "欲", "戀": "恋",
+    "癡": "痴", "臟": "脏", "腸": "肠", "槍": "枪", "牆": "墙",
+})
+
 
 def _norm_key(text: str) -> str:
     t = (text or "").strip()
@@ -506,9 +531,84 @@ def _norm_key(text: str) -> str:
     return t
 
 
+def _fold_for_block(text: str) -> str:
+    """Normalize for comparing against blocked_genres (not for display)."""
+    t = _norm_key(text)
+    t = t.replace("・", "").replace("·", "").replace(".", "").replace("-", "")
+    t = t.translate(_FOLD_CHARS)
+    return t.lower()
+
+
 def _looks_japanese(text: str) -> bool:
     """True if string still has hiragana/katakana (needs mapping)."""
     return bool(re.search(r"[\u3040-\u30ff]", text or ""))
+
+
+def _default_blocked_path() -> str:
+    env = (os.environ.get("BLOCKED_GENRES_FILE") or "").strip()
+    if env:
+        return env
+    db = (os.environ.get("DB_PATH") or "").strip()
+    if db:
+        base = db if os.path.isdir(db) else (os.path.dirname(db) or "")
+        if base:
+            return os.path.join(base, "blocked_genres.txt")
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(root, "db", "blocked_genres.txt")
+
+
+def load_blocked_genres(force: bool = False) -> list:
+    """Load exact blocked genre spellings (same file as Go filter)."""
+    global _blocked_list, _blocked_fold, _blocked_mtime, _blocked_path, _blocked_loaded
+    path = _default_blocked_path()
+    mtime = None
+    try:
+        if path and os.path.isfile(path):
+            mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = None
+    if (
+        not force
+        and _blocked_loaded
+        and _blocked_mtime == mtime
+        and _blocked_path == path
+    ):
+        return _blocked_list
+    _blocked_list = []
+    _blocked_fold = {}
+    _blocked_path = path
+    try:
+        if path and os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    name = line.strip()
+                    if not name or name.startswith("#"):
+                        continue
+                    _blocked_list.append(name)
+                    _blocked_fold[_fold_for_block(name)] = name
+    except Exception as e:
+        print(f"[genre_zh] load blocked genres failed: {e}")
+    _blocked_mtime = mtime
+    _blocked_loaded = True
+    return _blocked_list
+
+
+def snap_to_blocked(label: str) -> str:
+    """If label matches a blocked genre (folded), return the exact blocked spelling."""
+    raw = (label or "").strip()
+    if not raw:
+        return raw
+    load_blocked_genres()
+    if raw in _blocked_fold.values() or raw in _blocked_list:
+        # prefer list order spelling
+        for b in _blocked_list:
+            if b == raw:
+                return b
+        return raw
+    key = _fold_for_block(raw)
+    if key in _blocked_fold:
+        return _blocked_fold[key]
+    return raw
 
 
 def load_memory(force: bool = False) -> dict:
@@ -584,10 +684,10 @@ def _lookup_static(key: str) -> str:
 
 
 def translate_genre(name: str) -> str:
-    """Map one genre string to the canonical Chinese/JavBus-aligned label.
+    """Map one genre to a display label, then snap to blocked_genres.txt spelling.
 
-    Order: persistent memory → static map → original (no live API every scrape).
-    When static map hits, also seed memory so future scrapes only read the file.
+    Order: static map → memory → original; finally align to user blocked list
+    so Go exact-match filter still works without re-blocking aliases.
     """
     raw = (name or "").strip()
     if not raw:
@@ -598,16 +698,20 @@ def translate_genre(name: str) -> str:
     mem_val = _memory.get(key)
     # Static map wins when memory still holds Japanese (stale self-map)
     if hit:
+        out = hit
         if mem_val != hit:
             remember(raw, hit)
-        return hit
-    if mem_val:
-        return mem_val
-    # already Chinese / library tag: keep
-    if not _looks_japanese(raw):
-        return raw
-    # unknown Japanese: leave as-is until mapped into static/memory
-    return raw
+    elif mem_val:
+        out = mem_val
+    elif not _looks_japanese(raw):
+        out = raw
+    else:
+        # unknown Japanese: leave as-is until mapped into static/memory
+        out = raw
+    snapped = snap_to_blocked(out)
+    if snapped != out:
+        remember(raw, snapped)
+    return snapped
 
 
 def translate_genres(genres: Iterable[str], persist: bool = True) -> List[str]:
