@@ -392,10 +392,17 @@ export default {
                 })
             } catch(e) {}
         },
-        async getWeeklyItems() {
+        async getWeeklyItems(force = false) {
             const now = Date.now()
-            if (weeklyDetailCache.items && now - weeklyDetailCache.fetchedAt < WEEKLY_CACHE_MS) {
+            if (
+                !force &&
+                weeklyDetailCache.items &&
+                now - weeklyDetailCache.fetchedAt < WEEKLY_CACHE_MS
+            ) {
                 return weeklyDetailCache.items
+            }
+            if (force) {
+                weeklyDetailCache = { items: null, fetchedAt: 0, promise: null }
             }
             if (!weeklyDetailCache.promise) {
                 weeklyDetailCache.promise = fetch('/api/weekly')
@@ -679,23 +686,80 @@ export default {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${import.meta.env.VITE_API_KEY || ''}` }
                 })
-                if (resp.ok) this.goNextAfterBlock()
+                if (resp.ok) await this.afterBlockRefresh({ actress: name })
             } catch (e) {}
         },
-        goNextAfterBlock() {
+        /** After block: drop filtered titles from browse list immediately, then refetch. */
+        async afterBlockRefresh({ genre, actress } = {}) {
             if (this.isOnlineSource) {
                 this.$router.replace({ name: 'search' })
                 return
             }
-            if (this.currentIndex < this.allVideos.length - 1) {
-                const next = this.allVideos[this.currentIndex + 1]
-                this.$router.replace({ name: 'weekly-detail', params: { id: next.id } })
-            } else if (this.currentIndex > 0) {
-                const prev = this.allVideos[this.currentIndex - 1]
-                this.$router.replace({ name: 'weekly-detail', params: { id: prev.id } })
-            } else {
-                this.$router.replace('/weekly')
+            const prevIndex = this.currentIndex
+            const prevId = normalizeVideoID(this.video?.id || this.id)
+
+            // Optimistic: remove matching items from current browse list
+            if (genre) {
+                this.allVideos = this.allVideos.filter(
+                    v => !(Array.isArray(v.genres) && v.genres.includes(genre))
+                )
             }
+            if (actress) {
+                this.allVideos = this.allVideos.filter(
+                    v => !(Array.isArray(v.actresses) && v.actresses.includes(actress))
+                )
+            }
+
+            // Force server list (block handlers invalidate weekly cache)
+            try {
+                const items = await this.getWeeklyItems(true)
+                this.clearBrowseState()
+                const tab = this.$route.query.tab || 'unwatched'
+                // rebuild without re-injecting the blocked current id
+                const undownloaded = (items || []).filter(v => !v.downloaded)
+                if (tab === 'watched') {
+                    this.allVideos = undownloaded.filter(v => this.isWatched(v.id))
+                } else {
+                    this.allVideos = undownloaded.filter(v => !this.isWatched(v.id))
+                }
+                this.saveBrowseState(tab, this.allVideos)
+            } catch (e) {
+                // keep optimistic list
+            }
+
+            window.dispatchEvent(new CustomEvent('av-garden-weekly-refresh'))
+
+            // Navigate to next remaining item near previous position
+            if (!this.allVideos.length) {
+                this.clearBrowseState()
+                this.$router.replace({ name: 'weekly', query: { tab: this.$route.query.tab || 'unwatched' } })
+                return
+            }
+            let nextIndex = Math.min(Math.max(prevIndex, 0), this.allVideos.length - 1)
+            // Prefer item after previous if previous was removed
+            const stillHere = this.allVideos.some(v => normalizeVideoID(v.id) === prevId)
+            if (!stillHere && prevIndex >= this.allVideos.length) {
+                nextIndex = this.allVideos.length - 1
+            } else if (!stillHere) {
+                nextIndex = Math.min(prevIndex, this.allVideos.length - 1)
+            }
+            const next = this.allVideos[nextIndex]
+            if (next && normalizeVideoID(next.id) !== prevId) {
+                this.$router.replace({
+                    name: 'weekly-detail',
+                    params: { id: next.id },
+                    query: { ...this.$route.query }
+                })
+            } else if (next && normalizeVideoID(next.id) === prevId) {
+                // current still allowed (e.g. blocked a tag it doesn't have) — stay
+                this.setVideoFromCurrentList(next.id)
+            } else {
+                this.$router.replace({ name: 'weekly', query: { tab: this.$route.query.tab || 'unwatched' } })
+            }
+        },
+        goNextAfterBlock() {
+            // legacy entry: treat as refresh without extra filter key
+            this.afterBlockRefresh()
         },
         async toggleFav(name) {
             try {
@@ -713,7 +777,7 @@ export default {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${import.meta.env.VITE_API_KEY || ''}` }
                 })
-                if (resp.ok) this.goNextAfterBlock()
+                if (resp.ok) await this.afterBlockRefresh({ genre: name })
             } catch (e) {}
         },
         async addToQueue() {

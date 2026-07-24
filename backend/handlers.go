@@ -1222,9 +1222,30 @@ func findDownloadedLocalID(rawID string) (string, bool) {
 	return "", false
 }
 
+func invalidateWeeklyCache() {
+	weeklyCacheMtx.Lock()
+	weeklyCache = nil
+	weeklyCacheTime = time.Time{}
+	weeklyCacheMod = time.Time{}
+	weeklyCacheQueueSig = ""
+	weeklyCacheMtx.Unlock()
+}
+
+func blockListNameFromPath(path, prefix string) string {
+	raw := strings.TrimPrefix(path, prefix)
+	if raw == "" {
+		return ""
+	}
+	name, err := url.PathUnescape(raw)
+	if err != nil {
+		return strings.TrimSpace(raw)
+	}
+	return strings.TrimSpace(name)
+}
+
 // blockActressHandler 添加演员到屏蔽列表
 func blockActressHandler(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimPrefix(r.URL.Path, "/api/block-actress/")
+	name := blockListNameFromPath(r.URL.Path, "/api/block-actress/")
 	if r.Method == http.MethodGet {
 		blockedListsMtx.RLock()
 		keys := orderedActiveValuesNewestFirst(blockedActressesFile, blockedActresses)
@@ -1237,10 +1258,6 @@ func blockActressHandler(w http.ResponseWriter, r *http.Request) {
 		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if name == "" {
-		httpError(w, "Invalid name", http.StatusBadRequest)
-		return
-	}
 	if err := appendBlockedActress(name); err != nil {
 		httpError(w, "Failed to block", http.StatusInternalServerError)
 		return
@@ -1248,6 +1265,7 @@ func blockActressHandler(w http.ResponseWriter, r *http.Request) {
 	blockedListsMtx.Lock()
 	blockedActresses[name] = true
 	blockedListsMtx.Unlock()
+	invalidateWeeklyCache()
 	logger.Printf("Blocked actress: %s", name)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]string{"status": "blocked", "name": name})
@@ -1255,7 +1273,7 @@ func blockActressHandler(w http.ResponseWriter, r *http.Request) {
 
 // blockGenreHandler 添加标签到屏蔽列表
 func blockGenreHandler(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimPrefix(r.URL.Path, "/api/block-genre/")
+	name := blockListNameFromPath(r.URL.Path, "/api/block-genre/")
 	if r.Method == http.MethodGet {
 		blockedListsMtx.RLock()
 		keys := make([]string, 0, len(blockedGenres))
@@ -1273,10 +1291,6 @@ func blockGenreHandler(w http.ResponseWriter, r *http.Request) {
 		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if name == "" {
-		httpError(w, "Invalid name", http.StatusBadRequest)
-		return
-	}
 	f, err := os.OpenFile(blockedGenresFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		httpError(w, "Failed to block", http.StatusInternalServerError)
@@ -1287,6 +1301,7 @@ func blockGenreHandler(w http.ResponseWriter, r *http.Request) {
 	blockedListsMtx.Lock()
 	blockedGenres[name] = true
 	blockedListsMtx.Unlock()
+	invalidateWeeklyCache()
 	logger.Printf("Blocked genre: %s", name)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]string{"status": "blocked", "name": name})

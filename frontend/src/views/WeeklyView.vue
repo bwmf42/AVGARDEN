@@ -103,13 +103,20 @@ export default {
     },
     async created() {
         this.applyRouteTab()
+        window.addEventListener('av-garden-weekly-refresh', this.onWeeklyRefresh)
         await this.syncWatched()
         await this.loadData()
     },
+    beforeUnmount() {
+        window.removeEventListener('av-garden-weekly-refresh', this.onWeeklyRefresh)
+    },
+    // Options API keep-alive
+    deactivated() {},
     async activated() {
         this.applyRouteTab()
         // 只在首次进入或数据为空时重新加载，切标签不重新 fetch
-        if (this.weeklyItems.length === 0) {
+        if (this.weeklyItems.length === 0 || this._weeklyNeedsRefresh) {
+            this._weeklyNeedsRefresh = false
             await this.syncWatched()
             await this.loadData()
         } else {
@@ -125,6 +132,11 @@ export default {
         }
     },
     methods: {
+        onWeeklyRefresh() {
+            // Detail page blocked genre/actress — drop stale list immediately
+            this._weeklyNeedsRefresh = true
+            this.loadData()
+        },
         applyRouteTab() {
             this.showWatched = this.$route.query.tab === 'watched'
         },
