@@ -21,6 +21,9 @@ class TestGenreZh(unittest.TestCase):
         self.assertEqual(genre_zh.translate_genre("サンプル動画"), "樣片")
         self.assertEqual(genre_zh.translate_genre("アクメ・オーガズム"), "高潮")
         self.assertEqual(genre_zh.translate_genre("バイブ"), "按摩棒")
+        self.assertEqual(genre_zh.translate_genre("ゲロ"), "呕吐")
+        self.assertEqual(genre_zh.translate_genre("シックスナイン"), "69")
+        self.assertEqual(genre_zh.translate_genre("即ハメ"), "即插")
 
     def test_javbus_passthrough(self):
         # already-library tags stay the same
