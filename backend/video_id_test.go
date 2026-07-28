@@ -66,11 +66,24 @@ func TestNormalizeLocalVideoIDPreservesRealNumericPrefixes(t *testing.T) {
 		"857OMG-032":             "OMG-032",
 		"420HOI-397":             "HOI-397",
 		"18bt.net_VENX-276C.mp4": "VENX-276C",
+		"fns-224ch":              "FNS-224",
+		"[HD] FNS-224-CH.mp4":    "FNS-224",
 	}
 	for raw, expected := range cases {
 		if actual := normalizeLocalVideoID(raw); actual != expected {
 			t.Errorf("normalizeLocalVideoID(%q) = %q, want %q", raw, actual, expected)
 		}
+	}
+}
+
+func TestResolveVideoDirHandlesLocalChineseSuffix(t *testing.T) {
+	root := withTestMediaRoot(t)
+	if err := os.Mkdir(filepath.Join(root, "fns-224ch"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	dir, id := resolveVideoDir("FNS-224")
+	if dir != "fns-224ch" || id != "FNS-224" {
+		t.Fatalf("dir=%q id=%q", dir, id)
 	}
 }
 

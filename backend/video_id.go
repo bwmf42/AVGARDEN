@@ -23,6 +23,8 @@ var (
 	dmmNumericPattern     = regexp.MustCompile(`^\d{3}_\d{4,5}$`)
 	dmm402Pattern         = regexp.MustCompile(`^402[A-Z]{3,6}\d*_[A-Z]{3,8}\d{5,6}$`)
 	localSourcePattern    = regexp.MustCompile(`^(?:328|348|390|420|857|892)([A-Z][A-Z0-9]{1,15}-\d{2,8}[A-Z]?)`)
+	localSourceCHPattern  = regexp.MustCompile(`^(?:328|348|390|420|857|892)([A-Z][A-Z0-9]{1,15}-\d{2,8})(?:[-_ .]?CH)(?:$|[-_ .(])`)
+	localCHPattern        = regexp.MustCompile(`([0-9]*[A-Z][A-Z0-9]{0,15}-\d{2,8})(?:[-_ .]?CH)(?:$|[-_ .(])`)
 	localLeadingPattern   = regexp.MustCompile(`^([0-9]*[A-Z][A-Z0-9]{0,15}-\d{2,8}[A-Z]?)(?:$|[-_ .(])`)
 	localAnywherePattern  = regexp.MustCompile(`([A-Z][A-Z0-9]{1,15}-\d{2,8}[A-Z]?)`)
 	legacySourcePattern   = regexp.MustCompile(`^\d+([A-Z][A-Z0-9]{1,15}-\d{2,8}[A-Z]?)`)
@@ -102,7 +104,17 @@ func normalizeLocalVideoID(raw string) string {
 	if index := strings.LastIndex(value, "/"); index >= 0 {
 		value = value[index+1:]
 	}
+	if match := localSourceCHPattern.FindStringSubmatch(value); match != nil {
+		if normalized := normalizeUserVideoID(match[1]); normalized != "" {
+			return normalized
+		}
+	}
 	if match := localSourcePattern.FindStringSubmatch(value); match != nil {
+		if normalized := normalizeUserVideoID(match[1]); normalized != "" {
+			return normalized
+		}
+	}
+	if match := localCHPattern.FindStringSubmatch(value); match != nil {
 		if normalized := normalizeUserVideoID(match[1]); normalized != "" {
 			return normalized
 		}
