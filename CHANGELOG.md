@@ -1,6 +1,6 @@
 # Changelog
 
-本文件记录本地功能变更。新功能先写入 `Unreleased`，待手动测试确认后再询问是否提交 commit。
+本文件记录本地功能变更。新功能先写入 `Unreleased`；常规改动验证通过后直接提交、推送和部署，高风险改动仍需先确认。
 
 当本文件过长时，将较早的已发布条目移动到 `docs/changelog-archive/`，这里只保留近期记录和归档链接。
 
@@ -59,6 +59,7 @@
 
 ### Removed
 
+- Applied the reviewed NAS storage manifests: removed 1,237 unreferenced Weekly artwork directories, 7 sparse residues, 10 metadata-only shells, 6 exact stale files, 160 `missingFiles` and 7 orphan/false-complete qB records with `deleteFiles=false`, releasing 13.47 GiB of allocated space while preserving 1,811 Weekly entries and 2,017 watched records.
 - Removed 21 exact stale paths from the NAS deployment tree using a saved JSON manifest, releasing 25,108,415 bytes while preserving runtime configuration, databases, logs, artwork caches, media, and qBittorrent tasks.
 - Cleaned the deployed media library while preserving multipart and metadata-only directories: kept five verified high-bitrate copies, removed their five lower-bitrate duplicates, disabled and removed 152 exact-name bundled promo clips, and removed a stale 135 MiB project copy from the weekly cache.
 - Removed the rejected 05-07 design exploration artifacts while retaining the adopted 02 direction and the undecided 01/03/04 explorations.

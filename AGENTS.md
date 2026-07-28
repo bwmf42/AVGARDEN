@@ -49,6 +49,7 @@
 - 前台系统日志默认只读 `av-garden.log`（入队/开始/完成/失败）；明细在 loguru 日文件 / docker logs，`/api/logs?debug=1` 可看全量；日志保留约 **30 天**
 - **自愈** `heal_runner.py`（launcher 默认每 1h）：补缺 `titleZh`、队列/qB 状态对齐、qB/DeepSeek/98堂探活告警。**不**次日自动重刮、**不**自动删种。开关：`HEAL_ENABLE`、`HEAL_TITLEZH`、`HEAL_QUEUE_SYNC`、`HEAL_PROBE`、`HEAL_INTERVAL_H`
 - mihomo **98堂** url-test 候选含日本（暂时失败的节点会被测活跳过）
+- 一次性存储清理只能通过 `tools/maintenance/storage_cleanup.py` 的 dry-run manifest → apply 两阶段执行；日常 Weekly 图片清理使用 `weekly_cache_maintenance.py`，默认只处理不在当前 JSON 且超过 30 天的直接子目录。两者都必须保留 manifest/结果并在应用前重新验证签名和运行态。
 
 ## 配置边界
 
@@ -80,6 +81,7 @@
 - **中文资源日常**：同站 `forum-103`，默认 **2 页**（`CHINESE_FORUM_DAILY_PAGES`），`replace_chinese` 在 weekly 之后跑；缺中文才进帖取磁链。
 - JavBus 访问代码保留但当前不参与元数据和主动图片候选；磁链默认 sukebei（中文板缺磁链时才进帖）。
 - 每日推荐封面和详情预览图应尽量本地化到 `/data/__weekly__/{番号}/`，前端优先使用 `/file/__weekly__/...`，避免用户浏览时再等外站图片。
+- 标题补全或规范化没有产生实际变化时不得重写 `weekly.json`，避免无意义失效缓存和已审核的维护 manifest。
 - **封面/预览图源优先级（`src/weekly/artwork.py`）**：
   1. **javdatabase**：`https://www.javdatabase.com/movies/{番号小写}/` → DMM `pl.jpg` / `og:image` + 页内 `jp-N`（无年龄 Cookie；NAS **必须走 `PROXY`**，直连常超时）。
   2. **MGS 商品图**（单页快路径）：`pb_e` / `cap_e_*` — **SIRO / ABF 等 MGS 独占** javdatabase 常 404，靠这一层；也是标签元数据主源。
@@ -153,8 +155,8 @@ curl -sS http://127.0.0.1:31471/api/queue-status
 
 - 本仓库已初始化本地 Git；不要为“初始化”重复创建仓库。
 - 每次功能完成后，先完成本地验证，并把变更写入根目录 `CHANGELOG.md` 的 `Unreleased` 区。
-- 完成后让用户手动测试确认；用户确认前不要自动 commit。
-- 用户确认测试通过后，先询问是否 commit；得到明确同意后再 stage 和 commit。
+- 常规改动验证通过后，默认提交、推送 GitHub、部署 NAS，并完成部署后检查，不再逐次询问。
+- 涉及数据删除或迁移、端口/路径/环境配置、队列状态机、下载策略或大范围清理时，必须先让用户确认，再执行、提交和部署。
 - commit 必须按功能拆分并保持范围干净，不要把无关改动或用户已有改动混进去。
 - 如果 `CHANGELOG.md` 过长，将较早的已发布条目归档到 `docs/changelog-archive/`，并在 `CHANGELOG.md` 保留归档链接。
 

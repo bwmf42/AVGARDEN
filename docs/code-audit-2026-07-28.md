@@ -1,86 +1,78 @@
-# A/GARDEN Code And Storage Audit
+# A/GARDEN 全量代码与存储审计
 
-Date: 2026-07-28
+审计日期：2026-07-28
 
-## Conclusion
+修复与清理完成：2026-07-29
 
-The reported twenty-thousand-file tree is not the source repository. It is the
-NAS media volume's `__weekly__` artwork cache. The active source checkout had
-130 tracked files before this cleanup; most local filesystem entries came from
-Git metadata and reinstallable frontend dependencies.
+## 结论
 
-This cleanup does not delete media, Weekly artwork, online-search artwork,
-configuration, database state, logs, or qBittorrent tasks.
+上一轮记录的 9 个延期问题已经全部修复、测试并部署。生产媒体库当前识别 220 部有效作品，全部主视频通过 `ffprobe`；Weekly 原始数据 1,811 条、已看历史 2,017 条保持不变。
 
-## Storage Inventory
+用户看到的“两万多个文件”主要来自 NAS 的 `__weekly__` 图片缓存，不是源代码仓库。清理后 Weekly 图片由 18,772 张降为 13,183 张，1,237 个无引用目录已清零。
 
-| Area | Inventory | Decision |
-| --- | ---: | --- |
-| Current `weekly.json` | 1,811 entries | Keep |
-| Current Weekly artwork directories | 1,811 directories, 13,183 JPG files, 1.53 GB | Keep |
-| Weekly directories absent from current index | 1,237 directories, 5,589 JPG files, 602,879,376 bytes | Report only |
-| Total Weekly artwork | 18,772 JPG files, about 2.13 GB | Keep |
-| Old Weekly JSON backups | 3 files, about 15 MB | Keep in this pass |
-| Online temporary artwork | 1 directory, about 160 KB | Keep in this pass |
-| NAS deployment residue removed | 21 exact paths, 25,108,415 bytes (23.95 MiB) | Removed from the deployment tree |
+## 代码修复
 
-Of the 1,237 unindexed Weekly directories, 729 codes remain in watched history
-and 115 have an exact same-name media directory. Neither category is deleted in
-this pass.
+| 原问题 | 最终处理 |
+| --- | --- |
+| 数字开头番号被截短 | Python、Go 和前端保留 `259LUXU-*`、`300MIUM-*` 等真实前缀；旧短 URL 和 qB 标签通过只读别名兼容。 |
+| Queue 与 Go 的完成规则不一致 | 统一递归 MP4、100 MiB、95% 实际分配、普通作品选最大文件、多段优先第 1 段。 |
+| `weekly.json` 写入不统一 | 全部生产写入使用跨进程锁、唯一临时文件和原子替换；无变化的标题任务不再重写 JSON。 |
+| 前端依赖漏洞 | 同主版本升级 Axios、Vue、Vite、PostCSS 和 `form-data`；npm 官方审计为 0。 |
+| `/file/` 路径边界过宽 | 限制到单个作品所有者目录，打开文件后复核软链接边界，并从已打开文件描述符提供 Range。 |
+| Queue API 暴露到局域网 | Worker 改用 Compose 私有网络，31473 只在容器网络开放。 |
+| Go HTTP 服务无超时 | 增加读取、请求头、写入和空闲超时；视频 Range 使用独立长写入期限。 |
+| 部署只合并不删除 | 改用带运行数据保护规则的 `rsync --delete`，仓库移除的源码不会继续残留。 |
+| 在线搜索缓存不回收 | 增加 24 小时 TTL、启动清理和每小时清理。 |
 
-## 延期问题
+同时修复了两个执行期发现的兼容问题：本地目录 `fns-224ch` 现在在 Python 和 Go 中都解析为 `FNS-224`；旧 qB 短标签 `LUXU-*`、`MIUM-*` 可以找到数字前缀真实目录，但不会覆盖真实短号目录。
 
-以下问题已在本次审计中确认，但由于本轮只处理文件精简，因此暂不修改业务逻辑，留待后续逐项修复。
+## 数据清理
 
-1. **高：数字开头的本地番号会被截短。** `backend/main.go` 扫描媒体库文件夹时仍使用旧的
-   `cleanVideoID` 逻辑。线上目前会把 `300MIUM-*` 显示成 `MIUM-*`，把 `259LUXU-*`
-   显示成 `LUXU-*`。用户输入番号时虽然可以正确保留数字前缀，但媒体库扫描结果仍可能错误。
-2. **高：Queue API 和 Go 服务判断“下载完成”的标准不一致。** `queue_api.py` 只检查作品目录
-   第一层文件，MP4 大于 10 MB 且创建超过 60 秒就可能被视为完成；Go 服务则会递归查找，要求
-   MP4 大于 100 MB，并且实际已写入的数据至少达到文件标称大小的 95%。因此，看起来很大但实际
-   尚未下载完整的稀疏文件，或者附带的小视频，仍可能让 Queue API 提前执行完成后的操作。
-3. **高：并非所有写入 `weekly.json` 的路径都使用共享锁。** 队列状态更新、详情图本地化、
-   中文字幕替换和部分旧的一次性脚本仍会直接写文件，或使用固定名称的临时文件。它们如果和
-   定时更新同时运行，可能互相覆盖数据或写坏 JSON。
-4. **高：部分前端依赖已有公开安全漏洞。** npm 官方审计在当前锁定版本中报告了 4 个高危
-   依赖条目：`axios 1.16.1`、`form-data 4.0.5`、`postcss 8.5.14` 和 `vite 6.4.2`。
-   即使排除纯开发依赖，仍有 3 个高危条目。官方已有可升级版本，但依赖升级和回归测试留到
-   单独一轮处理。
-5. **中：媒体文件接口的路径限制不够严格。** `/file/` 目前只确认最终路径仍位于整个媒体库
-   根目录内，因此请求仍可能跨到另一个作品目录；同时没有检查软链接解析后的真实路径。
-6. **中：Queue API 没有独立鉴权，并且所有局域网接口都能访问。** 生产 Worker 使用 host
-   网络模式，端口 31473 绑定到 `0.0.0.0`。同一网络内能够访问该端口的设备可能绕过主站接口，
-   直接调用 Queue API。
-7. **中：Go HTTP 服务没有设置读取、写入、请求头和空闲连接超时。** 异常或恶意客户端可以
-   长时间占用连接，增加服务资源被耗尽的风险。
-8. **中：部署脚本只合并新源码，不会删除已经从仓库移除的文件。** 本次通过精确 manifest
-   做了一次安全清理，但以后仓库再次删除或移动文件时，旧副本仍可能继续留在 NAS，直到部署
-   同步逻辑增加受控删除机制。
-9. **低：在线搜索缓存没有服务端超时回收。** 浏览器离开页面时会尽力清理，但如果浏览器关闭、
-   网络中断或请求失败，缓存仍可能留下。NAS 目前保留了一份 2026-07-06 产生的历史临时目录。
+主清单：`/db/maintenance/manifests/storage-cleanup-final-v2-20260729.json`
 
-## Baseline Verification
+主结果：`/db/maintenance/manifests/storage-cleanup-final-v2-20260729.json.result.json`
 
-- Go race tests and `go vet`: passed.
-- Frontend Node tests and production build: passed.
-- Official npm dependency audit: four high-severity package entries; three
-  remain with development dependencies omitted. Recorded above for follow-up.
-- Python: 76 effective tests passed and 2 Worker-container integration tests
-  were skipped locally. The obsolete `test_clean.py` caused standard discovery
-  to fail because it had no assertions and imported the full runtime at module
-  load; it is removed by this cleanup.
-- Production containers and API were healthy during the audit. Two qBittorrent
-  tasks were active, with no online-stream downloader process and no Worker lock.
+补充 qB 清单：`/db/maintenance/manifests/qb-orphan-completions-20260729.json`
 
-## Cleanup Result
+执行结果：
 
-The exact 21-path deletion manifest was saved on the NAS as
-`/tmp/avgarden-cleanup-manifest-20260728.json` before removal. It contained only
-reviewed project residue: implemented design demos, temporary genre scripts,
-obsolete root-level module copies, an obsolete Vue file, two old backend
-binaries, moved maintenance-script copies, unused starter assets, and dated
-environment, Compose, and deployment-script backups.
+- 复制 12 张 Weekly 海报到已有有效视频但缺海报的媒体目录。
+- 删除 1,237 个不在当前 `weekly.json` 的 Weekly 图片目录。
+- 删除 7 个无有效任务的稀疏残留目录和 10 个无正片空壳目录。
+- 删除 3 个旧 Weekly JSON 备份、2 个误放日志脚本和 1 个超过 30 天的日志文件。
+- 从 qB 删除 160 条 `missingFiles`、3 条指定假完成记录和 4 条无目录假完成记录，全部使用 `deleteFiles=false`。
+- 将 17 条有效 qB 任务迁移到 `AV_GARDEN`；最终 qB 中失效记录为 0，剩余任务分类全部为 `AV_GARDEN`。
+- 为 `MIKR-109`、`PRED-886`、`SNOS-264` 重新入队；保留 `DEBZ-015` 的原在途任务。
+- 实际释放 14,458,339,328 个已分配字节，约 13.47 GiB；稀疏文件逻辑大小使清单逻辑总量为 38.68 GiB。
 
-After removal, the current Compose file, `.env`, `cfg/`, `db/`, and `logs/`
-were verified present. Media directories, qBittorrent tasks, Weekly and online
-artwork caches, and other runtime state were not touched.
+## 备份与权限
+
+删除前已在 `/db/backups` 生成并校验 5 份 gzip 备份：`.env`、Weekly、已看、`configs.json` 和 SQLite。权限结果：
+
+- `.env`：`600`
+- `cfg/configs.json`：`600`
+- `cfg/`：`700`
+- `/db/backups`：`700`
+
+备份、manifest、结果报告、现役数据库和配置均保留。
+
+## 验证结果
+
+- Python：97 项通过，2 项仅容器环境测试在本地跳过；两项 Worker 集成路径已在生产容器单独验证。
+- Go：race 测试与 `go vet` 通过。
+- 前端：Node 测试和生产构建通过。
+- npm：官方 registry 审计为 0 漏洞。
+- 媒体：220 个统一主视频全部通过 `ffprobe`，失败 0、小 MP4 0、非多段重复候选 0。
+- Weekly：1,811 条原始数据和 2,017 条已看记录不变；孤儿目录 0。
+- API：`/api/version`、`/api/videos`、`/api/weekly`、`/api/video-status`、`/api/queue-status` 均正常。
+- 播放：`FNS-224` 详情返回本地视频，Range 请求返回 `206`、正确 `Content-Range` 和 1,024 字节。
+- 网络：NAS 宿主机 31473 连接被拒绝，主站容器代理正常。
+- Docker：两个容器健康，仅删除 7 个本轮替换且无容器引用的旧镜像。
+
+## 日常维护
+
+`tools/maintenance/weekly_cache_maintenance.py` 是日常 Weekly 图片维护入口。默认只把“不在当前 JSON 且超过 30 天”的直接子目录写入 dry-run manifest；应用前再次验证 JSON、目录签名、mtime 和路径边界，并先备份索引。它不会替代本次一次性全量清理清单。
+
+## 剩余运行态
+
+没有未修复的审计代码项。`DEBZ-015` 以及三条恢复任务的最终下载结果属于持续变化的 qB 运行态，不是本轮代码阻塞项；4 个对应空目录在任务结束前按计划保留。
