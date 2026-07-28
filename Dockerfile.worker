@@ -32,6 +32,7 @@ COPY plwt_translate_missing.py /app/
 COPY heal_runner.py /app/
 COPY weekly_backfill_details.py /app/
 COPY replace_chinese.py /app/
+COPY tools/maintenance/storage_cleanup.py /app/tools/maintenance/
 RUN mkdir -p /data /db /cfg /logs
 EXPOSE 31473
 ENTRYPOINT /usr/bin/python3 -u /app/launcher.py
