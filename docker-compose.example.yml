@@ -57,8 +57,16 @@ services:
       CURRENT_PATH: /db/current_download.txt
       HISTORY_PATH: /db/download_history.json
       QUEUE_PORT: "31473"
-      ONLINE_TTL_SECONDS: "86400"
+      ONLINE_TTL_SECONDS: "2592000"
       ONLINE_CLEANUP_INTERVAL_SECONDS: "3600"
+      WEEKLY_RETENTION_DAYS: "30"
+      WEEKLY_RETENTION_ENABLE: "1"
+      BLOCKED_ACTRESSES_FILE: /db/blocked_actresses.txt
+      BLOCKED_GENRES_FILE: /db/blocked_genres.txt
+      FAV_ACTRESSES_FILE: /db/favorite_actresses.txt
+      BLOCKED_KEYWORDS_FILE: /db/blocked_keywords.txt
+      ACTRESS_AGES_FILE: /db/actress_ages.json
+      WEEKLY_WATCHED_FILE: /db/weekly_watched.json
       LOG_DIR: /app/logs
       PROXY: ${PROXY:-}
       QBITTORRENT_URL: ${QBITTORRENT_URL:-http://host.docker.internal:8080}

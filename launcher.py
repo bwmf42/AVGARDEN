@@ -102,6 +102,13 @@ def next_daily_update_target(now):
     return random_time_between(start, end)
 
 
+def next_retention_target(now):
+    target = now.replace(hour=4, minute=30, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return target
+
+
 def save_current_back_to_queue():
     """停止前将当前下载任务放回队列"""
     current = None
@@ -277,6 +284,48 @@ def heal_watcher():
             slept += 60.0
 
 
+def retention_watcher():
+    """Daily guarded retention: watched 30d, blocked metadata-only, routine records 30d."""
+    if os.environ.get("WEEKLY_RETENTION_ENABLE", "1").strip().lower() in ("0", "false", "no", "off"):
+        log("Weekly retention disabled (WEEKLY_RETENTION_ENABLE=0)")
+        return
+    py = os.environ.get("WORKER_PYTHON", "/app/venv/bin/python3")
+    script = "/app/tools/maintenance/weekly_retention_maintenance.py"
+    while running:
+        now = datetime.now()
+        target = next_retention_target(now)
+        delay = max(0.0, (target - now).total_seconds())
+        log(f"Weekly retention: next run at {target.strftime('%Y-%m-%d %H:%M')}")
+        slept = 0.0
+        while running and slept < delay:
+            chunk = min(60.0, delay - slept)
+            time.sleep(chunk)
+            slept += chunk
+        if not running:
+            return
+        try:
+            proc = subprocess.run(
+                [py, script, "--auto"],
+                timeout=3600,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if proc.stdout:
+                sys.stdout.write(proc.stdout)
+                sys.stdout.flush()
+            if proc.stderr:
+                sys.stderr.write(proc.stderr)
+                sys.stderr.flush()
+            if proc.returncode == 0:
+                log_write("WeeklyRetention", "自动清理完成")
+            else:
+                log_write("WeeklyRetention", f"自动清理失败: exit={proc.returncode}")
+        except Exception as e:
+            log(f"weekly retention failed: {e}")
+            log_write("WeeklyRetention", f"自动清理失败: {e}")
+
+
 def daily_updater():
     """每天 13:00-18:00 随机时间运行 weekly_updater"""
     while running:
@@ -381,6 +430,9 @@ def main():
     # 6. 自愈：补译/队列对齐/探活（不重刮）
     t4 = threading.Thread(target=heal_watcher, daemon=True)
     t4.start()
+    # 7. Weekly 已看/屏蔽条目和例行维护记录自动保留策略
+    t5 = threading.Thread(target=retention_watcher, daemon=True)
+    t5.start()
 
     # 等待任意一个退出
     while running:

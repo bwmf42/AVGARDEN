@@ -6,8 +6,8 @@ from contextlib import contextmanager
 
 
 @contextmanager
-def weekly_update_lock(path):
-    """Serialize long-running read/modify/write jobs for weekly.json."""
+def json_update_lock(path):
+    """Serialize cross-process updates for one JSON file."""
     lock_path = path + ".lock"
     os.makedirs(os.path.dirname(lock_path), exist_ok=True)
     with open(lock_path, "a+", encoding="utf-8") as lock_file:
@@ -16,6 +16,9 @@ def weekly_update_lock(path):
             yield
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+weekly_update_lock = json_update_lock
 
 
 def atomic_write_json(path, value):
@@ -40,7 +43,7 @@ def atomic_write_json(path, value):
 
 def update_json(path, default, mutator):
     """Lock, reload, mutate, and atomically replace one shared JSON file."""
-    with weekly_update_lock(path):
+    with json_update_lock(path):
         try:
             with open(path, encoding="utf-8") as handle:
                 value = json.load(handle)

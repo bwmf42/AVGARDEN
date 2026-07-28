@@ -34,6 +34,20 @@ python3 /app/tools/maintenance/weekly_cache_maintenance.py \
   --apply /db/maintenance/manifests/weekly-cache.json
 ```
 
+The active retention policy uses a separate guarded command. Dry-run manually:
+
+```bash
+python3 /app/tools/maintenance/weekly_retention_maintenance.py \
+  --manifest /db/maintenance/manifests/weekly-retention.json
+```
+
+After reviewing the manifest, apply it with `--apply`. The Worker launcher runs
+the equivalent `--auto` path daily at 04:30. It keeps unviewed Weekly entries,
+expires watched entries and watched records after 30 days, immediately removes
+Weekly artwork for blocked entries, and retains only lightweight blocked
+metadata until its watched timestamp expires. Each apply backs up both
+`weekly.json` and `weekly_watched.json` first.
+
 - `chinese_forum_updater.py` writes to `work/chinese_scrape/` by default. Set
   `SAVE_PATH` explicitly before targeting production data.
 - `fill_gaps.py` changes `weekly.json` and performs remote requests. Use only for

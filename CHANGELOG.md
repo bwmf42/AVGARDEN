@@ -8,6 +8,8 @@
 
 ### Added
 
+- Added guarded daily Weekly retention at 04:30: unviewed entries stay indefinitely, watched entries and their Weekly artwork expire after 30 days, and every run writes and revalidates an exact manifest plus compressed JSON backups.
+- Added metadata-first blocking in the Weekly updater. Items matching blocked actresses, genres, keywords, or the existing age filter are recorded as watched, kept metadata-only for 30 days, and never request artwork, magnets, or title translation.
 - Added a separate dry-run-first Weekly artwork maintenance command that only selects unreferenced directories older than 30 days by default, validates direct-child paths and signatures again at apply time, and backs up the current Weekly index before deletion.
 - Added a guarded NAS storage-maintenance command that first writes an exact JSON manifest, verifies file signatures and live qB state, backs up Weekly/watched/config/database state, and only then performs approved cleanup with `deleteFiles=false` for qB records.
 - Added settings-page actress blocking by video ID: resolve Japanese actress names from the local media-library NFO first, fall back to MGS then DMM, require explicit selection for multi-actress titles, and match known rename aliases such as `河北彩花` / `河北彩伽` without confusing translated title text for actress metadata.
@@ -22,6 +24,8 @@
 
 ### Changed
 
+- Made Server and Worker share a locked, atomic watched-state format with an internal manual/blocked reason while preserving the existing `/api/weekly-watched` response. The server is authoritative after browser migration, expired IDs absent from Weekly cannot be restored, online abnormal-search cache retention is 30 days, and routine maintenance records retain 30 days with at least the newest three copies.
+- Deployment now records the two previously running A/GARDEN image IDs and removes only those exact images after both replacement containers and the public API pass health checks.
 - Moved the Worker and Queue API onto the private Compose network, made the Go server use `http://worker:31473`, added server connection timeouts, and changed deployment sync to `rsync --delete` with explicit protection for runtime configuration, database, and logs.
 - Upgraded Axios to 1.18.1, Vue to 3.5.40, Vite to 6.4.3, PostCSS to 8.5.24, and the overridden `form-data` to 4.0.6; the official npm audit now reports zero vulnerabilities.
 - Canonicalize a trailing `V` edition marker to the base video ID across forum ingestion, Python, Go, and Vue (for example `START-612V` → `START-612`) while preserving other meaningful suffix letters; official DMM release dates now replace forum post dates while `postDate` remains intact.
@@ -67,6 +71,7 @@
 
 ### Fixed
 
+- Prevented blocked Weekly entries from repeatedly consuming image, magnet, and translation requests, and removed the old release-date/downloaded merge eviction so entries that have not been watched are not discarded by age.
 - Prevented scheduled title repair from rewriting an unchanged `weekly.json`, so no-op runs no longer invalidate reviewed maintenance manifests or churn the 5.5 MB index.
 - Excluded active qB downloads from completed-media poster repair even when a nearly finished sparse file temporarily passes the 95% allocation rule, derived the final repair count from execution-time state while still requiring a source for every poster, and made cleanup apply-time activity guards honor numeric-prefix compatibility aliases.
 - Added read-only compatibility aliases from shortened qB labels such as `LUXU-1881` and `MIUM-1389` to their numeric-leading media directories, while keeping explicit short-code directories authoritative. Local `CH` subtitle suffixes such as `fns-224ch` now resolve to the base code instead of a false `FNS-224C` variant.

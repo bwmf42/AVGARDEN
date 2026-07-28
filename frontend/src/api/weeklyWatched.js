@@ -106,6 +106,14 @@ function sameIDs(a, b) {
     return left.length === right.length && left.every((id, index) => id === right[index])
 }
 
+export function mergeWatchedSources(serverIDs, localIDs, sessionIDs, migrated) {
+    return normalizeWatchedIDs([
+        ...serverIDs,
+        ...(migrated ? [] : localIDs),
+        ...sessionIDs
+    ])
+}
+
 async function fetchServerWatchedIDs() {
     const resp = await fetch(WATCHED_API)
     if (!resp.ok) throw new Error('Failed to load watched list')
@@ -142,11 +150,10 @@ export async function syncWatchedIDs() {
         }
     }
 
-    const mergedIDs = normalizeWatchedIDs([
-        ...serverIDs,
-        ...localIDs,
-        ...sessionIDs
-    ])
+    const migrated = localStorage.getItem(MIGRATED_KEY) === 'true'
+    // After the one-time migration, the server is authoritative so its
+    // 30-day retention cannot be undone by stale browser storage.
+    const mergedIDs = mergeWatchedSources(serverIDs, localIDs, sessionIDs, migrated)
 
     writeLocalWatchedIDs(mergedIDs)
 

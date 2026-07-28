@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -579,6 +580,7 @@ type WeeklyWatchedPayload struct {
 type WeeklyWatchedRecord struct {
 	ID        string `json:"id"`
 	WatchedAt string `json:"watched_at"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 type WeeklyWatchedStore struct {
@@ -641,19 +643,19 @@ func parseWeeklyWatchedTime(raw string, fallback time.Time) time.Time {
 	return fallback
 }
 
-func loadWeeklyWatchedRecords() map[string]time.Time {
+func loadWeeklyWatchedStoreRecords() map[string]WeeklyWatchedRecord {
 	data, err := ioutil.ReadFile(weeklyWatchedFile)
 	if err != nil {
-		return map[string]time.Time{}
+		return map[string]WeeklyWatchedRecord{}
 	}
 
 	now := time.Now()
-	records := map[string]time.Time{}
+	records := map[string]WeeklyWatchedRecord{}
 
 	var ids []string
 	if err := json.Unmarshal(data, &ids); err == nil {
 		for _, id := range normalizeWeeklyWatchedIDs(ids) {
-			records[id] = now
+			records[id] = WeeklyWatchedRecord{ID: id, WatchedAt: now.Format(time.RFC3339), Reason: "manual"}
 		}
 		return records
 	}
@@ -665,10 +667,24 @@ func loadWeeklyWatchedRecords() map[string]time.Time {
 			if id == "" {
 				continue
 			}
-			records[id] = parseWeeklyWatchedTime(item.WatchedAt, now)
+			watchedAt := parseWeeklyWatchedTime(item.WatchedAt, now)
+			reason := strings.TrimSpace(item.Reason)
+			if reason == "" {
+				reason = "manual"
+			}
+			records[id] = WeeklyWatchedRecord{ID: id, WatchedAt: watchedAt.Format(time.RFC3339), Reason: reason}
 		}
 	}
 
+	return records
+}
+
+func loadWeeklyWatchedRecords() map[string]time.Time {
+	stored := loadWeeklyWatchedStoreRecords()
+	records := make(map[string]time.Time, len(stored))
+	for id, item := range stored {
+		records[id] = parseWeeklyWatchedTime(item.WatchedAt, time.Now())
+	}
 	return records
 }
 
@@ -696,31 +712,95 @@ func loadWeeklyWatchedIDs() []string {
 	return weeklyWatchedIDsFromRecords(loadWeeklyWatchedRecords())
 }
 
+func currentWeeklyIDSet() map[string]bool {
+	path := filepath.Join(basePath, "__weekly__", "weekly.json")
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var items []map[string]interface{}
+	if json.Unmarshal(data, &items) != nil {
+		return nil
+	}
+	ids := make(map[string]bool, len(items))
+	for _, item := range items {
+		id := strings.ToUpper(strings.TrimSpace(fmt.Sprint(item["id"])))
+		if id != "" {
+			ids[id] = true
+		}
+	}
+	return ids
+}
+
 func saveWeeklyWatchedIDs(ids []string) error {
 	ids = normalizeWeeklyWatchedIDs(ids)
-	existing := loadWeeklyWatchedRecords()
-	now := time.Now()
-	store := WeeklyWatchedStore{Items: make([]WeeklyWatchedRecord, 0, len(ids))}
-
-	for _, id := range ids {
-		watchedAt, ok := existing[id]
-		if !ok {
-			watchedAt = now
-		}
-		store.Items = append(store.Items, WeeklyWatchedRecord{
-			ID:        id,
-			WatchedAt: watchedAt.Format(time.RFC3339),
-		})
-	}
-
 	if err := os.MkdirAll(filepath.Dir(weeklyWatchedFile), 0755); err != nil {
 		return err
 	}
+	lock, err := os.OpenFile(weeklyWatchedFile+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+
+	existing := loadWeeklyWatchedStoreRecords()
+	weeklyIDs := currentWeeklyIDSet()
+	wanted := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if weeklyIDs == nil || weeklyIDs[id] {
+			wanted[id] = true
+		}
+	}
+	// A stale browser payload must not erase an automatic block recorded by Worker.
+	for id, item := range existing {
+		if strings.HasPrefix(item.Reason, "blocked_") && (weeklyIDs == nil || weeklyIDs[id]) {
+			wanted[id] = true
+		}
+	}
+	now := time.Now().Format(time.RFC3339)
+	store := WeeklyWatchedStore{Items: make([]WeeklyWatchedRecord, 0, len(wanted))}
+	for id := range wanted {
+		item, ok := existing[id]
+		if !ok {
+			item = WeeklyWatchedRecord{ID: id, WatchedAt: now, Reason: "manual"}
+		}
+		store.Items = append(store.Items, item)
+	}
+	sort.Slice(store.Items, func(i, j int) bool {
+		return parseWeeklyWatchedTime(store.Items[i].WatchedAt, time.Time{}).After(
+			parseWeeklyWatchedTime(store.Items[j].WatchedAt, time.Time{}),
+		)
+	})
 	data, err := json.MarshalIndent(store, "", "  ")
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(weeklyWatchedFile, data, 0644)
+	tmp, err := os.CreateTemp(filepath.Dir(weeklyWatchedFile), ".weekly-watched-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, weeklyWatchedFile)
 }
 
 func weeklyWatchedHandler(w http.ResponseWriter, r *http.Request) {

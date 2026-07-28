@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """周推荐自动更新 — 98堂 forum-37 列表 + 个体页/图源补充细节"""
 import json, os, re, sys, time, random, urllib.error, urllib.request
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from src.weekly import sources, javbus, sukebei, merge, artwork, enrich, chinese_forum
+from src.weekly import sources, javbus, sukebei, merge, artwork, enrich, chinese_forum, blocking
 from weekly_store import atomic_write_json, weekly_update_lock
+from weekly_watched_store import mark_many, mark_watched
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 WEEKLY_DIR = os.path.join(SAVE_PATH, "__weekly__")
 WEEKLY_JSON = os.path.join(WEEKLY_DIR, "weekly.json")
+WEEKLY_WATCHED_FILE = os.environ.get("WEEKLY_WATCHED_FILE", "/db/weekly_watched.json")
 PROXY = os.environ.get("PROXY", "") or None
 MAX_NEW = int(os.environ.get("WEEKLY_MAX_NEW", "20"))
 MAX_AGE = int(os.environ.get("WEEKLY_MAX_AGE", "30"))
@@ -123,6 +126,89 @@ def strip_actresses_from_title_zh(items):
     return n
 
 
+def _legacy_first_seen(item):
+    """Best available timestamp for items created before retention tracking."""
+    for key in ("postDate", "releaseDate"):
+        raw = str(item.get(key) or "").strip()
+        if not raw:
+            continue
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
+            try:
+                return datetime.strptime(raw[:10], fmt).astimezone().isoformat(timespec="seconds")
+            except ValueError:
+                continue
+    return None
+
+
+def mark_existing_blocked(items, rules=None):
+    """Mark existing filtered items and prevent later artwork/translation refreshes."""
+    rules = rules or blocking.load_rules()
+    count = changed = 0
+    blocked_ids = set()
+    watched_entries = []
+    for item in items or []:
+        reason = blocking.match_reason(item, rules)
+        if not reason:
+            continue
+        code = str(item.get("id") or "").upper()
+        if not code:
+            continue
+        blocked_ids.add(code)
+        count += 1
+        before = dict(item)
+        blocking.strip_expensive_fields(item)
+        changed += item != before
+        watched_entries.append({
+            "id": code,
+            "watched_at": _legacy_first_seen(item),
+            "reason": reason,
+        })
+    mark_many(WEEKLY_WATCHED_FILE, watched_entries)
+    return blocked_ids, count, changed
+
+
+def enrich_new_item(item, rules=None):
+    """Enrich metadata first; only unblocked items receive artwork and magnets."""
+    rules = rules or blocking.load_rules()
+    avid = str(item.get("id") or "").upper()
+    if not item.get("title"):
+        item["title"] = avid
+
+    enrich.enrich_item(item, save_dir=WEEKLY_DIR, download_images=False)
+    reason = blocking.match_reason(item, rules)
+    if reason:
+        blocking.strip_expensive_fields(item)
+        mark_watched(WEEKLY_WATCHED_FILE, avid, reason=reason)
+        log(f"  blocked {avid}: {reason}; skipped artwork/magnet/translation")
+        return reason
+
+    artwork.download_for_item(
+        item,
+        WEEKLY_DIR,
+        force_cover=javbus.cover_needs_refresh(avid, WEEKLY_DIR),
+        force_fanarts=javbus.cover_needs_refresh(avid, WEEKLY_DIR),
+    )
+    if item.get("cover"):
+        item["poster"] = item["cover"]
+
+    magnet = ""
+    forum_url = (item.get("forumUrl") or "").strip()
+    if forum_url:
+        try:
+            chinese_forum.set_proxy(PROXY)
+            magnet = chinese_forum.fetch_thread_magnet(forum_url) or ""
+            if magnet:
+                log(f"  magnet from forum for {avid}")
+        except Exception as e:
+            log(f"  forum magnet fail {avid}: {e}")
+    if not magnet:
+        magnet = sukebei.search(avid, "") or ""
+        if magnet:
+            log(f"  magnet from sukebei for {avid}")
+    item["magnet"] = magnet
+    return ""
+
+
 def batch_translate(items, passes=None, checkpoint_path=None):
     """Translate missing titleZh with multi-pass retry and optional checkpoint writes.
 
@@ -134,8 +220,11 @@ def batch_translate(items, passes=None, checkpoint_path=None):
         log("Skip translate: DEEPSEEK_API_KEY not set")
         return 0, 0
 
+    rules = blocking.load_rules()
+    eligible = [item for item in items if not blocking.match_reason(item, rules)]
+
     # Always peel names off existing titleZh first
-    stripped = strip_actresses_from_title_zh(items)
+    stripped = strip_actresses_from_title_zh(eligible)
     if stripped:
         log(f"Stripped actress names from {stripped} titleZh fields")
         if checkpoint_path:
@@ -144,7 +233,7 @@ def batch_translate(items, passes=None, checkpoint_path=None):
     total_ok = total_fail = 0
     for pass_i in range(1, passes + 1):
         to_translate = [
-            i for i in items
+            i for i in eligible
             if not str(i.get("titleZh") or "").strip() and str(i.get("title") or "").strip()
         ]
         if not to_translate:
@@ -202,11 +291,20 @@ def _main_locked():
     existing_ids = {i["id"].upper() for i in existing if i.get("id")}
     log(f"Existing: {len(existing)}")
 
+    rules = blocking.load_rules()
+    blocked_ids, blocked_count, blocked_changed = mark_existing_blocked(existing, rules)
+    if blocked_count:
+        log(f"Existing blocked: {blocked_count} (metadata-only, watched retention)")
+
     # 1. 补封面（列表挂了也先落盘）
     if not LIST_ONLY:
-        n = merge.fill_covers(existing, WEEKLY_DIR)
+        n = merge.fill_covers(
+            [item for item in existing if str(item.get("id") or "").upper() not in blocked_ids],
+            WEEKLY_DIR,
+        )
         if n:
             log(f"Filled {n} covers")
+        if n or blocked_changed:
             try:
                 atomic_write_json(WEEKLY_JSON, existing)
             except Exception as e:
@@ -250,31 +348,7 @@ def _main_locked():
             item.setdefault("genres", [])
             item.setdefault("fanarts", [])
         else:
-            # Exact source ordering is owned by enrich.py and artwork.py.
-            if not item.get("title"):
-                item["title"] = avid
-            enrich.enrich_item(
-                item,
-                save_dir=WEEKLY_DIR,
-                download_images=True,
-                force_images=javbus.cover_needs_refresh(avid, WEEKLY_DIR),
-            )
-            # Magnet: 默认从 98堂帖子页取；论坛没有再 sukebei
-            magnet = ""
-            forum_url = (item.get("forumUrl") or "").strip()
-            if forum_url:
-                try:
-                    chinese_forum.set_proxy(PROXY)
-                    magnet = chinese_forum.fetch_thread_magnet(forum_url) or ""
-                    if magnet:
-                        log(f"  magnet from forum for {avid}")
-                except Exception as e:
-                    log(f"  forum magnet fail {avid}: {e}")
-            if not magnet:
-                magnet = sukebei.search(avid, "") or ""
-                if magnet:
-                    log(f"  magnet from sukebei for {avid}")
-            item["magnet"] = magnet
+            enrich_new_item(item, rules)
             # 补齐缺失字段
             for k in ["titleZh", "titleJp", "poster", "duration", "actresses", "genres", "fanarts", "size"]:
                 item.setdefault(k, "")

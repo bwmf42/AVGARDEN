@@ -105,9 +105,17 @@ def report(msg: str) -> None:
 def count_titlezh_gaps(items: Optional[list] = None) -> int:
     if items is None:
         items = load_json(WEEKLY_JSON, [])
+    try:
+        from src.weekly import blocking
+        rules = blocking.load_rules()
+    except Exception:
+        blocking = None
+        rules = None
     n = 0
     for i in items or []:
         if not isinstance(i, dict):
+            continue
+        if blocking is not None and blocking.match_reason(i, rules):
             continue
         if str(i.get("title") or "").strip() and not str(i.get("titleZh") or "").strip():
             n += 1
