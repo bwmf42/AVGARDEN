@@ -19,6 +19,8 @@ func TestNormalizeUserVideoID(t *testing.T) {
 		"heydouga-4017-0123": "HEYDOUGA-4017-123",
 		"T28557":             "T28-557",
 		"IBW123Z":            "IBW-123Z",
+		"START-612V":         "START-612",
+		"start612v":          "START-612",
 		"N1234":              "N1234",
 		"h_086abc00123":      "H_086ABC00123",
 	}

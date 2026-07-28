@@ -19,6 +19,7 @@ project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_root)
 from src.log_writer import write as log_write
 from process_control import clear_cancel_request, is_cancel_requested, terminate_active_process
+from qb_task_guard import has_matching_qb_task
 from queue_store import append_unique, pop_first, read_json, update_json
 from video_id import normalize_video_id, safe_video_dir
 
@@ -192,39 +193,15 @@ def _handle_magnet_unavailable(avid, reason="磁链暂不可用"):
     return True
 
 def has_active_qb_task(avid):
-    """如果 qB 中已有同番号或带数字前缀的活跃任务，不应当算作最终失败。"""
+    """如果 qB 任意分类中已有同番号任务，不应再启动在线下载。"""
     try:
-        torrents = qbittorrent_api("GET", "/api/v2/torrents/info?category=AV_GARDEN")
+        torrents = qbittorrent_api("GET", "/api/v2/torrents/info")
     except Exception:
         return False
     if not isinstance(torrents, list):
         return False
 
-    target = avid.upper().strip()
-    active_states = {"downloading", "stalledDL", "forcedDL", "metaDL", "queuedDL"}
-    done_states = {"queuedUP", "uploading", "stalledUP", "pausedUP"}
-    for torrent in torrents:
-        state = str(torrent.get("state", ""))
-        if state not in active_states and state not in done_states:
-            continue
-        tags = {x.strip().upper() for x in str(torrent.get("tags") or "").split(",") if x.strip()}
-        if target in tags:
-            return True
-        fields = [
-            torrent.get("name", ""),
-            torrent.get("content_path", ""),
-            torrent.get("save_path", ""),
-        ]
-        for field in fields:
-            value = str(field).upper()
-            # 精确匹配，或作为路径/文件名的一段（前后有分隔符）
-            if value == target:
-                return True
-            # 用分隔符边界匹配，避免 ABF-361 误匹配 ABF-3612
-            import re as _re
-            if _re.search(r'(?:^|[/\s\-_.,\[\]+])' + _re.escape(target) + r'(?:[/\s\-_.,\[\]]|$)', value):
-                return True
-    return False
+    return has_matching_qb_task(torrents, avid)
 
 def notify_feishu_all_failed(avid):
     """所有下载方式失败时通过飞书通知"""
@@ -765,6 +742,13 @@ def download_video(avid):
     if data.find_in_db(avid, downloaded_path, "MissAV"):
         logger.info(f"[Worker] {avid} 已在数据库中，跳过")
         return True
+
+    # qB 可能由旧版本、手动任务或其他分类接管。即使 weekly 暂时没有磁链，
+    # 也不能再回退在线流，否则同一番号会生成两份正片。
+    if has_active_qb_task(avid):
+        logger.info(f"[Worker] {avid} qB 已有任务，跳过重复下载")
+        log_write("Worker", f"{avid} 已在 qB 下载或保种，跳过重复下载")
+        return False
 
     # 尝试获取锁
     if is_locked():

@@ -19,6 +19,7 @@
 
 ### Changed
 
+- Canonicalize a trailing `V` edition marker to the base video ID across forum ingestion, Python, Go, and Vue (for example `START-612V` → `START-612`) while preserving other meaningful suffix letters; official DMM release dates now replace forum post dates while `postDate` remains intact.
 - Genre labels: expand `genre_zh` Chinese map; persist learned src→zh in `/db/genre_zh_memory.json` (read on scrape, write only new keys); enrich always normalizes genres; `plwt_genre_normalize.py` one-shot rewrites weekly.json.
 - Genre output **snaps to exact `blocked_genres.txt` spellings** (fold 繁简/中点) so existing block list keeps matching without re-blocking aliases.
 - Blocking a genre/actress invalidates weekly API cache and refreshes the detail browse list so matching 未看 titles disappear immediately (not only the current card).
@@ -52,10 +53,14 @@
 
 ### Removed
 
+- Cleaned the deployed media library while preserving multipart and metadata-only directories: kept five verified high-bitrate copies, removed their five lower-bitrate duplicates, disabled and removed 152 exact-name bundled promo clips, and removed a stale 135 MiB project copy from the weekly cache.
 - Removed the rejected 05-07 design exploration artifacts while retaining the adopted 02 direction and the undecided 01/03/04 explorations.
 
 ### Fixed
 
+- Prevented duplicate downloads when qB already has the same code in another category: Worker now checks all qB categories before any online-stream fallback while ignoring broken `missingFiles` / `error` tasks.
+- Unified local main-video detection across the media list, detail playback, weekly local index, video status, and failed queue: recursively select MP4 files above 100 MiB with at least 95% allocated data, prefer part 1 for multipart titles, otherwise choose the largest copy, and hide metadata-only or incomplete sparse directories from the library.
+- Audited all 228 selected media files with `ffprobe`: 221 are valid; seven incomplete sparse files with missing MP4 indexes are retained for recovery but no longer exposed as playable local media.
 - Filled the DMM search-page blind spot with exact batched GraphQL CID lookup, parsed standard AV actresses in addition to amateur profiles, rejected generic empty MGS pages as false metadata hits, and added exact javdatabase metadata plus known-forum artwork fallbacks for the remaining weekly gaps.
 - Normalized MGS amateur performer profiles to nickname-only actress labels, repaired existing weekly labels during detail backfill, and limited metadata backfill to genuinely missing fields. Metadata now uses MGS as authoritative when it has genres and falls back to exact DMM product metadata only when MGS genres are absent; progress is saved per item with remaining-field and failure summaries.
 - Reduced scheduled cover refreshes from multi-minute CID/sample probing to exact cover-only searches, bounded fallback probes, and 1-3 second pacing. Weekly updater and backfill jobs now share a cross-process lock and unique atomic temp files so they cannot overwrite each other.

@@ -137,9 +137,11 @@ func videoDetailHandler(w http.ResponseWriter, r *http.Request) {
 		logger.Printf("Error reading fanart dir for %s: %v", videoID, err)
 	}
 
-	mp4Path := findFileInDir(basePath, videoID, ".mp4")
-	if mp4Path != "" && !strings.HasPrefix(filepath.Base(mp4Path), "._") {
-		detail.VideoFile = fmt.Sprintf("/file/%s/%s", videoID, filepath.Base(mp4Path))
+	mp4Path := findMainVideoInDir(basePath, videoID)
+	if mp4Path != "" {
+		if relativePath, err := filepath.Rel(filepath.Join(basePath, videoID), mp4Path); err == nil {
+			detail.VideoFile = fmt.Sprintf("/file/%s/%s", videoID, filepath.ToSlash(relativePath))
+		}
 	}
 
 	logger.Printf("Processed detail request for %s in %v", videoID, time.Since(startTime))
@@ -802,7 +804,7 @@ func mapKeys(m map[string]bool) []string {
 	return keys
 }
 
-// buildMediaIndex 扫描 basePath 下的目录，记录哪些番号有 .mp4
+// buildMediaIndex 扫描 basePath 下的目录，记录哪些番号有可播放的主视频
 // 一次扫描代替每条条目单独 stat，大幅减少磁盘 IO
 func buildMediaIndex() map[string]bool {
 	index := make(map[string]bool)
@@ -814,17 +816,8 @@ func buildMediaIndex() map[string]bool {
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), "__") || entry.Name() == "thumb" {
 			continue
 		}
-		code := strings.ToUpper(entry.Name())
-		subEntries, err := ioutil.ReadDir(filepath.Join(basePath, entry.Name()))
-		if err != nil {
-			continue
-		}
-		for _, f := range subEntries {
-			name := f.Name()
-			if strings.HasSuffix(name, ".mp4") && f.Size() > 10*1024*1024 {
-				index[code] = true
-				break
-			}
+		if findMainVideoInDir(basePath, entry.Name()) != "" {
+			index[cleanVideoID(entry.Name())] = true
 		}
 	}
 	return index
@@ -1293,8 +1286,7 @@ func findDownloadedLocalID(rawID string) (string, bool) {
 		if info, err := os.Stat(filepath.Join(basePath, videoDir)); err != nil || !info.IsDir() {
 			continue
 		}
-		mp4Path := findFileInDir(basePath, videoDir, ".mp4")
-		if info, err := os.Stat(mp4Path); err == nil && info.Size() > 10*1024*1024 {
+		if findMainVideoInDir(basePath, videoDir) != "" {
 			return cleanID, true
 		}
 	}
@@ -1977,8 +1969,8 @@ func videoStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 2. 磁盘检查
 	if status == "none" {
-		mp4Path := findFileInDir(basePath, id, ".mp4")
-		if info, err := os.Stat(mp4Path); err == nil && info.Size() > 10*1024*1024 {
+		videoDir, _ := resolveVideoDir(id)
+		if findMainVideoInDir(basePath, videoDir) != "" {
 			status = "done"
 		}
 	}
@@ -2410,8 +2402,8 @@ func queueStatusHandler(w http.ResponseWriter, r *http.Request) {
 		if acked[code] {
 			continue
 		}
-		mp4Path := findFileInDir(basePath, code, ".mp4")
-		if info, err := os.Stat(mp4Path); err == nil && info.Size() > 10*1024*1024 {
+		videoDir, _ := resolveVideoDir(code)
+		if findMainVideoInDir(basePath, videoDir) != "" {
 			continue
 		}
 		if !hasSeenQueueCode(seen, code) {

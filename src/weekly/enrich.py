@@ -180,9 +180,12 @@ def apply_dmm_meta(item: dict, meta: dict) -> bool:
     if meta.get("duration") and not item.get("duration"):
         item["duration"] = meta["duration"]
         changed = True
-    if meta.get("releaseDate") and not item.get("releaseDate"):
-        item["releaseDate"] = meta["releaseDate"]
-        changed = True
+    if meta.get("releaseDate"):
+        # Forum list dates are post dates, not official product release dates.
+        if not item.get("releaseDate") or item.get("source", "").startswith("plwt"):
+            if item.get("releaseDate") != meta["releaseDate"]:
+                item["releaseDate"] = meta["releaseDate"]
+                changed = True
 
     if changed:
         current = item.get("metaSource") or ""

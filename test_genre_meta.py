@@ -294,12 +294,23 @@ class TestDmmMetadata(unittest.TestCase):
                 "genres": ["中出し"],
                 "actresses": ["工藤香澄"],
                 "duration": "95分钟",
+                "releaseDate": "2026-08-20",
             }
-            item = {"id": "FERA-212", "actresses": [], "genres": [], "duration": ""}
+            item = {
+                "id": "FERA-212",
+                "source": "plwt-37",
+                "postDate": "2026-07-27",
+                "releaseDate": "2026-07-27",
+                "actresses": [],
+                "genres": [],
+                "duration": "",
+            }
             enrich.enrich_item(item, download_images=False)
             self.assertEqual(item["actresses"], ["工藤香澄"])
             self.assertEqual(item["genres"], ["中出"])
             self.assertEqual(item["duration"], "95分钟")
+            self.assertEqual(item["releaseDate"], "2026-08-20")
+            self.assertEqual(item["postDate"], "2026-07-27")
             self.assertEqual(item["metaSource"], "dmm")
         finally:
             mgs.fetch_detail = original_mgs

@@ -47,6 +47,13 @@ func prepareVideoIDInput(raw string) string {
 	return value
 }
 
+func canonicalVideoIDSuffix(suffix string) string {
+	if suffix == "V" {
+		return ""
+	}
+	return suffix
+}
+
 func normalizeUserVideoID(raw string) string {
 	value := prepareVideoIDInput(raw)
 	if value == "" {
@@ -66,7 +73,7 @@ func normalizeUserVideoID(raw string) string {
 		{r18InputPattern, func(m []string) string { return "R18-" + m[1] }},
 		{ibwInputPattern, func(m []string) string { return m[1] + "-" + m[2] }},
 		{numericDatePattern, func(m []string) string { return m[1] + "-" + m[2] }},
-		{separatedInputPattern, func(m []string) string { return m[1] + "-" + m[2] + m[3] }},
+		{separatedInputPattern, func(m []string) string { return m[1] + "-" + m[2] + canonicalVideoIDSuffix(m[3]) }},
 	}
 	for _, pattern := range patterns {
 		if match := pattern.re.FindStringSubmatch(value); match != nil {
@@ -77,7 +84,7 @@ func normalizeUserVideoID(raw string) string {
 		return value
 	}
 	if match := compactInputPattern.FindStringSubmatch(value); match != nil && len(match[1]) <= 16 {
-		return match[1] + "-" + match[2] + match[3]
+		return match[1] + "-" + match[2] + canonicalVideoIDSuffix(match[3])
 	}
 	return ""
 }

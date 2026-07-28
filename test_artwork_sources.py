@@ -221,6 +221,21 @@ class TestDmmCid(unittest.TestCase):
 
 
 class TestForumArtwork(unittest.TestCase):
+    def test_weekly_list_canonicalizes_v_variant(self):
+        html = """
+        <tbody id="normalthread_3654606">
+          <a href="thread-3654606-1-1.html" class="xst">
+            START-612V 【特典版】人生初のナマ中出し解禁
+          </a>
+        </tbody>
+        """
+        items, stats = chinese_forum.parse_list_html(
+            html, purpose="weekly", fid="37"
+        )
+        self.assertEqual(stats["with_id"], 1)
+        self.assertEqual(items[0]["id"], "START-612")
+        self.assertTrue(items[0]["title"].startswith("START-612 "))
+
     def test_extracts_full_first_post_images(self):
         html = """
         <td class="t_f" id="postmessage_1">

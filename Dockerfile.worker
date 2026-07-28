@@ -15,6 +15,7 @@ COPY src/ /app/src/
 COPY cfg/ /app/cfg/
 COPY metadata.py /app/
 COPY worker.py /app/
+COPY qb_task_guard.py /app/
 COPY queue_api.py /app/
 COPY launcher.py /app/
 COPY process_control.py /app/

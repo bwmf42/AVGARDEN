@@ -152,6 +152,14 @@ def extract_video_id(title: str) -> str:
     return ""
 
 
+def normalize_title_id_prefix(title: str, avid: str) -> str:
+    """Keep the visible title prefix aligned with the canonical video ID."""
+    head, separator, tail = (title or "").partition(" ")
+    if head and normalize_video_id(head) == avid:
+        return avid + (separator + tail if separator else "")
+    return title
+
+
 def parse_list_html(
     html: str,
     base: str = BASE,
@@ -197,6 +205,7 @@ def parse_list_html(
         if not avid:
             stats["skipped_no_id"] += 1
             continue
+        title = normalize_title_id_prefix(title, avid)
 
         cat_m = _CATEGORY.search(body)
         category = cat_m.group(1) if cat_m else ""

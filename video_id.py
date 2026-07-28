@@ -25,6 +25,10 @@ def _prepare(raw):
     return text
 
 
+def _canonical_variant_suffix(suffix):
+    return "" if suffix == "V" else suffix
+
+
 def normalize_video_id(raw):
     """Normalize a user-entered video ID without guessing ambiguous formats."""
     text = _prepare(raw)
@@ -72,11 +76,11 @@ def normalize_video_id(raw):
 
     match = re.fullmatch(r"([A-Z0-9]*[A-Z][A-Z0-9]{0,15})\s*[-_]\s*(\d{2,8})([A-Z]?)", text)
     if match:
-        return f"{match.group(1)}-{match.group(2)}{match.group(3)}"
+        return f"{match.group(1)}-{match.group(2)}{_canonical_variant_suffix(match.group(3))}"
 
     match = re.fullmatch(r"([0-9]*[A-Z][A-Z0-9]*[A-Z])(\d{2,8})([A-Z]?)", text)
     if match and len(match.group(1)) <= 16:
-        return f"{match.group(1)}-{match.group(2)}{match.group(3)}"
+        return f"{match.group(1)}-{match.group(2)}{_canonical_variant_suffix(match.group(3))}"
 
     if re.fullmatch(r"H_\d{3,4}[A-Z]{1,10}\d{2,5}[A-Z0-9]{0,8}", text):
         return text

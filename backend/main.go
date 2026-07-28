@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -612,6 +613,13 @@ func buildVideoListCache() error {
 	var count int
 	for _, dir := range dirs {
 		dirName := dir.entry.Name()
+		if strings.HasPrefix(dirName, "__") || dirName == "thumb" {
+			continue
+		}
+		if findMainVideoInDir(basePath, dirName) == "" {
+			logger.Printf("Main video not found for %s", dirName)
+			continue
+		}
 		videoID := cleanVideoID(dirName)
 		posterFile := getPosterFile(basePath, dirName)
 		if posterFile == "" {
@@ -657,6 +665,104 @@ func findFileInDir(base, dirName, suffix string) string {
 		}
 	}
 	return ""
+}
+
+const mainVideoMinSize int64 = 100 * 1024 * 1024
+const mainVideoMinAllocatedPercent int64 = 95
+
+var enforceMainVideoAllocation = true
+
+var multipartVideoSuffix = regexp.MustCompile(`(?i)^(.*?)[-_. ](?:CD|PART)?([1-9])$`)
+
+type mainVideoCandidate struct {
+	path      string
+	size      int64
+	partGroup string
+	part      int
+}
+
+// findMainVideoInDir returns the playable MP4 for one media directory.
+// It ignores small bundled clips, supports nested torrent layouts, and keeps
+// multipart titles starting from part 1 instead of selecting a later part.
+func findMainVideoInDir(base, dirName string) string {
+	root := filepath.Join(base, dirName)
+	candidates := make([]mainVideoCandidate, 0, 2)
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			if path != root && strings.HasPrefix(info.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !info.Mode().IsRegular() || info.Size() < mainVideoMinSize ||
+			!strings.EqualFold(filepath.Ext(info.Name()), ".mp4") ||
+			strings.HasPrefix(info.Name(), ".") ||
+			!hasSufficientMainVideoAllocation(info) {
+			return nil
+		}
+
+		candidate := mainVideoCandidate{path: path, size: info.Size()}
+		stem := strings.TrimSuffix(info.Name(), filepath.Ext(info.Name()))
+		if match := multipartVideoSuffix.FindStringSubmatch(stem); len(match) == 3 {
+			candidate.partGroup = strings.ToUpper(match[1])
+			candidate.part = int(match[2][0] - '0')
+		}
+		candidates = append(candidates, candidate)
+		return nil
+	})
+
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	partsByGroup := make(map[string]map[int]bool)
+	for _, candidate := range candidates {
+		if candidate.partGroup == "" {
+			continue
+		}
+		if partsByGroup[candidate.partGroup] == nil {
+			partsByGroup[candidate.partGroup] = make(map[int]bool)
+		}
+		partsByGroup[candidate.partGroup][candidate.part] = true
+	}
+
+	eligible := candidates
+	partOne := make([]mainVideoCandidate, 0, 1)
+	for _, candidate := range candidates {
+		parts := partsByGroup[candidate.partGroup]
+		if candidate.part == 1 && len(parts) > 1 {
+			partOne = append(partOne, candidate)
+		}
+	}
+	if len(partOne) > 0 {
+		eligible = partOne
+	}
+
+	sort.Slice(eligible, func(i, j int) bool {
+		if eligible[i].size == eligible[j].size {
+			return eligible[i].path < eligible[j].path
+		}
+		return eligible[i].size > eligible[j].size
+	})
+	return eligible[0].path
+}
+
+func hasSufficientMainVideoAllocation(info os.FileInfo) bool {
+	if !enforceMainVideoAllocation || info.Size() <= 0 {
+		return true
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return true
+	}
+	return hasSufficientAllocatedBytes(info.Size(), stat.Blocks*512)
+}
+
+func hasSufficientAllocatedBytes(size, allocated int64) bool {
+	return size <= 0 || allocated*100 >= size*mainVideoMinAllocatedPercent
 }
 
 func parseTitleAndDate(videoID string) (title, releaseDate string, err error) {

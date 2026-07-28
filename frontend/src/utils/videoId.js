@@ -7,6 +7,10 @@ function prepare(value) {
   return text
 }
 
+function canonicalVariantSuffix(suffix) {
+  return suffix === 'V' ? '' : suffix
+}
+
 export function normalizeVideoId(value) {
   const text = prepare(value)
   if (!text) return ''
@@ -41,10 +45,10 @@ export function normalizeVideoId(value) {
   if (/^(?:(?:N|K)\d{4}|RED[01]\d{2}|SKY[0-3]\d{2}|EX00[01]\d)$/.test(text)) return text
 
   match = text.match(/^([A-Z0-9]*[A-Z][A-Z0-9]{0,15})\s*[-_]\s*(\d{2,8})([A-Z]?)$/)
-  if (match) return `${match[1]}-${match[2]}${match[3]}`
+  if (match) return `${match[1]}-${match[2]}${canonicalVariantSuffix(match[3])}`
 
   match = text.match(/^([0-9]*[A-Z][A-Z0-9]*[A-Z])(\d{2,8})([A-Z]?)$/)
-  if (match && match[1].length <= 16) return `${match[1]}-${match[2]}${match[3]}`
+  if (match && match[1].length <= 16) return `${match[1]}-${match[2]}${canonicalVariantSuffix(match[3])}`
 
   if (/^H_\d{3,4}[A-Z]{1,10}\d{2,5}[A-Z0-9]{0,8}$/.test(text)) return text
   if (/^\d{3}_\d{4,5}$/.test(text)) return text
