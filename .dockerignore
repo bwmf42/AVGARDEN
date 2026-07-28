@@ -21,6 +21,7 @@ tools/*
 !tools/maintenance/
 tools/maintenance/*
 !tools/maintenance/storage_cleanup.py
+!tools/maintenance/weekly_cache_maintenance.py
 pic/
 *.mp4
 *.ts
