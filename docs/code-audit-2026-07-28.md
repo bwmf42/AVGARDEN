@@ -45,23 +45,30 @@ because this pass is limited to file cleanup.
 3. **High: not every `weekly.json` writer uses the shared lock.** Queue status,
    fanart localization, Chinese replacement, and older one-shot scripts contain
    direct or fixed-temp writes that can race with the scheduled updater.
-4. **Medium: media file serving validates only the media root.** `/file/`
+4. **High: frontend dependencies have published security advisories.** The
+   official npm audit reports four high-severity package entries at the locked
+   versions: `axios 1.16.1`, `form-data 4.0.5`, `postcss 8.5.14`, and
+   `vite 6.4.2`. Three remain under `--omit=dev`; fixes are available, but the
+   dependency upgrades and regression testing are deferred to a separate pass.
+5. **Medium: media file serving validates only the media root.** `/file/`
    requests can traverse between media subdirectories while remaining under the
    root, and symlink resolution is not checked.
-5. **Medium: Queue API is reachable on all interfaces without its own auth.**
+6. **Medium: Queue API is reachable on all interfaces without its own auth.**
    The production Worker uses host networking and binds port 31473 to `0.0.0.0`.
-6. **Medium: the Go HTTP listeners do not set read, write, header, or idle
+7. **Medium: the Go HTTP listeners do not set read, write, header, or idle
    timeouts.**
-7. **Medium: deployment merges source without deleting removed files.** A
+8. **Medium: deployment merges source without deleting removed files.** A
    one-time exact cleanup is safe, but future source removals can leave new NAS
    residue until deployment synchronization is hardened.
-8. **Low: online-search cleanup has no server-side expiry.** Browser cleanup is
+9. **Low: online-search cleanup has no server-side expiry.** Browser cleanup is
    best-effort; one temporary directory from 2026-07-06 remains on the NAS.
 
 ## Baseline Verification
 
 - Go race tests and `go vet`: passed.
 - Frontend Node tests and production build: passed.
+- Official npm dependency audit: four high-severity package entries; three
+  remain with development dependencies omitted. Recorded above for follow-up.
 - Python: 76 effective tests passed and 2 Worker-container integration tests
   were skipped locally. The obsolete `test_clean.py` caused standard discovery
   to fail because it had no assertions and imported the full runtime at module
