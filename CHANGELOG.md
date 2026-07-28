@@ -63,6 +63,7 @@
 
 ### Removed
 
+- Applied the first reviewed Weekly-retention manifest in production: expired 844 watched Weekly entries and 1,605 watched-state records, removed 1,315 exact expired/blocked artwork directories containing 7,470 files, and released 795.66 MiB while preserving every unexpired/unwatched entry and creating compressed index/state backups.
 - Applied the reviewed NAS storage manifests: removed 1,237 unreferenced Weekly artwork directories, 7 sparse residues, 10 metadata-only shells, 6 exact stale files, 160 `missingFiles` and 7 orphan/false-complete qB records with `deleteFiles=false`, releasing 13.47 GiB of allocated space while preserving 1,811 Weekly entries and 2,017 watched records.
 - Removed 21 exact stale paths from the NAS deployment tree using a saved JSON manifest, releasing 25,108,415 bytes while preserving runtime configuration, databases, logs, artwork caches, media, and qBittorrent tasks.
 - Cleaned the deployed media library while preserving multipart and metadata-only directories: kept five verified high-bitrate copies, removed their five lower-bitrate duplicates, disabled and removed 152 exact-name bundled promo clips, and removed a stale 135 MiB project copy from the weekly cache.

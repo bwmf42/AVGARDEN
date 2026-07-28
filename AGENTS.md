@@ -95,6 +95,9 @@
   - 标题：`weekly_updater.batch_translate`（DeepSeek → `titleZh`）
 - 回退列表源：`WEEKLY_LIST_SOURCE=javbus`。
 - **回填范围**：默认只补前端 **未看**（`/api/weekly` 已滤屏蔽标签/演员 − 已看 − 队列 − 已下载）。脚本 `plwt_art_backfill.py`（`BACKFILL_UNWATCHED_ONLY=1`）；全量才设 `0`。元数据回填用 `weekly_backfill_details.py`（同 scope）。
+- **保留规则**：未看作品不按时间淘汰；手动已看从 `watched_at` 起保留 30 天，到期同时删除 Weekly 条目、图片目录和已看记录。
+- **屏蔽作品**：先拉取演员、番号、标签等最小匹配元数据，命中后立即记为已看；不再请求封面、预览图、磁链、下载或标题翻译，并从收录时间起保留 30 天。
+- **自动清理**：Launcher 每天 04:30 运行 `weekly_retention_maintenance.py --auto`；每次均生成精确 manifest、复核签名并压缩备份 Weekly/已看 JSON。`__online__`、应用日志和日常维护记录保留 30 天，维护记录至少保留最新 3 份。
 - JavBus 无 `sample-box` 时不要当下载失败。DMM 图优先 `.co.jp`，失败试 `.com` / `awsimgsrc`。
 - MGS：`PROXY` 只走日本代理，禁止直连优先。
 - `queue_api` 在线/weekly 番号归一化保留真实数字前缀（如 `300MIUM-1395`）；仅本地文件夹清洗可剥源站前缀。
