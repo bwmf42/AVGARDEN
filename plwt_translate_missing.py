@@ -16,7 +16,8 @@ def main():
     with weekly_update_lock(WEEKLY_JSON):
         import json
 
-        items = json.load(open(WEEKLY_JSON, encoding="utf-8"))
+        with open(WEEKLY_JSON, encoding="utf-8") as handle:
+            items = json.load(handle)
         missing_before = sum(
             1
             for i in items
@@ -28,7 +29,10 @@ def main():
         if stripped:
             log(f"Stripped actress names from {stripped} titleZh")
         ok, fail = batch_translate(items, checkpoint_path=WEEKLY_JSON)
-        atomic_write_json(WEEKLY_JSON, items)
+        if stripped or ok:
+            atomic_write_json(WEEKLY_JSON, items)
+        else:
+            log("No title changes; weekly.json left untouched")
         missing_after = sum(
             1
             for i in items

@@ -66,6 +66,7 @@
 
 ### Fixed
 
+- Prevented scheduled title repair from rewriting an unchanged `weekly.json`, so no-op runs no longer invalidate reviewed maintenance manifests or churn the 5.5 MB index.
 - Excluded active qB downloads from completed-media poster repair even when a nearly finished sparse file temporarily passes the 95% allocation rule, derived the final repair count from execution-time state while still requiring a source for every poster, and made cleanup apply-time activity guards honor numeric-prefix compatibility aliases.
 - Added read-only compatibility aliases from shortened qB labels such as `LUXU-1881` and `MIUM-1389` to their numeric-leading media directories, while keeping explicit short-code directories authoritative. Local `CH` subtitle suffixes such as `fns-224ch` now resolve to the base code instead of a false `FNS-224C` variant.
 - Preserved real numeric-leading local IDs such as `300MIUM-*` and `259LUXU-*` while stripping only confirmed source prefixes; old shortened detail URLs remain compatible and resolve to the corrected canonical ID.
