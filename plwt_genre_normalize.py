@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or "/app")
 from src.weekly import genre_zh
+from weekly_store import atomic_write_json, weekly_update_lock
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 WEEKLY_JSON = os.path.join(SAVE_PATH, "__weekly__", "weekly.json")
@@ -108,18 +109,16 @@ def migrate_weekly() -> int:
     if not os.path.isfile(WEEKLY_JSON):
         print(f"[GenreNorm] weekly skip (no file): {WEEKLY_JSON}", flush=True)
         return 0
-    items = json.load(open(WEEKLY_JSON, encoding="utf-8"))
-    changed_items = 0
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-        if genre_zh.normalize_item_genres(it):
-            changed_items += 1
-    genre_zh.save_memory()
-    tmp = WEEKLY_JSON + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, WEEKLY_JSON)
+    with weekly_update_lock(WEEKLY_JSON):
+        items = json.load(open(WEEKLY_JSON, encoding="utf-8"))
+        changed_items = 0
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            if genre_zh.normalize_item_genres(it):
+                changed_items += 1
+        genre_zh.save_memory()
+        atomic_write_json(WEEKLY_JSON, items)
     print(
         f"[GenreNorm] weekly items_changed={changed_items}/{len(items)} path={WEEKLY_JSON}",
         flush=True,

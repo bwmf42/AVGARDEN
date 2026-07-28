@@ -166,37 +166,83 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	videoID, _ := resolveVideoDir(pathParts[0])
-	filename := strings.Join(pathParts[1:], "/")
-	imagePath := filepath.Join(basePath, videoID, filename)
+	for index, part := range pathParts {
+		decoded, err := url.PathUnescape(part)
+		if err != nil || decoded == "" || decoded == "." || decoded == ".." || strings.ContainsAny(decoded, `/\`) {
+			httpError(w, "Invalid path", http.StatusBadRequest)
+			return
+		}
+		pathParts[index] = decoded
+	}
 
-	// Require path to be inside basePath (prefix alone is wrong: /data vs /data-evil).
-	if !isPathInsideBase(imagePath, basePath) {
+	var ownerRoot string
+	var relativeParts []string
+	if pathParts[0] == "__weekly__" || pathParts[0] == "__online__" {
+		if len(pathParts) < 3 {
+			httpError(w, "Invalid path", http.StatusBadRequest)
+			return
+		}
+		ownerRoot = filepath.Join(basePath, pathParts[0], pathParts[1])
+		relativeParts = pathParts[2:]
+	} else {
+		videoID, _ := resolveVideoDir(pathParts[0])
+		ownerRoot = filepath.Join(basePath, videoID)
+		relativeParts = pathParts[1:]
+	}
+	requestedPath := filepath.Join(append([]string{ownerRoot}, relativeParts...)...)
+	if !isPathInsideBase(ownerRoot, basePath) || !isPathInsideBase(requestedPath, ownerRoot) {
 		httpError(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
-
-	fileInfo, err := os.Stat(imagePath)
-	if os.IsNotExist(err) {
+	realRoot, err := filepath.EvalSymlinks(ownerRoot)
+	if err != nil {
 		http.NotFound(w, r)
 		return
-	} else if err != nil {
-		logger.Printf("Error accessing file %s: %v", imagePath, err)
-		httpError(w, "Internal server error", http.StatusInternalServerError)
+	}
+	realPath, err := filepath.EvalSymlinks(requestedPath)
+	if err != nil || !isPathInsideBase(realPath, realRoot) {
+		if os.IsNotExist(err) {
+			http.NotFound(w, r)
+		} else {
+			httpError(w, "Invalid path", http.StatusBadRequest)
+		}
+		return
+	}
+	file, err := os.Open(realPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer file.Close()
+	fileInfo, err := file.Stat()
+	if err != nil || !fileInfo.Mode().IsRegular() {
+		httpError(w, "Invalid file", http.StatusBadRequest)
+		return
+	}
+	resolvedAfterOpen, err := filepath.EvalSymlinks(requestedPath)
+	if err != nil || !isPathInsideBase(resolvedAfterOpen, realRoot) {
+		httpError(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	resolvedInfo, err := os.Stat(resolvedAfterOpen)
+	if err != nil || !os.SameFile(fileInfo, resolvedInfo) {
+		httpError(w, "File changed during open", http.StatusConflict)
 		return
 	}
 
-	switch filepath.Ext(filename) {
+	extension := strings.ToLower(filepath.Ext(realPath))
+	switch extension {
 	case ".jpg", ".jpeg":
 		w.Header().Set("Content-Type", "image/jpeg")
 	case ".png":
 		w.Header().Set("Content-Type", "image/png")
 	case ".mp4":
 		w.Header().Set("Content-Type", "video/mp4")
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(mediaWriteTimeout))
 	}
 
-	logger.Printf("Serving file %s (Size: %d)", imagePath, fileInfo.Size())
-	http.ServeFile(w, r, imagePath)
+	logger.Printf("Serving file %s (Size: %d)", realPath, fileInfo.Size())
+	http.ServeContent(w, r, filepath.Base(realPath), fileInfo.ModTime(), file)
 }
 
 type CoverLookupResult struct {
@@ -263,8 +309,8 @@ func coverIDCandidates(raw string) []string {
 		add(normalized)
 		return candidates
 	}
-	if matches := avidPattern.FindStringSubmatch(raw); len(matches) >= 3 {
-		add(matches[1] + "-" + matches[2])
+	if normalized := normalizeLocalVideoID(raw); normalized != "" {
+		add(normalized)
 	}
 	return candidates
 }
@@ -1953,12 +1999,17 @@ func videoStatusHandler(w http.ResponseWriter, r *http.Request) {
 	torrents := getQBTorrents()
 	for _, t := range torrents {
 		name := strings.ToUpper(strings.TrimSpace(fmt.Sprint(t["name"])))
-		if strings.Contains(name, id) || id == name {
+		if comparableVideoID(name) == comparableVideoID(id) || id == name {
 			state := fmt.Sprint(t["state"])
 			if state == "downloading" || state == "stalledDL" || state == "forcedDL" || state == "metaDL" {
 				status = "downloading"
 			} else if state == "uploading" || state == "stalledUP" || state == "pausedUP" || state == "queuedUP" {
-				status = "done"
+				videoDir, _ := resolveVideoDir(id)
+				if findMainVideoInDir(basePath, videoDir) != "" {
+					status = "done"
+				}
+			} else if state == "missingFiles" || state == "error" {
+				continue
 			} else {
 				status = "queued"
 			}

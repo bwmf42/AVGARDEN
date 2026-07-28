@@ -36,3 +36,18 @@ def atomic_write_json(path, value):
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
+
+def update_json(path, default, mutator):
+    """Lock, reload, mutate, and atomically replace one shared JSON file."""
+    with weekly_update_lock(path):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                value = json.load(handle)
+        except FileNotFoundError:
+            value = default
+        updated = mutator(value)
+        if updated is None:
+            updated = value
+        atomic_write_json(path, updated)
+        return updated

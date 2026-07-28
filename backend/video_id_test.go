@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestNormalizeUserVideoID(t *testing.T) {
 	cases := map[string]string{
@@ -52,5 +56,31 @@ func TestIsPathInsideBase(t *testing.T) {
 	}
 	if isPathInsideBase("/etc/passwd", "/data") {
 		t.Fatal("/etc/passwd must not be under /data")
+	}
+}
+
+func TestNormalizeLocalVideoIDPreservesRealNumericPrefixes(t *testing.T) {
+	cases := map[string]string{
+		"300MIUM-1395":           "300MIUM-1395",
+		"259LUXU-1881":           "259LUXU-1881",
+		"857OMG-032":             "OMG-032",
+		"420HOI-397":             "HOI-397",
+		"18bt.net_VENX-276C.mp4": "VENX-276C",
+	}
+	for raw, expected := range cases {
+		if actual := normalizeLocalVideoID(raw); actual != expected {
+			t.Errorf("normalizeLocalVideoID(%q) = %q, want %q", raw, actual, expected)
+		}
+	}
+}
+
+func TestResolveVideoDirKeepsLegacyURLAliasButReturnsCanonicalID(t *testing.T) {
+	root := withTestMediaRoot(t)
+	if err := os.Mkdir(filepath.Join(root, "300MIUM-1395"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	dir, id := resolveVideoDir("MIUM-1395")
+	if dir != "300MIUM-1395" || id != "300MIUM-1395" {
+		t.Fatalf("dir=%q id=%q", dir, id)
 	}
 }

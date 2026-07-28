@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 import urllib.request
+import time
 from contextlib import ExitStack
 from unittest.mock import patch
 
@@ -75,6 +76,13 @@ class QueueAPITest(unittest.TestCase):
         self.assertEqual(payload["code"], "300MIUM-1395")
         self.assertEqual(read_queue(self.queue_path), ["300MIUM-1395"])
 
+    def test_qb_done_without_main_video_is_not_reported(self):
+        torrents = [{"state": "queuedUP", "tags": "MIKR-109", "name": "MIKR-109"}]
+        with patch.object(queue_api, "qb_api", return_value=torrents):
+            status, payload = self.request("/api/queue/")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, [])
+
     def test_delete_requests_cancel_and_removes_queue_record(self):
         append_unique(self.queue_path, "OMG-032")
         write_json(self.state_path, [{"code": "OMG-032", "status": "queued"}])
@@ -119,6 +127,22 @@ class QueueAPITest(unittest.TestCase):
         self.assertEqual(error, "")
         self.assertEqual(payload["source"], "dmm")
         self.assertEqual(payload["actresses"], ["小島みこ"])
+
+    def test_online_cache_ttl_removes_only_expired_directory(self):
+        online_dir = os.path.join(self.temp_dir.name, "online")
+        old_dir = os.path.join(online_dir, "OLD-001")
+        fresh_dir = os.path.join(online_dir, "NEW-001")
+        os.makedirs(old_dir)
+        os.makedirs(fresh_dir)
+        now = time.time()
+        os.utime(old_dir, (now - 100, now - 100))
+        with patch.object(queue_api, "ONLINE_DIR", online_dir), patch.object(
+            queue_api, "ONLINE_TTL_SECONDS", 50
+        ):
+            removed = queue_api.cleanup_expired_online_details(now=now)
+        self.assertEqual(removed, ["OLD-001"])
+        self.assertFalse(os.path.exists(old_dir))
+        self.assertTrue(os.path.isdir(fresh_dir))
 
 
 if __name__ == "__main__":

@@ -18,10 +18,12 @@ import urllib.request
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_root)
 from src.log_writer import write as log_write
+from main_video import find_main_video
 from process_control import clear_cancel_request, is_cancel_requested, terminate_active_process
 from qb_task_guard import has_matching_qb_task
 from queue_store import append_unique, pop_first, read_json, update_json
 from video_id import normalize_video_id, safe_video_dir
+from weekly_store import update_json as update_weekly_json
 
 # 从 comm 加载配置
 from src.comm import *
@@ -201,7 +203,32 @@ def has_active_qb_task(avid):
     if not isinstance(torrents, list):
         return False
 
-    return has_matching_qb_task(torrents, avid)
+    return has_matching_qb_task(torrents, avid, _completed_qb_task_has_main_video)
+
+
+def _completed_qb_task_has_main_video(avid, torrent):
+    candidates = [os.path.join(save_path, avid)]
+    content_path = str(torrent.get("content_path") or "").strip()
+    torrent_save_path = str(torrent.get("save_path") or "").strip()
+    torrent_name = str(torrent.get("name") or "").strip()
+    if content_path:
+        candidates.append(content_path if os.path.isabs(content_path) else os.path.join(torrent_save_path, content_path))
+    if torrent_save_path and os.path.basename(torrent_save_path.rstrip(os.sep)).upper() == avid:
+        candidates.append(torrent_save_path)
+    if torrent_save_path and torrent_name:
+        candidates.append(os.path.join(torrent_save_path, torrent_name))
+
+    root = os.path.realpath(save_path)
+    for path in candidates:
+        real_path = os.path.realpath(path)
+        try:
+            if os.path.commonpath([root, real_path]) != root:
+                continue
+        except ValueError:
+            continue
+        if find_main_video(real_path):
+            return True
+    return False
 
 def notify_feishu_all_failed(avid):
     """所有下载方式失败时通过飞书通知"""
@@ -281,20 +308,14 @@ def get_magnet_from_weekly(avid):
             logger.info(f"[Magnet] Found forum magnet for {avid}")
             if persist_id and os.path.exists(WEEKLY_JSON):
                 try:
-                    with open(WEEKLY_JSON, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    changed = False
-                    for it in data:
-                        if it.get("id", "").upper() == str(persist_id).upper():
-                            if it.get("magnet") != magnet:
+                    def persist(data):
+                        for it in data if isinstance(data, list) else []:
+                            if it.get("id", "").upper() == str(persist_id).upper():
                                 it["magnet"] = magnet
-                                changed = True
-                            break
-                    if changed:
-                        tmp = WEEKLY_JSON + ".tmp"
-                        with open(tmp, "w", encoding="utf-8") as f:
-                            json.dump(data, f, ensure_ascii=False, indent=2)
-                        os.replace(tmp, WEEKLY_JSON)
+                                break
+                        return data
+
+                    update_weekly_json(WEEKLY_JSON, [], persist)
                 except Exception as e:
                     logger.warning(f"[Magnet] persist forum magnet failed: {e}")
             return magnet
@@ -498,20 +519,9 @@ def find_and_rename_output(save_dir, avid, qb_content_path=None):
     if not os.path.isdir(search_dir):
         return None
 
-    candidates = []
-    for root, dirs, files in os.walk(search_dir):
-        for f in files:
-            ext = os.path.splitext(f)[1].lower()
-            if ext in VIDEO_EXTENSIONS:
-                path = os.path.join(root, f)
-                size = os.path.getsize(path)
-                if size > 10 * 1024 * 1024:
-                    candidates.append((size, path))
-
-    if not candidates:
+    src = find_main_video(search_dir)
+    if not src:
         return None
-    candidates.sort(reverse=True)
-    _, src = candidates[0]
     os.makedirs(save_dir, exist_ok=True)
     dst = os.path.join(save_dir, f"{avid}.mp4")
     if src != dst:
@@ -663,7 +673,7 @@ def try_magnet_download(avid, save_dir, magnet=None):
             logger.info(f"[Magnet] {avid} qBittorrent state: {state}, checking file...")
             content_path = target.get("content_path", "")
             output_path = find_and_rename_output(save_dir, avid, content_path)
-            if output_path and os.path.getsize(output_path) > 10 * 1024 * 1024:
+            if output_path and find_main_video(output_path):
                 total_size = os.path.getsize(output_path)
                 logger.info(f"[Magnet] {avid} download success ({elapsed:.0f}s, {total_size/1024/1024:.1f} MB)")
                 if torrent_hash:
@@ -739,9 +749,12 @@ def download_video(avid):
 
     # 检查是否已在数据库
     data.initialize_db(downloaded_path, "MissAV")
-    if data.find_in_db(avid, downloaded_path, "MissAV"):
+    existing_main_video = find_main_video(os.path.join(save_path, avid))
+    if data.find_in_db(avid, downloaded_path, "MissAV") and existing_main_video:
         logger.info(f"[Worker] {avid} 已在数据库中，跳过")
         return True
+    if data.find_in_db(avid, downloaded_path, "MissAV"):
+        logger.warning(f"[Worker] {avid} 数据库有记录但磁盘无有效正片，继续恢复下载")
 
     # qB 可能由旧版本、手动任务或其他分类接管。即使 weekly 暂时没有磁链，
     # 也不能再回退在线流，否则同一番号会生成两份正片。

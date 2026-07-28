@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from video_id import normalize_video_id, safe_local_dir, safe_video_dir
+from video_id import normalize_local_video_id, normalize_video_id, safe_local_dir, safe_video_dir
 
 
 CASES = {
@@ -54,6 +54,18 @@ class VideoIDTest(unittest.TestCase):
             )
             with self.assertRaises(ValueError):
                 safe_local_dir(base, "../outside")
+
+    def test_local_ids_strip_only_known_source_prefixes(self):
+        cases = {
+            "300MIUM-1395": "300MIUM-1395",
+            "259LUXU-1881": "259LUXU-1881",
+            "857OMG-032": "OMG-032",
+            "420HOI-397": "HOI-397",
+            "18bt.net_VENX-276C.mp4": "VENX-276C",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(normalize_local_video_id(raw), expected)
 
 
 if __name__ == "__main__":

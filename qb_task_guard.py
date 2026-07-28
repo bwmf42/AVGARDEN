@@ -10,8 +10,8 @@ DONE_QB_STATES = frozenset({
 })
 
 
-def has_matching_qb_task(torrents, video_id):
-    """Return whether any healthy qB task exactly matches the video ID."""
+def has_matching_qb_task(torrents, video_id, completed_validator=None):
+    """Return whether an active or disk-backed completed qB task matches."""
     if not isinstance(torrents, list):
         return False
 
@@ -33,10 +33,16 @@ def has_matching_qb_task(torrents, video_id):
             for tag in str(torrent.get("tags") or "").split(",")
             if tag.strip()
         }
-        if target in tags:
-            return True
+        matched = target in tags
         for field in ("name", "content_path", "save_path"):
             value = str(torrent.get(field) or "").upper()
             if value == target or boundary.search(value):
-                return True
+                matched = True
+                break
+        if not matched:
+            continue
+        if state in ACTIVE_QB_STATES:
+            return True
+        if completed_validator is not None and completed_validator(target, torrent):
+            return True
     return False

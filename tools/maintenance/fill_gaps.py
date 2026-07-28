@@ -7,6 +7,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 from src.weekly import artwork, sources, javbus, sukebei
+from weekly_store import atomic_write_json, weekly_update_lock
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 WEEKLY_DIR = os.path.join(SAVE_PATH, "__weekly__")
@@ -56,7 +57,7 @@ def search_prefix(prefix):
         log(f"  Search {prefix}: {e}")
         return []
 
-def main():
+def _main_locked():
     log("=== Start ===")
     sources.set_proxy(PROXY)
     javbus.set_proxy(PROXY)
@@ -114,11 +115,13 @@ def main():
         log(f"  Added {avid}: {item.get('title','')[:50]}, magnet={'OK' if item['magnet'] else 'NONE'}")
         time.sleep(random.uniform(5, 10))
 
-    tmp = WEEKLY_JSON + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(existing, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, WEEKLY_JSON)
+    atomic_write_json(WEEKLY_JSON, existing)
     log(f"=== Done: {added} added, {len(existing)} total ===")
+
+
+def main():
+    with weekly_update_lock(WEEKLY_JSON):
+        _main_locked()
 
 if __name__ == "__main__":
     main()

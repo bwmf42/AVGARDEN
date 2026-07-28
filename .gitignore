@@ -104,7 +104,8 @@ docs/handoff-*.md
 docs/deploy-zspace.md
 codex-agent/
 .claude/
-deploy.sh
+# deploy.sh is credential-free and is part of the reviewed deployment path.
+!deploy.sh
 dist/
 dockerfile
 /main.go

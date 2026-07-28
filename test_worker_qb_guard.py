@@ -12,7 +12,7 @@ except (ImportError, OSError):
 class WorkerQBGuardTest(unittest.TestCase):
     def test_finds_matching_task_across_all_categories(self):
         torrents = [{
-            "state": "queuedUP",
+            "state": "queuedDL",
             "category": "ARCHIVE",
             "tags": "",
             "name": "HUNTC-583",
@@ -20,6 +20,11 @@ class WorkerQBGuardTest(unittest.TestCase):
             "save_path": "/data",
         }]
         self.assertTrue(has_matching_qb_task(torrents, "HUNTC-583"))
+
+    def test_completed_task_requires_valid_main_video(self):
+        torrents = [{"state": "queuedUP", "tags": "MIKR-109", "name": "MIKR-109"}]
+        self.assertFalse(has_matching_qb_task(torrents, "MIKR-109"))
+        self.assertTrue(has_matching_qb_task(torrents, "MIKR-109", lambda *_: True))
 
     def test_matches_tag_but_not_longer_similar_code(self):
         tagged = [{"state": "downloading", "tags": "ABF-361", "name": "other"}]
@@ -38,7 +43,7 @@ class WorkerQBGuardTest(unittest.TestCase):
 
     @unittest.skipUnless(worker is not None, "requires the Worker container runtime")
     def test_worker_queries_all_qb_categories(self):
-        torrents = [{"state": "queuedUP", "name": "HUNTC-583"}]
+        torrents = [{"state": "queuedDL", "name": "HUNTC-583"}]
         with mock.patch.object(worker, "qbittorrent_api", return_value=torrents) as qb_api:
             self.assertTrue(worker.has_active_qb_task("HUNTC-583"))
         qb_api.assert_called_once_with("GET", "/api/v2/torrents/info")

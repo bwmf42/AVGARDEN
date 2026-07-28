@@ -413,15 +413,11 @@ func containsBlockedActress(actresses []string) bool {
 	return false
 }
 
-var avidPattern = regexp.MustCompile(`(?i)([A-Z]{2,}\d*)-(\d+)`)
-
 func cleanVideoID(name string) string {
-	name = strings.TrimSpace(name)
-	matches := avidPattern.FindStringSubmatch(name)
-	if len(matches) >= 3 {
-		return strings.ToUpper(matches[1] + "-" + matches[2])
+	if normalized := normalizeLocalVideoID(name); normalized != "" {
+		return normalized
 	}
-	return strings.ToUpper(name)
+	return strings.ToUpper(strings.TrimSpace(name))
 }
 
 func resolveVideoDir(videoID string) (string, string) {
@@ -442,6 +438,13 @@ func resolveVideoDir(videoID string) (string, string) {
 	for _, entry := range entries {
 		if entry.IsDir() && cleanVideoID(entry.Name()) == target {
 			return entry.Name(), target
+		}
+	}
+	if len(target) > 0 && (target[0] < '0' || target[0] > '9') {
+		for _, entry := range entries {
+			if entry.IsDir() && legacyLocalVideoID(entry.Name()) == target {
+				return entry.Name(), cleanVideoID(entry.Name())
+			}
 		}
 	}
 	return videoID, target
@@ -544,17 +547,38 @@ func main() {
 	}
 
 	if err4 == nil {
-		go func() {
-			logger.Printf("Serving on IPv4 :%s", port)
-			logger.Fatal(http.Serve(listener4, handler))
-		}()
+		go serveHTTPListener("IPv4", port, listener4, handler)
 	}
 	if err6 == nil {
-		logger.Printf("Serving on IPv6 :%s", port)
-		logger.Fatal(http.Serve(listener6, handler))
+		go serveHTTPListener("IPv6", port, listener6, handler)
 	}
 
 	select {}
+}
+
+const (
+	serverReadTimeout       = 30 * time.Second
+	serverReadHeaderTimeout = 10 * time.Second
+	serverWriteTimeout      = 30 * time.Second
+	serverIdleTimeout       = 2 * time.Minute
+	mediaWriteTimeout       = 6 * time.Hour
+)
+
+func configuredHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadTimeout:       serverReadTimeout,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		WriteTimeout:      serverWriteTimeout,
+		IdleTimeout:       serverIdleTimeout,
+	}
+}
+
+func serveHTTPListener(network, port string, listener net.Listener, handler http.Handler) {
+	logger.Printf("Serving on %s :%s", network, port)
+	if err := configuredHTTPServer(handler).Serve(listener); err != nil && err != http.ErrServerClosed {
+		logger.Fatalf("%s server failed: %v", network, err)
+	}
 }
 
 // startCacheUpdater 定时更新缓存

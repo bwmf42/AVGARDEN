@@ -12,6 +12,8 @@ _DASH_TRANSLATION = str.maketrans({
     "\uff0d": "-",
 })
 
+_LOCAL_SOURCE_PREFIXES = ("328", "348", "390", "420", "857", "892")
+
 
 def _prepare(raw):
     text = unicodedata.normalize("NFKC", str(raw or "")).translate(_DASH_TRANSLATION)
@@ -90,6 +92,40 @@ def normalize_video_id(raw):
         return text
 
     return ""
+
+
+def normalize_local_video_id(raw):
+    """Normalize a local folder/torrent label without stripping real ID prefixes."""
+    text = unicodedata.normalize("NFKC", str(raw or "")).translate(_DASH_TRANSLATION)
+    text = os_path_basename(text.strip()).upper()
+    if not text:
+        return ""
+
+    source_prefix = "|".join(re.escape(prefix) for prefix in _LOCAL_SOURCE_PREFIXES)
+    match = re.match(
+        rf"^(?:{source_prefix})([A-Z][A-Z0-9]{{1,15}}-\d{{2,8}}[A-Z]?)",
+        text,
+    )
+    if match:
+        normalized = normalize_video_id(match.group(1))
+        if normalized:
+            return normalized
+
+    match = re.match(r"^([0-9]*[A-Z][A-Z0-9]{0,15}-\d{2,8}[A-Z]?)(?:$|[-_ .(])", text)
+    if match:
+        normalized = normalize_video_id(match.group(1))
+        if normalized:
+            return normalized
+
+    for match in re.finditer(r"([A-Z][A-Z0-9]{1,15}-\d{2,8}[A-Z]?)", text):
+        normalized = normalize_video_id(match.group(1))
+        if normalized:
+            return normalized
+    return normalize_video_id(text)
+
+
+def os_path_basename(value):
+    return re.split(r"[/\\]", value)[-1]
 
 
 def safe_video_dir(base_path, raw):

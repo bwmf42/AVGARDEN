@@ -8,6 +8,7 @@
 
 ### Added
 
+- Added a guarded NAS storage-maintenance command that first writes an exact JSON manifest, verifies file signatures and live qB state, backs up Weekly/watched/config/database state, and only then performs approved cleanup with `deleteFiles=false` for qB records.
 - Added settings-page actress blocking by video ID: resolve Japanese actress names from the local media-library NFO first, fall back to MGS then DMM, require explicit selection for multi-actress titles, and match known rename aliases such as `河北彩花` / `河北彩伽` without confusing translated title text for actress metadata.
 - Added exact DMM all-category search after the existing javdatabase and MGS sources, covering both mono DVD CIDs and digital products while rejecting similar codes and `NOW PRINTING` placeholders. DMM GraphQL now reads standard and amateur actress fields; when the search page misses a product, likely CIDs are queried in one batch and accepted only after exact `makerContentId` verification. Unknown maker prefixes can use javdatabase's exact `Content ID` as a resolver without blind CDN probing.
 - Switched daily recommendation **list** source to 98堂 `forum-37` (`WEEKLY_FORUM_FID=37`, default 3 pages via `WEEKLY_MAX_PAGES`); Chinese daily remains `forum-103` with 2 pages. JavBus list available via `WEEKLY_LIST_SOURCE=javbus`.
@@ -20,6 +21,8 @@
 
 ### Changed
 
+- Moved the Worker and Queue API onto the private Compose network, made the Go server use `http://worker:31473`, added server connection timeouts, and changed deployment sync to `rsync --delete` with explicit protection for runtime configuration, database, and logs.
+- Upgraded Axios to 1.18.1, Vue to 3.5.40, Vite to 6.4.3, PostCSS to 8.5.24, and the overridden `form-data` to 4.0.6; the official npm audit now reports zero vulnerabilities.
 - Canonicalize a trailing `V` edition marker to the base video ID across forum ingestion, Python, Go, and Vue (for example `START-612V` → `START-612`) while preserving other meaningful suffix letters; official DMM release dates now replace forum post dates while `postDate` remains intact.
 - Genre labels: expand `genre_zh` Chinese map; persist learned src→zh in `/db/genre_zh_memory.json` (read on scrape, write only new keys); enrich always normalizes genres; `plwt_genre_normalize.py` one-shot rewrites weekly.json.
 - Genre output **snaps to exact `blocked_genres.txt` spellings** (fold 繁简/中点) so existing block list keeps matching without re-blocking aliases.
@@ -62,6 +65,10 @@
 
 ### Fixed
 
+- Preserved real numeric-leading local IDs such as `300MIUM-*` and `259LUXU-*` while stripping only confirmed source prefixes; old shortened detail URLs remain compatible and resolve to the corrected canonical ID.
+- Unified Python and Go completion checks on recursive MP4 lookup, a 100 MiB floor, 95% allocated-byte validation, largest-copy selection, and multipart part-one preference. Completed qB tasks without a valid disk file no longer block recovery or appear local.
+- Serialized every `weekly.json` writer through one cross-process lock and atomic replacement, and added server-side 24-hour cleanup for abandoned `__online__` search caches.
+- Restricted `/file/` requests to one media, Weekly, or online owner directory, rechecked resolved symlinks after opening, and served Range requests from the opened file descriptor.
 - Prevented duplicate downloads when qB already has the same code in another category: Worker now checks all qB categories before any online-stream fallback while ignoring broken `missingFiles` / `error` tasks.
 - Unified local main-video detection across the media list, detail playback, weekly local index, video status, and failed queue: recursively select MP4 files above 100 MiB with at least 95% allocated data, prefer part 1 for multipart titles, otherwise choose the largest copy, and hide metadata-only or incomplete sparse directories from the library.
 - Audited all 228 selected media files with `ffprobe`: 221 are valid; seven incomplete sparse files with missing MP4 indexes are retained for recovery but no longer exposed as playable local media.

@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or "/app")
 from src.weekly import actresses as actress_util
+from weekly_store import atomic_write_json, weekly_update_lock
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 WEEKLY_JSON = os.path.join(SAVE_PATH, "__weekly__", "weekly.json")
@@ -51,7 +52,7 @@ def migrate_blocked_spellings() -> int:
     return changed
 
 
-def main():
+def _main_locked():
     migrate_blocked_spellings()
     items = json.load(open(WEEKLY_JSON, encoding="utf-8"))
     act_changed = 0
@@ -78,16 +79,18 @@ def main():
         if actress_util.finalize_title_zh(it):
             zh_changed += 1
 
-    tmp = WEEKLY_JSON + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, WEEKLY_JSON)
+    atomic_write_json(WEEKLY_JSON, items)
     print(
         f"[ActressFix] items={len(items)} actress_changed={act_changed} "
         f"filled_from_title≈{filled_from_title} snapped_to_blocked≈{snapped_blocked} "
         f"titleZh_fixed={zh_changed}",
         flush=True,
     )
+
+
+def main():
+    with weekly_update_lock(WEEKLY_JSON):
+        _main_locked()
 
 
 if __name__ == "__main__":

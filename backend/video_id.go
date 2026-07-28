@@ -22,6 +22,10 @@ var (
 	dmmHInputPattern      = regexp.MustCompile(`^H_\d{3,4}[A-Z]{1,10}\d{2,5}[A-Z0-9]{0,8}$`)
 	dmmNumericPattern     = regexp.MustCompile(`^\d{3}_\d{4,5}$`)
 	dmm402Pattern         = regexp.MustCompile(`^402[A-Z]{3,6}\d*_[A-Z]{3,8}\d{5,6}$`)
+	localSourcePattern    = regexp.MustCompile(`^(?:328|348|390|420|857|892)([A-Z][A-Z0-9]{1,15}-\d{2,8}[A-Z]?)`)
+	localLeadingPattern   = regexp.MustCompile(`^([0-9]*[A-Z][A-Z0-9]{0,15}-\d{2,8}[A-Z]?)(?:$|[-_ .(])`)
+	localAnywherePattern  = regexp.MustCompile(`([A-Z][A-Z0-9]{1,15}-\d{2,8}[A-Z]?)`)
+	legacySourcePattern   = regexp.MustCompile(`^\d+([A-Z][A-Z0-9]{1,15}-\d{2,8}[A-Z]?)`)
 )
 
 func prepareVideoIDInput(raw string) string {
@@ -85,6 +89,41 @@ func normalizeUserVideoID(raw string) string {
 	}
 	if match := compactInputPattern.FindStringSubmatch(value); match != nil && len(match[1]) <= 16 {
 		return match[1] + "-" + match[2] + canonicalVideoIDSuffix(match[3])
+	}
+	return ""
+}
+
+func normalizeLocalVideoID(raw string) string {
+	value := strings.ToUpper(strings.TrimSpace(raw))
+	if value == "" {
+		return ""
+	}
+	value = strings.ReplaceAll(value, `\`, "/")
+	if index := strings.LastIndex(value, "/"); index >= 0 {
+		value = value[index+1:]
+	}
+	if match := localSourcePattern.FindStringSubmatch(value); match != nil {
+		if normalized := normalizeUserVideoID(match[1]); normalized != "" {
+			return normalized
+		}
+	}
+	if match := localLeadingPattern.FindStringSubmatch(value); match != nil {
+		if normalized := normalizeUserVideoID(match[1]); normalized != "" {
+			return normalized
+		}
+	}
+	for _, match := range localAnywherePattern.FindAllStringSubmatch(value, -1) {
+		if normalized := normalizeUserVideoID(match[1]); normalized != "" {
+			return normalized
+		}
+	}
+	return normalizeUserVideoID(value)
+}
+
+func legacyLocalVideoID(raw string) string {
+	value := strings.ToUpper(strings.TrimSpace(raw))
+	if match := legacySourcePattern.FindStringSubmatch(value); match != nil {
+		return normalizeUserVideoID(match[1])
 	}
 	return ""
 }

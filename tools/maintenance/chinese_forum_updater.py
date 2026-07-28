@@ -14,6 +14,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 from src.weekly import chinese_forum
+from weekly_store import atomic_write_json, weekly_update_lock
 
 SAVE_PATH = os.environ.get("SAVE_PATH", str(PROJECT_ROOT / "work" / "chinese_scrape"))
 WEEKLY_DIR = os.path.join(SAVE_PATH, "__weekly__")
@@ -96,7 +97,7 @@ def merge_chinese_list(existing: list, scraped: list):
     return merged, new_count, updated_count
 
 
-def main():
+def _main_locked():
     t0 = time.time()
     log("=== Start (list-only, no thread visits) ===")
     log(f"SAVE_PATH={SAVE_PATH}")
@@ -125,10 +126,7 @@ def main():
         json.dump(scraped, f, ensure_ascii=False, indent=2)
     os.replace(tmp_scrape, scrape_out)
 
-    tmp = WEEKLY_JSON + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(merged, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, WEEKLY_JSON)
+    atomic_write_json(WEEKLY_JSON, merged)
 
     elapsed = time.time() - t0
     log(
@@ -141,6 +139,11 @@ def main():
     # 抽样
     for item in scraped[:10]:
         log(f"  sample {item.get('id')}: {str(item.get('titleZh') or item.get('title') or '')[:60]}")
+
+
+def main():
+    with weekly_update_lock(WEEKLY_JSON):
+        _main_locked()
 
 
 if __name__ == "__main__":

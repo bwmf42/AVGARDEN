@@ -9,8 +9,10 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import quote, unquote, urlparse
 
 from process_control import cancel_request_age, cleanup_stale_cancel_requests, clear_cancel_request, request_cancel
+from main_video import find_main_video
 from queue_store import append_many_unique, append_unique, read_json, read_queue, remove_code, update_json, write_json
-from video_id import normalize_video_id, safe_local_dir, safe_video_dir
+from video_id import normalize_local_video_id, normalize_video_id, safe_local_dir, safe_video_dir
+from weekly_store import atomic_write_json, update_json as update_weekly_json, weekly_update_lock
 
 QUEUE_PATH = os.environ.get("QUEUE_PATH", "/db/download_queue.txt")
 STATE_PATH = os.environ.get("STATE_PATH", "/db/queue_state.json")
@@ -25,6 +27,8 @@ FAILED_QUEUE_PATH = os.path.join(os.path.dirname(QUEUE_PATH) or "/db", "failed_q
 RETRY_PATH = os.path.join(os.path.dirname(QUEUE_PATH) or "/db", "retry_counts.json")
 WEEKLY_JSON = os.path.join(SAVE_PATH, "__weekly__", "weekly.json")
 ONLINE_DIR = os.path.join(SAVE_PATH, "__online__")
+ONLINE_TTL_SECONDS = int(os.environ.get("ONLINE_TTL_SECONDS", str(24 * 60 * 60)))
+ONLINE_CLEANUP_INTERVAL_SECONDS = int(os.environ.get("ONLINE_CLEANUP_INTERVAL_SECONDS", "3600"))
 ONLINE_PROXY = os.environ.get("PROXY", "") or None
 BLOCKED_ACTRESSES = set(
     name.strip() for name in os.environ.get("BLOCKED_ACTRESSES", "").split(",") if name.strip()
@@ -33,6 +37,11 @@ weekly_scrape_proc = None
 weekly_scrape_lock = threading.Lock()
 weekly_json_lock = threading.Lock()
 queue_state_lock = threading.RLock()
+main_video_cache_lock = threading.Lock()
+main_video_cache_root = ""
+main_video_cache_time = 0.0
+main_video_cache = {}
+MAIN_VIDEO_CACHE_TTL_SECONDS = int(os.environ.get("MAIN_VIDEO_CACHE_TTL_SECONDS", "30"))
 
 
 def _actress_is_blocked(name: str) -> bool:
@@ -69,21 +78,7 @@ def queue_route_locked(method):
 
 def clean_avid(name):
     """从文件夹/种子名中提取标准车牌号（去掉 -C, ch, 中文字幕 等后缀）"""
-    name = name.strip().upper()
-    source_prefixed = re.match(r'^\d+([A-Z]{2,}\d*-\d+)', name)
-    if source_prefixed:
-        return source_prefixed.group(1)
-    m = re.match(r'^([A-Z0-9]+-\d+)', name)
-    if m:
-        return m.group(1)
-    for pat in [r'-C$', r'CH$', r'-中文字幕$', r'_FHD_CH$', r'_CH$', r'\(\d+\)$', r'\.MP4$']:
-        c = re.sub(pat, '', name)
-        if re.match(r'^[A-Z0-9]+-\d+$', c):
-            return c
-    search = re.search(r'([A-Za-z]{2,}\d*)-(\d+)', name)
-    if search:
-        return f"{search.group(1).upper()}-{search.group(2)}"
-    return name
+    return normalize_local_video_id(name) or str(name or "").strip().upper()
 
 
 # qB states that mean "still our job" (must include queuedDL — waiting for a slot)
@@ -138,7 +133,7 @@ def codes_in_qb(torrents):
         if st not in _QB_ACTIVE_DL and st not in _QB_DONE_UP:
             continue
         code = code_from_qb_torrent(t)
-        if code:
+        if code and (st in _QB_ACTIVE_DL or find_mp4_path(code)):
             out.add(code)
     return out
 
@@ -237,8 +232,13 @@ def get_qb_progress(save_dir, torrents=None):
         return None
     code = os.path.basename(save_dir.rstrip("/")).upper()
     for t in torrents:
+        state = str(t.get("state") or "")
+        if state not in _QB_ACTIVE_DL and state not in _QB_DONE_UP:
+            continue
         t_code = code_from_qb_torrent(t)
         if t_code and (t_code == code or clean_avid(t_code) == clean_avid(code)):
+            if state in _QB_DONE_UP and not find_mp4_path(t_code):
+                continue
             return {
                 "size": t.get("completed", 0),
                 "speed": t.get("dlspeed", 0),
@@ -246,6 +246,8 @@ def get_qb_progress(save_dir, torrents=None):
             }
         cp = (t.get("content_path", "") or t.get("name", "")).upper()
         if code in cp:
+            if state in _QB_DONE_UP and not find_mp4_path(code):
+                continue
             return {
                 "size": t.get("completed", 0),
                 "speed": t.get("dlspeed", 0),
@@ -454,20 +456,39 @@ def find_ts_path(code):
     return None
 
 def find_mp4_path(code):
-    """找到已下载完成的 .mp4（>10MB 且 60 秒内未修改，确保转换完成）"""
-    dir_path = get_code_dir(code)
-    if not os.path.isdir(dir_path):
+    """Return the same recursively validated main MP4 used by the Go server."""
+    normalized = normalize_local_video_id(code) or normalize_video_id(code)
+    if not normalized:
         return None
+    return get_main_video_index().get(normalized)
+
+
+def get_main_video_index():
+    global main_video_cache, main_video_cache_root, main_video_cache_time
+    root = os.path.realpath(SAVE_PATH)
     now = time.time()
-    for f in os.listdir(dir_path):
-        if f.endswith('.mp4'):
-            path = os.path.join(dir_path, f)
-            size = os.path.getsize(path)
-            mtime = os.path.getmtime(path)
-            # 必须大于 10MB 且 60 秒未修改（确保 ffmpeg 转换完成）
-            if size > 10 * 1024 * 1024 and (now - mtime) > 60:
-                return path
-    return None
+    with main_video_cache_lock:
+        if (
+            main_video_cache_root == root
+            and now - main_video_cache_time < MAIN_VIDEO_CACHE_TTL_SECONDS
+        ):
+            return main_video_cache
+        index = {}
+        if os.path.isdir(root):
+            for name in os.listdir(root):
+                path = os.path.join(root, name)
+                if not os.path.isdir(path) or name.startswith("__") or name == "thumb":
+                    continue
+                main_video = find_main_video(path)
+                if not main_video:
+                    continue
+                code = normalize_local_video_id(name)
+                if code:
+                    index[code] = main_video
+        main_video_cache = index
+        main_video_cache_root = root
+        main_video_cache_time = now
+        return main_video_cache
 
 def get_dir_size(path):
     try:
@@ -533,18 +554,20 @@ def update_weekly_json_downloaded(code):
     """Update weekly.json: set downloaded=true for this code"""
     if not os.path.exists(WEEKLY_JSON):
         return False
+    changed = False
     try:
-        with open(WEEKLY_JSON, "r") as f:
-            items = json.load(f)
-        changed = False
-        for item in items:
-            if item.get("id", "").upper() == code.upper():
-                item["downloaded"] = True
-                changed = True
-                break
+        def mark_downloaded(items):
+            nonlocal changed
+            for item in items if isinstance(items, list) else []:
+                if item.get("id", "").upper() == code.upper():
+                    if item.get("downloaded") is not True:
+                        item["downloaded"] = True
+                        changed = True
+                    break
+            return items
+
+        update_weekly_json(WEEKLY_JSON, [], mark_downloaded)
         if changed:
-            with open(WEEKLY_JSON, "w") as f:
-                json.dump(items, f, ensure_ascii=False, indent=2)
             log(f"Updated weekly.json: {code} downloaded=true")
             return True
     except Exception as e:
@@ -692,6 +715,35 @@ def cleanup_online_detail(code):
     return False
 
 
+def cleanup_expired_online_details(now=None):
+    if not os.path.isdir(ONLINE_DIR):
+        return []
+    cutoff = (time.time() if now is None else now) - ONLINE_TTL_SECONDS
+    root = os.path.realpath(ONLINE_DIR)
+    removed = []
+    for name in os.listdir(ONLINE_DIR):
+        target = os.path.join(ONLINE_DIR, name)
+        try:
+            if not os.path.isdir(target) or os.path.islink(target) or os.path.getmtime(target) > cutoff:
+                continue
+            real_target = os.path.realpath(target)
+            if os.path.commonpath([root, real_target]) != root:
+                continue
+            shutil.rmtree(real_target)
+            removed.append(name)
+        except (OSError, ValueError) as error:
+            log(f"Online TTL cleanup skipped {name}: {error}")
+    if removed:
+        log(f"Cleaned {len(removed)} expired online detail cache(s): {', '.join(sorted(removed))}")
+    return removed
+
+
+def online_cleanup_loop(stop_event=None):
+    stop_event = stop_event or threading.Event()
+    while not stop_event.wait(ONLINE_CLEANUP_INTERVAL_SECONDS):
+        cleanup_expired_online_details()
+
+
 def download_online_cover(code, image_url):
     if not image_url:
         return ""
@@ -825,7 +877,7 @@ def localize_weekly_fanarts(raw_code):
     try:
         from src.weekly import javbus
         javbus.set_proxy(ONLINE_PROXY)
-        with weekly_json_lock:
+        with weekly_json_lock, weekly_update_lock(WEEKLY_JSON):
             with open(WEEKLY_JSON, "r", encoding="utf-8") as f:
                 items = json.load(f)
             if not isinstance(items, list):
@@ -854,10 +906,7 @@ def localize_weekly_fanarts(raw_code):
             next_fanarts = local_fanarts if local_fanarts else ([] if source_fanarts else fanarts)
             if target.get("remoteFanarts") != remote_fanarts or next_fanarts != target.get("fanarts"):
                 target["fanarts"] = next_fanarts
-                tmp = WEEKLY_JSON + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(items, f, ensure_ascii=False, indent=2)
-                os.replace(tmp, WEEKLY_JSON)
+                atomic_write_json(WEEKLY_JSON, items)
             return {"id": target.get("id") or code, "fanarts": local_fanarts}, ""
     except Exception as e:
         log(f"Weekly fanart localization failed for {code}: {e}")
@@ -998,6 +1047,9 @@ class QueueHandler(BaseHTTPRequestHandler):
                     continue
                 code = code_from_qb_torrent(t)
                 if not code:
+                    continue
+                if status == "done" and not find_mp4_path(code):
+                    log(f"Ignoring false qB completion without main video: {code}")
                     continue
                 if status == "done" and not is_recent_timestamp(
                     t.get("completion_on") or t.get("seen_complete") or t.get("added_on")
@@ -1261,6 +1313,8 @@ def main():
     
     # 启动自检：恢复残留锁、扫描未完成下载
     startup_recovery()
+    cleanup_expired_online_details()
+    threading.Thread(target=online_cleanup_loop, daemon=True).start()
     
     server = ThreadingHTTPServer(("0.0.0.0", port), QueueHandler)
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))

@@ -10,6 +10,9 @@ import json, os, re, time, random, sys, urllib.parse
 from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.log_writer import write as log_write, cleanup as log_cleanup
+from main_video import collect_main_video_candidates, choose_main_video_candidate
+from video_id import normalize_local_video_id
+from weekly_store import update_json as update_weekly_json
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 PROXY = os.environ.get("PROXY", "") or None
@@ -70,18 +73,7 @@ def text_has_avid(text, avid):
 
 def clean_avid(name):
     """Extract the searchable code from folder/torrent names like 857OMG-032."""
-    up = (name or "").strip().upper()
-    source_prefixed = re.match(r"^\d+([A-Z]{2,}\d*-\d+)", up)
-    if source_prefixed:
-        return source_prefixed.group(1)
-    for pat in [r"-C$", r"CH$", r"-中文字幕$", r"_FHD_CH$", r"_CH$", r"\(\d+\)$", r"\.MP4$"]:
-        c = re.sub(pat, "", up)
-        if re.match(r"^[A-Z0-9]+-\d+$", c):
-            return c
-    search = re.search(r"([A-Z]{2,}\d*)-(\d+)", up)
-    if search:
-        return f"{search.group(1)}-{search.group(2)}"
-    return up
+    return normalize_local_video_id(name) or (name or "").strip().upper()
 
 
 def format_size(size):
@@ -91,45 +83,14 @@ def format_size(size):
         size /= 1024
 
 
-def collect_mp4_candidates(full_path, avid):
-    candidates = []
-
-    def add_candidate(path, rel_name):
-        filename = os.path.basename(path)
-        if filename.startswith("._") or not filename.lower().endswith(".mp4"):
-            return
-        try:
-            size = os.path.getsize(path)
-        except OSError:
-            size = 0
-        probe = " ".join([filename, rel_name])
-        candidates.append({
-            "path": path,
-            "name": filename,
-            "rel": rel_name,
-            "size": size,
-            "has_avid": text_has_avid(probe, avid),
-        })
-
-    if os.path.isdir(full_path):
-        for root, dirs, files in os.walk(full_path):
-            dirs[:] = [d for d in dirs if not d.startswith("._")]
-            for filename in files:
-                path = os.path.join(root, filename)
-                add_candidate(path, os.path.relpath(path, full_path))
-    elif os.path.isfile(full_path):
-        add_candidate(full_path, os.path.basename(full_path))
-
-    return candidates
-
-
 def select_main_mp4(full_path, avid):
-    candidates = collect_mp4_candidates(full_path, avid)
+    candidates = collect_main_video_candidates(full_path)
     if not candidates:
         return None, []
-    code_candidates = [item for item in candidates if item["has_avid"]]
-    pool = code_candidates or candidates
-    selected = max(pool, key=lambda item: item["size"])
+    selected = choose_main_video_candidate(candidates)
+    for item in candidates:
+        item["name"] = os.path.basename(item["path"])
+        item["rel"] = os.path.relpath(item["path"], full_path) if os.path.isdir(full_path) else item["name"]
     skipped = [item for item in candidates if item["path"] != selected["path"]]
     return selected, skipped
 
@@ -160,14 +121,14 @@ def update_weekly_magnet(avid, magnet):
     try:
         if not os.path.exists(weekly_path):
             return
-        with open(weekly_path) as f:
-            items = json.load(f)
-        for item in items:
-            if item.get("id", "").upper() == avid.upper():
-                item["magnet"] = magnet
-                break
-        with open(weekly_path, "w") as f:
-            json.dump(items, f, ensure_ascii=False, indent=2)
+        def update(items):
+            for item in items if isinstance(items, list) else []:
+                if item.get("id", "").upper() == avid.upper():
+                    item["magnet"] = magnet
+                    break
+            return items
+
+        update_weekly_json(weekly_path, [], update)
         log(f"  Updated weekly.json magnet for {avid}")
     except Exception as e:
         log(f"  Update weekly magnet error: {e}")
@@ -849,4 +810,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
