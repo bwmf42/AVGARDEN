@@ -285,7 +285,7 @@ def build_manifest(save_path, db_dir, cfg_path, log_dir, torrents, generated_at=
             media_by_code.setdefault(alias, []).append(path)
         main_video = find_main_video(path)
         media_main_video[path] = main_video
-        if main_video and not has_poster(path):
+        if main_video and not has_poster(path) and not set(aliases).intersection(active_codes):
             source = best_weekly_poster(os.path.join(weekly_dir, code), code)
             missing_posters.append(code)
             if source:
@@ -515,7 +515,11 @@ def verify_qb_actions(current, actions, save_path):
             raise RuntimeError(f"qB false-completion guard changed for {action['code']}")
         for name in os.listdir(save_path):
             path = os.path.join(save_path, name)
-            if os.path.isdir(path) and normalize_local_video_id(name) == action["code"] and find_main_video(path):
+            if (
+                os.path.isdir(path)
+                and action["code"] in local_video_id_aliases(name)
+                and find_main_video(path)
+            ):
                 raise RuntimeError(f"qB task gained a valid main video: {action['code']}")
 
 
@@ -547,7 +551,8 @@ def apply_manifest(manifest, qb_client):
             raise RuntimeError(f"runtime guard changed: {guard['path']}")
     current_active_codes = runtime_codes(roots["db_dir"], current_torrents)
     for record in actions["remove_media_dirs"]:
-        if record.get("code") in current_active_codes:
+        aliases = set(local_video_id_aliases(record.get("code")) or (record.get("code"),))
+        if aliases.intersection(current_active_codes):
             raise RuntimeError(f"media directory became active: {record['code']}")
     for group in ("remove_weekly_dirs", "remove_media_dirs", "remove_online_dirs", "remove_files"):
         for record in actions[group]:

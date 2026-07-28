@@ -24,6 +24,16 @@ hashes, guards, and baseline counts. The apply command refuses to run if that
 manifest or any guarded runtime state has changed. qB records are always removed
 with `deleteFiles=false`.
 
+Routine Weekly artwork cleanup is separate and defaults to orphan directories
+older than 30 days. It also requires a reviewed manifest before applying:
+
+```bash
+python3 /app/tools/maintenance/weekly_cache_maintenance.py \
+  --manifest /db/maintenance/manifests/weekly-cache.json
+python3 /app/tools/maintenance/weekly_cache_maintenance.py \
+  --apply /db/maintenance/manifests/weekly-cache.json
+```
+
 - `chinese_forum_updater.py` writes to `work/chinese_scrape/` by default. Set
   `SAVE_PATH` explicitly before targeting production data.
 - `fill_gaps.py` changes `weekly.json` and performs remote requests. Use only for

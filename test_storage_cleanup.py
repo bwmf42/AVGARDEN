@@ -74,6 +74,24 @@ class StorageCleanupTest(unittest.TestCase):
             manifest = storage_cleanup.build_manifest(self.save, self.db, self.cfg, self.logs, [torrent])
         self.assertEqual(manifest["actions"]["qb_set_category"][0]["hash"], "luxu")
 
+    def test_active_download_is_not_counted_as_completed_missing_poster(self):
+        media_dir = os.path.realpath(os.path.join(self.save, "PAI-267"))
+        os.makedirs(media_dir)
+        torrent = {
+            "hash": "active",
+            "state": "downloading",
+            "tags": "PAI-267",
+            "category": "AV_GARDEN",
+        }
+        with mock.patch.object(storage_cleanup, "EXPECTED_BASELINE", {}), mock.patch.object(
+            storage_cleanup,
+            "find_main_video",
+            side_effect=lambda path: os.path.join(path, "partial.mp4") if path == media_dir else None,
+        ):
+            manifest = storage_cleanup.build_manifest(self.save, self.db, self.cfg, self.logs, [torrent])
+        self.assertEqual(manifest["counts"]["media_missing_posters"], 0)
+        self.assertEqual(manifest["actions"]["copy_posters"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

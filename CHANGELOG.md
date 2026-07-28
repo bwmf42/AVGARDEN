@@ -8,6 +8,7 @@
 
 ### Added
 
+- Added a separate dry-run-first Weekly artwork maintenance command that only selects unreferenced directories older than 30 days by default, validates direct-child paths and signatures again at apply time, and backs up the current Weekly index before deletion.
 - Added a guarded NAS storage-maintenance command that first writes an exact JSON manifest, verifies file signatures and live qB state, backs up Weekly/watched/config/database state, and only then performs approved cleanup with `deleteFiles=false` for qB records.
 - Added settings-page actress blocking by video ID: resolve Japanese actress names from the local media-library NFO first, fall back to MGS then DMM, require explicit selection for multi-actress titles, and match known rename aliases such as `河北彩花` / `河北彩伽` without confusing translated title text for actress metadata.
 - Added exact DMM all-category search after the existing javdatabase and MGS sources, covering both mono DVD CIDs and digital products while rejecting similar codes and `NOW PRINTING` placeholders. DMM GraphQL now reads standard and amateur actress fields; when the search page misses a product, likely CIDs are queried in one batch and accepted only after exact `makerContentId` verification. Unknown maker prefixes can use javdatabase's exact `Content ID` as a resolver without blind CDN probing.
@@ -65,6 +66,7 @@
 
 ### Fixed
 
+- Excluded active qB downloads from completed-media poster repair even when a nearly finished sparse file temporarily passes the 95% allocation rule, and made cleanup apply-time activity guards honor numeric-prefix compatibility aliases.
 - Added read-only compatibility aliases from shortened qB labels such as `LUXU-1881` and `MIUM-1389` to their numeric-leading media directories, while keeping explicit short-code directories authoritative. Local `CH` subtitle suffixes such as `fns-224ch` now resolve to the base code instead of a false `FNS-224C` variant.
 - Preserved real numeric-leading local IDs such as `300MIUM-*` and `259LUXU-*` while stripping only confirmed source prefixes; old shortened detail URLs remain compatible and resolve to the corrected canonical ID.
 - Unified Python and Go completion checks on recursive MP4 lookup, a 100 MiB floor, 95% allocated-byte validation, largest-copy selection, and multipart part-one preference. Completed qB tasks without a valid disk file no longer block recovery or appear local.
