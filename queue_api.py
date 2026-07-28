@@ -11,7 +11,13 @@ from urllib.parse import quote, unquote, urlparse
 from process_control import cancel_request_age, cleanup_stale_cancel_requests, clear_cancel_request, request_cancel
 from main_video import find_main_video
 from queue_store import append_many_unique, append_unique, read_json, read_queue, remove_code, update_json, write_json
-from video_id import normalize_local_video_id, normalize_video_id, safe_local_dir, safe_video_dir
+from video_id import (
+    local_video_id_aliases,
+    normalize_local_video_id,
+    normalize_video_id,
+    safe_local_dir,
+    safe_video_dir,
+)
 from weekly_store import atomic_write_json, update_json as update_weekly_json, weekly_update_lock
 
 QUEUE_PATH = os.environ.get("QUEUE_PATH", "/db/download_queue.txt")
@@ -473,18 +479,25 @@ def get_main_video_index():
             and now - main_video_cache_time < MAIN_VIDEO_CACHE_TTL_SECONDS
         ):
             return main_video_cache
-        index = {}
+        primary = {}
+        alias_candidates = {}
         if os.path.isdir(root):
-            for name in os.listdir(root):
+            for name in sorted(os.listdir(root)):
                 path = os.path.join(root, name)
                 if not os.path.isdir(path) or name.startswith("__") or name == "thumb":
                     continue
                 main_video = find_main_video(path)
                 if not main_video:
                     continue
-                code = normalize_local_video_id(name)
-                if code:
-                    index[code] = main_video
+                aliases = local_video_id_aliases(name)
+                if aliases:
+                    primary[aliases[0]] = main_video
+                    for alias in aliases[1:]:
+                        alias_candidates.setdefault(alias, set()).add(main_video)
+        index = dict(primary)
+        for alias, candidates in alias_candidates.items():
+            if alias not in index and len(candidates) == 1:
+                index[alias] = next(iter(candidates))
         main_video_cache = index
         main_video_cache_root = root
         main_video_cache_time = now

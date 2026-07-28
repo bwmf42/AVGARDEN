@@ -32,6 +32,14 @@ class WorkerQBGuardTest(unittest.TestCase):
         self.assertTrue(has_matching_qb_task(tagged, "ABF-361"))
         self.assertFalse(has_matching_qb_task(similar, "ABF-361"))
 
+    def test_matches_old_short_tag_for_numeric_prefix_code(self):
+        torrents = [{"state": "downloading", "tags": "LUXU-1881", "name": "other"}]
+        self.assertTrue(has_matching_qb_task(torrents, "259LUXU-1881"))
+
+    def test_matches_numeric_prefix_name_for_short_code(self):
+        torrents = [{"state": "downloading", "tags": "", "name": "+++ 300MIUM-1389 title"}]
+        self.assertTrue(has_matching_qb_task(torrents, "MIUM-1389"))
+
     def test_ignores_broken_qb_task(self):
         torrents = [{
             "state": "missingFiles",

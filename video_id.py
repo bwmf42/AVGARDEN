@@ -103,10 +103,27 @@ def normalize_local_video_id(raw):
 
     source_prefix = "|".join(re.escape(prefix) for prefix in _LOCAL_SOURCE_PREFIXES)
     match = re.match(
+        rf"^(?:{source_prefix})([A-Z][A-Z0-9]{{1,15}}-\d{{2,8}})(?:[-_ .]?CH)(?:$|[-_ .(])",
+        text,
+    )
+    if match:
+        normalized = normalize_video_id(match.group(1))
+        if normalized:
+            return normalized
+
+    match = re.match(
         rf"^(?:{source_prefix})([A-Z][A-Z0-9]{{1,15}}-\d{{2,8}}[A-Z]?)",
         text,
     )
     if match:
+        normalized = normalize_video_id(match.group(1))
+        if normalized:
+            return normalized
+
+    for match in re.finditer(
+        r"([0-9]*[A-Z][A-Z0-9]{0,15}-\d{2,8})(?:[-_ .]?CH)(?:$|[-_ .(])",
+        text,
+    ):
         normalized = normalize_video_id(match.group(1))
         if normalized:
             return normalized
@@ -122,6 +139,21 @@ def normalize_local_video_id(raw):
         if normalized:
             return normalized
     return normalize_video_id(text)
+
+
+def local_video_id_aliases(raw):
+    """Return a local ID plus its unambiguous pre-migration short alias."""
+    code = normalize_local_video_id(raw)
+    if not code:
+        return ()
+
+    aliases = [code]
+    match = re.fullmatch(r"\d+([A-Z][A-Z0-9]{1,15}-\d{2,8}[A-Z]?)", code)
+    if match:
+        short = normalize_video_id(match.group(1))
+        if short and short != code:
+            aliases.append(short)
+    return tuple(aliases)
 
 
 def os_path_basename(value):

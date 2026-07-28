@@ -56,6 +56,24 @@ class StorageCleanupTest(unittest.TestCase):
             handle.write("x")
         self.assertFalse(storage_cleanup.is_current_record(record))
 
+    def test_numeric_prefix_media_satisfies_short_qb_label(self):
+        media_dir = os.path.join(self.save, "259LUXU-1881")
+        os.makedirs(media_dir)
+        real_media_dir = os.path.realpath(media_dir)
+        torrent = {
+            "hash": "luxu",
+            "state": "queuedUP",
+            "tags": "LUXU-1881",
+            "category": "",
+        }
+        with mock.patch.object(storage_cleanup, "EXPECTED_BASELINE", {}), mock.patch.object(
+            storage_cleanup,
+            "find_main_video",
+            side_effect=lambda path: os.path.join(path, "main.mp4") if path == real_media_dir else None,
+        ):
+            manifest = storage_cleanup.build_manifest(self.save, self.db, self.cfg, self.logs, [torrent])
+        self.assertEqual(manifest["actions"]["qb_set_category"][0]["hash"], "luxu")
+
 
 if __name__ == "__main__":
     unittest.main()

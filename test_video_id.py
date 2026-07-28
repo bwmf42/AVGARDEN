@@ -2,7 +2,13 @@ import os
 import tempfile
 import unittest
 
-from video_id import normalize_local_video_id, normalize_video_id, safe_local_dir, safe_video_dir
+from video_id import (
+    local_video_id_aliases,
+    normalize_local_video_id,
+    normalize_video_id,
+    safe_local_dir,
+    safe_video_dir,
+)
 
 
 CASES = {
@@ -62,10 +68,17 @@ class VideoIDTest(unittest.TestCase):
             "857OMG-032": "OMG-032",
             "420HOI-397": "HOI-397",
             "18bt.net_VENX-276C.mp4": "VENX-276C",
+            "fns-224ch": "FNS-224",
+            "[HD] FNS-224-CH.mp4": "FNS-224",
         }
         for raw, expected in cases.items():
             with self.subTest(raw=raw):
                 self.assertEqual(normalize_local_video_id(raw), expected)
+
+    def test_local_ids_expose_only_numeric_prefix_compatibility_alias(self):
+        self.assertEqual(local_video_id_aliases("259LUXU-1881"), ("259LUXU-1881", "LUXU-1881"))
+        self.assertEqual(local_video_id_aliases("300MIUM-1389"), ("300MIUM-1389", "MIUM-1389"))
+        self.assertEqual(local_video_id_aliases("FNS-224"), ("FNS-224",))
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ from main_video import find_main_video
 from process_control import clear_cancel_request, is_cancel_requested, terminate_active_process
 from qb_task_guard import has_matching_qb_task
 from queue_store import append_unique, pop_first, read_json, update_json
-from video_id import normalize_video_id, safe_video_dir
+from video_id import local_video_id_aliases, normalize_video_id, safe_video_dir
 from weekly_store import update_json as update_weekly_json
 
 # 从 comm 加载配置
@@ -219,6 +219,14 @@ def _completed_qb_task_has_main_video(avid, torrent):
         candidates.append(os.path.join(torrent_save_path, torrent_name))
 
     root = os.path.realpath(save_path)
+    target_aliases = set(local_video_id_aliases(avid))
+    try:
+        for name in os.listdir(root):
+            path = os.path.join(root, name)
+            if os.path.isdir(path) and target_aliases.intersection(local_video_id_aliases(name)):
+                candidates.append(path)
+    except OSError:
+        pass
     for path in candidates:
         real_path = os.path.realpath(path)
         try:

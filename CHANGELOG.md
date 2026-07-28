@@ -65,6 +65,7 @@
 
 ### Fixed
 
+- Added read-only compatibility aliases from shortened qB labels such as `LUXU-1881` and `MIUM-1389` to their numeric-leading media directories, while keeping explicit short-code directories authoritative. Local `CH` subtitle suffixes such as `fns-224ch` now resolve to the base code instead of a false `FNS-224C` variant.
 - Preserved real numeric-leading local IDs such as `300MIUM-*` and `259LUXU-*` while stripping only confirmed source prefixes; old shortened detail URLs remain compatible and resolve to the corrected canonical ID.
 - Unified Python and Go completion checks on recursive MP4 lookup, a 100 MiB floor, 95% allocated-byte validation, largest-copy selection, and multipart part-one preference. Completed qB tasks without a valid disk file no longer block recovery or appear local.
 - Serialized every `weekly.json` writer through one cross-process lock and atomic replacement, and added server-side 24-hour cleanup for abandoned `__online__` search caches.

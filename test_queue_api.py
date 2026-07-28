@@ -83,6 +83,20 @@ class QueueAPITest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload, [])
 
+    def test_main_video_index_resolves_numeric_prefix_alias_without_overriding_primary(self):
+        real_save_path = os.path.realpath(self.save_path)
+        for name in ("259LUXU-1881", "LUXU-1881"):
+            os.makedirs(os.path.join(self.save_path, name))
+        queue_api.main_video_cache_time = 0
+        with patch.object(
+            queue_api,
+            "find_main_video",
+            side_effect=lambda path: os.path.join(path, "main.mp4"),
+        ):
+            index = queue_api.get_main_video_index()
+        self.assertEqual(index["259LUXU-1881"], os.path.join(real_save_path, "259LUXU-1881", "main.mp4"))
+        self.assertEqual(index["LUXU-1881"], os.path.join(real_save_path, "LUXU-1881", "main.mp4"))
+
     def test_delete_requests_cancel_and_removes_queue_record(self):
         append_unique(self.queue_path, "OMG-032")
         write_json(self.state_path, [{"code": "OMG-032", "status": "queued"}])

@@ -23,7 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from main_video import MAIN_VIDEO_MIN_SIZE, find_main_video
 from queue_store import append_unique, read_json, update_json
-from video_id import normalize_local_video_id, normalize_video_id
+from video_id import local_video_id_aliases, normalize_local_video_id, normalize_video_id
 
 
 MANIFEST_VERSION = 1
@@ -280,7 +280,9 @@ def build_manifest(save_path, db_dir, cfg_path, log_dir, torrents, generated_at=
             continue
         code = normalize_local_video_id(name) or name.upper()
         media_dirs.append((name, path, code))
-        media_by_code.setdefault(code, []).append(path)
+        aliases = local_video_id_aliases(name) or (code,)
+        for alias in aliases:
+            media_by_code.setdefault(alias, []).append(path)
         main_video = find_main_video(path)
         media_main_video[path] = main_video
         if main_video and not has_poster(path):
@@ -320,7 +322,8 @@ def build_manifest(save_path, db_dir, cfg_path, log_dir, torrents, generated_at=
         if media_main_video[path]:
             continue
         sparse = sparse_large_mp4s(path)
-        if code in active_codes or code in RECOVERY_CODES:
+        aliases = set(local_video_id_aliases(name) or (code,))
+        if aliases.intersection(active_codes) or aliases.intersection(RECOVERY_CODES):
             preserved_no_main.append({"path": path, "code": code, "reason": "active or recovery task"})
         elif sparse:
             record = tree_record(path, "large sparse MP4 without an active qB task")
@@ -336,8 +339,9 @@ def build_manifest(save_path, db_dir, cfg_path, log_dir, torrents, generated_at=
         path = os.path.join(weekly_dir, name)
         if not os.path.isdir(path):
             continue
-        normalized = normalize_video_id(name) or name.upper()
-        if name.upper() not in weekly_ids and normalized not in weekly_ids:
+        aliases = set(local_video_id_aliases(name))
+        aliases.update(filter(None, (name.upper(), normalize_video_id(name))))
+        if not aliases.intersection(weekly_ids):
             orphan_dirs.append(tree_record(path, "Weekly artwork directory absent from current weekly.json"))
 
     remove_files = []

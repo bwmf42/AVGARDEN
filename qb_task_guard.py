@@ -1,5 +1,7 @@
 import re
 
+from video_id import local_video_id_aliases, normalize_video_id
+
 
 ACTIVE_QB_STATES = frozenset({
     "downloading", "stalledDL", "forcedDL", "metaDL", "queuedDL",
@@ -15,28 +17,35 @@ def has_matching_qb_task(torrents, video_id, completed_validator=None):
     if not isinstance(torrents, list):
         return False
 
-    target = str(video_id or "").upper().strip()
-    if not target:
+    target = normalize_video_id(video_id) or str(video_id or "").upper().strip()
+    target_aliases = set(local_video_id_aliases(target))
+    if not target_aliases:
+        target_aliases = {target} if target else set()
+    if not target_aliases:
         return False
-    boundary = re.compile(
-        r'(?:^|[/\\\s\-_.,\[\](){}+@])'
-        + re.escape(target)
-        + r'(?:[/\\\s\-_.,\[\](){}+@]|$)'
-    )
+    boundaries = [
+        re.compile(
+            r'(?:^|[/\\\s\-_.,\[\](){}+@])'
+            + re.escape(alias)
+            + r'(?:[/\\\s\-_.,\[\](){}+@]|$)'
+        )
+        for alias in target_aliases
+    ]
 
     for torrent in torrents:
         state = str(torrent.get("state", ""))
         if state not in ACTIVE_QB_STATES and state not in DONE_QB_STATES:
             continue
-        tags = {
-            tag.strip().upper()
-            for tag in str(torrent.get("tags") or "").split(",")
-            if tag.strip()
-        }
-        matched = target in tags
+        torrent_aliases = set()
+        for tag in str(torrent.get("tags") or "").split(","):
+            torrent_aliases.update(local_video_id_aliases(tag.strip()))
+        matched = bool(target_aliases.intersection(torrent_aliases))
         for field in ("name", "content_path", "save_path"):
             value = str(torrent.get(field) or "").upper()
-            if value == target or boundary.search(value):
+            torrent_aliases = set(local_video_id_aliases(value))
+            if target_aliases.intersection(torrent_aliases) or any(
+                boundary.search(value) for boundary in boundaries
+            ):
                 matched = True
                 break
         if not matched:
