@@ -2,8 +2,10 @@
 """补漏：按系列前缀搜索 JavBus，补充首页遗漏的半个月内新片"""
 import json, os, sys, re, time, random
 from datetime import datetime, timedelta
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
 from src.weekly import artwork, sources, javbus, sukebei
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")

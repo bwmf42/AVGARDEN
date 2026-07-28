@@ -15,7 +15,8 @@
 - SOAV-style metadata enrich (`enrich.py`, `genre_zh.py`): MGS table fields → exact DMM metadata → exact javdatabase page fallback → artwork download; source-native Japanese/English genres are aligned through `genre_zh` (NTR kept).
 - `plwt_art_backfill.py`: bulk cover/fanart fill; default **`BACKFILL_UNWATCHED_ONLY=1`** scopes to frontend 未看 (`/api/weekly` − watched − queue − downloaded), not full `weekly.json`.
 - Added Chinese-subtitle forum backfill/daily modes in `replace_chinese.py`: scan local NFO premiered dates, list `forum-103` (stop at earliest work date for one-time `CHINESE_FORUM_BACKFILL=1`, or only 2 pages daily), open matching threads only for library items still missing Chinese, and pull in-post magnets into qB.
-- Added a Chinese-subtitle Discuz list source (`src/weekly/chinese_forum.py` + `chinese_forum_updater.py`): passes the site `_safe` gate once, reuses the session, paginates `forum-103` list pages only (no thread visits), extracts codes/titles with polite page delays, and writes local verification output under `work/chinese_scrape/`.
+- Added a Chinese-subtitle Discuz list source (`src/weekly/chinese_forum.py` + `tools/maintenance/chinese_forum_updater.py`): passes the site `_safe` gate once, reuses the session, paginates `forum-103` list pages only (no thread visits), extracts codes/titles with polite page delays, and writes local verification output under `work/chinese_scrape/`.
+- Added a full repository, deployment-tree, and Weekly-cache audit under `docs/`, including exact cleanup boundaries and deferred correctness/security findings.
 
 ### Changed
 
@@ -27,6 +28,7 @@
 - Soften DMM/javdatabase traffic: global request pacing (`DMM_DELAY`, higher `JAVDATABASE_DELAY`), fewer sample/cid/GraphQL probes, fail-streak backoff.
 - Queue status: treat qB `queuedDL` as active; resolve codes from torrent **tags** first; keep `queue_state.json` until job is gone from queue/qB (fixes UI「加入下载队列」while already queued). Worker finds magnets by tags/name, not only save_path.
 - Reconciled the current handoff, NAS deployment guide, frontend development guide, environment comments, and bundled operations skill with the deployed A/GARDEN runtime and active paths.
+- Moved non-runtime recovery and maintenance commands out of the repository root into `tools/maintenance/`, preserving their runnable project-root resolution.
 - Replaced sukebei-based Chinese magnet search in `replace_chinese.py` with the Discuz Chinese-subtitle forum; daily launcher path stays `weekly_updater` then `replace_chinese` (default 2 forum list pages).
 - Hardened Chinese merge cleanup: after moving the Chinese video in, recursively delete non-Chinese videos and common promo junk in the target folder (no longer skip whole folders just because the directory name ends with `-C` / 中文); also sweep existing library leftovers that already have Chinese but still keep old non-Chinese files.
 - Chinese merge now keeps a strict media set only: Chinese main video, `.nfo`, poster/cover, and fanart previews; removes ads, `.url`/`.html`/`.txt`, and other torrent junk.
@@ -53,8 +55,10 @@
 
 ### Removed
 
+- Removed 21 exact stale paths from the NAS deployment tree using a saved JSON manifest, releasing 25,108,415 bytes while preserving runtime configuration, databases, logs, artwork caches, media, and qBittorrent tasks.
 - Cleaned the deployed media library while preserving multipart and metadata-only directories: kept five verified high-bitrate copies, removed their five lower-bitrate duplicates, disabled and removed 152 exact-name bundled promo clips, and removed a stale 135 MiB project copy from the weekly cache.
 - Removed the rejected 05-07 design exploration artifacts while retaining the adopted 02 direction and the undecided 01/03/04 explorations.
+- Removed the remaining implemented design explorations, the unused Tauri CLI dependency, default Vite/Vue assets, the obsolete cron entrypoint, and the assertion-free legacy test script.
 
 ### Fixed
 

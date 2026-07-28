@@ -9,11 +9,13 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
 from src.weekly import chinese_forum
 
-SAVE_PATH = os.environ.get("SAVE_PATH", os.path.join(os.path.dirname(__file__), "work", "chinese_scrape"))
+SAVE_PATH = os.environ.get("SAVE_PATH", str(PROJECT_ROOT / "work" / "chinese_scrape"))
 WEEKLY_DIR = os.path.join(SAVE_PATH, "__weekly__")
 WEEKLY_JSON = os.path.join(WEEKLY_DIR, "weekly.json")
 PROXY = os.environ.get("PROXY", "") or None

@@ -7,7 +7,7 @@ QB_USER="${QBITTORRENT_USERNAME:-admin}"
 QB_PASS="${QBITTORRENT_PASSWORD:?错误: 需要设置 QBITTORRENT_PASSWORD 环境变量}"
 API_URL="${AV_GARDEN_API_URL:-http://127.0.0.1:31471/api/videos}"
 SAVE_PATH="${SAVE_PATH:?错误: 需要设置 SAVE_PATH 环境变量}"
-PROJECT_DIR="${AV_GARDEN_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+PROJECT_DIR="${AV_GARDEN_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
 WEEKLY_FILE="${WEEKLY_FILE:-$SAVE_PATH/__weekly__/weekly.json}"
 LOG_FILE="${LOG_FILE:-$PROJECT_DIR/logs/health_check.log}"
 
