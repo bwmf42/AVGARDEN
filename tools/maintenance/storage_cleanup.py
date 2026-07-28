@@ -33,7 +33,6 @@ EXPECTED_BASELINE = {
     "weekly_items": 1811,
     "watched_items": 2017,
     "weekly_orphan_dirs": 1237,
-    "media_missing_posters": 11,
     "media_sparse_residue_dirs": 7,
     "media_metadata_only_dirs": 10,
     "qb_missing_files": 160,
