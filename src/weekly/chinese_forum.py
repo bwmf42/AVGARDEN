@@ -34,9 +34,18 @@ PAGE_DELAY_MAX = float(os.environ.get("CHINESE_FORUM_PAGE_DELAY_MAX", "20"))
 # 进帖比列表更敏感：默认更长间隔，避免连点详情被风控
 THREAD_DELAY_MIN = float(os.environ.get("CHINESE_FORUM_THREAD_DELAY_MIN", "25"))
 THREAD_DELAY_MAX = float(os.environ.get("CHINESE_FORUM_THREAD_DELAY_MAX", "40"))
-MAX_PAGE_RETRIES = int(os.environ.get("CHINESE_FORUM_PAGE_RETRIES", "2"))
+MAX_PAGE_RETRIES = int(os.environ.get("CHINESE_FORUM_PAGE_RETRIES", "4"))
 MAX_CONSEC_FAILS = int(os.environ.get("CHINESE_FORUM_MAX_CONSEC_FAILS", "3"))
 DAILY_PAGES = int(os.environ.get("CHINESE_FORUM_DAILY_PAGES", "2"))
+# Rotate TLS fingerprints when SSL handshake flakes through proxy
+_IMPERSONATE_FALLBACKS = tuple(
+    x.strip()
+    for x in os.environ.get(
+        "CHINESE_FORUM_IMPERSONATE_FALLBACKS",
+        "chrome120,chrome110,chrome116,safari15_5",
+    ).split(",")
+    if x.strip()
+)
 
 HEADERS = {
     "User-Agent": (
@@ -330,37 +339,90 @@ class ForumClient:
         m = re.search(r"var safeid='([^']+)'", html or "")
         return m.group(1) if m else ""
 
-    def ensure_safe(self) -> bool:
-        url = self.list_url(1)
-        r = self.session.get(
-            url,
-            headers=self._headers(self.base + "/"),
-            proxies=_proxies(),
-            impersonate=IMPERSONATE,
-            timeout=25,
+    def _impersonates(self):
+        ordered = []
+        for name in (IMPERSONATE,) + _IMPERSONATE_FALLBACKS:
+            if name and name not in ordered:
+                ordered.append(name)
+        return ordered or ["chrome120"]
+
+    @staticmethod
+    def _is_hard_ssl_error(err) -> bool:
+        s = str(err or "")
+        return any(
+            k in s
+            for k in (
+                "SSL_ERROR_SYSCALL",
+                "SSL_connect",
+                "curl: (35)",
+                "SSLError",
+                "unexpected eof",
+            )
         )
-        html = r.text or ""
-        if not self._is_safe_gate(html) and "Discuz" in html:
-            self._safe_ok = True
-            self._last_url = url
-            return True
-        sid = self._extract_safeid(html)
-        if not sid:
-            _log(f"safe gate: no safeid (status={r.status_code}, len={len(html)})")
-            return False
-        host = re.sub(r"^https?://", "", self.base).split("/")[0]
-        self.session.cookies.set("_safe", sid, domain=host, path="/")
-        self._safe_token = sid
-        r2 = self._raw_get(url, referer=self.base + "/")
-        if r2 is None:
-            return False
-        if self._is_safe_gate(r2.text or ""):
-            _log("safe gate still present after _safe cookie")
-            return False
-        self._safe_ok = True
-        self._last_url = url
-        _log("safe gate passed")
-        return True
+
+    def ensure_safe(self) -> bool:
+        """Pass Discuz safe gate. Network/SSL errors are retried, never raise."""
+        url = self.list_url(1)
+        last_err = None
+        hard_ssl = 0
+        for attempt in range(MAX_PAGE_RETRIES + 1):
+            imp = self._impersonates()[attempt % len(self._impersonates())]
+            try:
+                r = self.session.get(
+                    url,
+                    headers=self._headers(self.base + "/"),
+                    proxies=_proxies(),
+                    impersonate=imp,
+                    timeout=30,
+                )
+                hard_ssl = 0
+                html = r.text or ""
+                if not self._is_safe_gate(html) and "Discuz" in html:
+                    self._safe_ok = True
+                    self._last_url = url
+                    return True
+                sid = self._extract_safeid(html)
+                if not sid:
+                    last_err = f"no safeid (status={r.status_code}, len={len(html)}, tls={imp})"
+                    _log(f"safe gate: {last_err}")
+                    time.sleep(min(20.0, 2 ** attempt + random.uniform(1, 3)))
+                    continue
+                host = re.sub(r"^https?://", "", self.base).split("/")[0]
+                self.session.cookies.set("_safe", sid, domain=host, path="/")
+                self._safe_token = sid
+                r2 = self._raw_get(url, referer=self.base + "/", impersonate=imp)
+                if r2 is None:
+                    last_err = "post-cookie get failed"
+                    time.sleep(min(20.0, 2 ** attempt + random.uniform(1, 3)))
+                    continue
+                if self._is_safe_gate(r2.text or ""):
+                    last_err = "safe gate still present after _safe cookie"
+                    _log(last_err)
+                    time.sleep(min(20.0, 2 ** attempt + random.uniform(1, 3)))
+                    continue
+                self._safe_ok = True
+                self._last_url = url
+                _log(f"safe gate passed (tls={imp})")
+                return True
+            except Exception as e:
+                last_err = e
+                _log(
+                    f"safe gate network error attempt {attempt + 1}/"
+                    f"{MAX_PAGE_RETRIES + 1} tls={imp}: {e}"
+                )
+                if self._is_hard_ssl_error(e):
+                    hard_ssl += 1
+                    # Proxy/path completely broken: fail fast so caller can fallback
+                    if hard_ssl >= 2:
+                        _log("safe gate: repeated SSL handshake failure, abort early")
+                        break
+                try:
+                    self.session = requests.Session()
+                except Exception:
+                    pass
+                time.sleep(min(12.0, 1.5 ** attempt + random.uniform(0.5, 2)))
+        _log(f"safe gate failed after retries: {last_err}")
+        return False
 
     def _cookie_header(self) -> str:
         parts = []
@@ -378,26 +440,29 @@ class ForumClient:
             pass
         return "; ".join(parts)
 
-    def _raw_get(self, url: str, referer: Optional[str] = None):
+    def _raw_get(self, url: str, referer: Optional[str] = None, impersonate: Optional[str] = None):
         h = self._headers(referer)
         ck = self._cookie_header()
         if ck:
             h["Cookie"] = ck
+        imp = impersonate or IMPERSONATE
         return self.session.get(
             url,
             headers=h,
             proxies=_proxies(),
-            impersonate=IMPERSONATE,
-            timeout=25,
+            impersonate=imp,
+            timeout=30,
         )
 
     def _get_html(self, url: str) -> Optional[str]:
         if not self._safe_ok and not self.ensure_safe():
             return None
         last_err = None
+        imps = self._impersonates()
         for attempt in range(MAX_PAGE_RETRIES + 1):
+            imp = imps[attempt % len(imps)]
             try:
-                r = self._raw_get(url, referer=self._last_url)
+                r = self._raw_get(url, referer=self._last_url, impersonate=imp)
                 html = r.text or ""
                 if self._is_safe_gate(html):
                     _log("safe gate reappeared, re-auth")
@@ -406,7 +471,7 @@ class ForumClient:
                         last_err = "safe re-auth failed"
                         time.sleep(2 ** attempt + random.uniform(1, 2))
                         continue
-                    r = self._raw_get(url, referer=self._last_url)
+                    r = self._raw_get(url, referer=self._last_url, impersonate=imp)
                     html = r.text or ""
                 if r.status_code != 200:
                     last_err = f"HTTP {r.status_code}"
@@ -420,7 +485,16 @@ class ForumClient:
                 return html
             except Exception as e:
                 last_err = str(e)
-                time.sleep(2 ** attempt + random.uniform(1, 3))
+                _log(
+                    f"get network error attempt {attempt + 1}/"
+                    f"{MAX_PAGE_RETRIES + 1} tls={imp}: {e}"
+                )
+                try:
+                    self.session = requests.Session()
+                    self._safe_ok = False
+                except Exception:
+                    pass
+                time.sleep(min(30.0, 2 ** attempt + random.uniform(1, 4)))
         _log(f"get failed {url}: {last_err}")
         return None
 
@@ -473,6 +547,17 @@ def fetch_thread_artwork(forum_url: str) -> dict | None:
     if not forum_url:
         return None
     return ForumClient().fetch_thread_artwork(forum_url)
+
+
+def fetch_thread_magnet(forum_url: str) -> str:
+    """Open a known plwt thread URL and return the first magnet, or empty."""
+    if not forum_url:
+        return ""
+    try:
+        return ForumClient().fetch_thread_magnet(forum_url) or ""
+    except Exception as e:
+        _log(f"fetch_thread_magnet failed: {e}")
+        return ""
 
 
 def get_list_until(

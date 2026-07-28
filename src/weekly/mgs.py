@@ -82,10 +82,14 @@ def normalize_actress_label(value):
 
 
 def normalize_actresses(values):
+    from . import actresses as actress_util
+
     out = []
     seen = set()
     for value in values or []:
         name = normalize_actress_label(value)
+        if not actress_util.is_valid_actress_name(name):
+            continue
         if name and name not in seen:
             seen.add(name)
             out.append(name)

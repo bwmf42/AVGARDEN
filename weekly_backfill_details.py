@@ -24,7 +24,7 @@ MIN_DELAY = float(os.environ.get("WEEKLY_BACKFILL_MIN_DELAY", "1"))
 MAX_DELAY = float(os.environ.get("WEEKLY_BACKFILL_MAX_DELAY", "10"))
 LIMIT = int(os.environ.get("WEEKLY_BACKFILL_LIMIT", "0"))
 DS_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-DS_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+DS_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
 
 def log(message):
@@ -139,14 +139,16 @@ def missing_fields(item):
 
 
 def normalize_existing_actresses(items):
+    from src.weekly import actresses as actress_util
+
     changed = 0
     for item in items:
-        values = item.get("actresses")
-        if not isinstance(values, list) or not values:
-            continue
-        normalized = mgs.normalize_actresses(values)
-        if normalized != values:
-            item["actresses"] = normalized
+        before = list(item.get("actresses") or []) if isinstance(item.get("actresses"), list) else []
+        if actress_util.ensure_actresses(item):
+            changed += 1
+        elif actress_util.finalize_title_zh(item):
+            changed += 1
+        elif before != list(item.get("actresses") or []):
             changed += 1
     return changed
 
@@ -154,11 +156,17 @@ def normalize_existing_actresses(items):
 def translate_title(item):
     if item.get("titleZh") or not item.get("title") or not DS_API_KEY:
         return False
-    title = f"{item.get('id')}: {item.get('title')}"
+    from src.weekly import actresses as actress_util
+
+    actress_util.ensure_actresses(item)
+    body, names = actress_util.title_for_translate(
+        item.get("title") or "", item.get("actresses")
+    )
+    title = f"{item.get('id')}: {body}"
     payload = json.dumps({
         "model": DS_MODEL,
         "messages": [
-            {"role": "system", "content": "你是日语翻译助手。将以下日文成人影片标题翻译为简洁的中文，只输出翻译结果，不要任何解释。"},
+            {"role": "system", "content": actress_util.translate_system_prompt()},
             {"role": "user", "content": title},
         ],
         "max_tokens": 256,
@@ -174,7 +182,10 @@ def translate_title(item):
             result = json.loads(resp.read().decode("utf-8"))
         zh = result["choices"][0]["message"]["content"].strip()
         if zh:
+            if names:
+                zh = f"{zh.rstrip(' ：:—–-')} {' '.join(names)}".strip()
             item["titleZh"] = zh
+            actress_util.finalize_title_zh(item)
             return True
     except (urllib.error.URLError, KeyError, ValueError, TimeoutError) as e:
         log(f"{item.get('id')} translate failed: {e}")

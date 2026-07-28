@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """周推荐自动更新 — 98堂 forum-37 列表 + 个体页/图源补充细节"""
-import json, os, sys, time, random, urllib.error, urllib.request
+import json, os, re, sys, time, random, urllib.error, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from src.weekly import sources, javbus, sukebei, merge, artwork, enrich
+from src.weekly import sources, javbus, sukebei, merge, artwork, enrich, chinese_forum
 from weekly_store import atomic_write_json, weekly_update_lock
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
@@ -15,12 +15,18 @@ MAX_AGE = int(os.environ.get("WEEKLY_MAX_AGE", "30"))
 MAX_PAGES = int(os.environ.get("WEEKLY_MAX_PAGES", "3"))
 LIST_ONLY = os.environ.get("WEEKLY_LIST_ONLY", "").strip().lower() in ("1", "true", "yes", "on")
 DS_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
-DS_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+# DeepSeek retired deepseek-chat; map legacy name so old compose env still works.
+_DS_MODEL_RAW = (os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash").strip()
+DS_MODEL = {
+    "deepseek-chat": "deepseek-v4-flash",
+    "deepseek-reasoner": "deepseek-v4-pro",
+}.get(_DS_MODEL_RAW, _DS_MODEL_RAW)
 # Per-title retries + exponential backoff on 429/5xx
 DS_TRANSLATE_RETRIES = int(os.environ.get("DS_TRANSLATE_RETRIES", "4"))
 DS_TRANSLATE_TIMEOUT = float(os.environ.get("DS_TRANSLATE_TIMEOUT", "45"))
 DS_TRANSLATE_SLEEP = float(os.environ.get("DS_TRANSLATE_SLEEP", "0.6"))
-DS_TRANSLATE_PASSES = int(os.environ.get("DS_TRANSLATE_PASSES", "2"))
+DS_TRANSLATE_PASSES = int(os.environ.get("DS_TRANSLATE_PASSES", "3"))
+DS_TRANSLATE_CHECKPOINT = int(os.environ.get("DS_TRANSLATE_CHECKPOINT", "10"))
 
 def log(msg):
     print(f"[WeeklyUpdater] {msg}", flush=True)
@@ -32,25 +38,12 @@ def _http_status(exc):
     return None
 
 
-def translate_title_once(avid, title):
-    """Call DeepSeek for one title. Returns zh string or raises."""
-    if not DS_API_KEY:
-        raise RuntimeError("DEEPSEEK_API_KEY is not set")
-    text = f"{avid}: {title}"
+def _deepseek_chat(messages, temperature=0.3):
     payload = json.dumps({
         "model": DS_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "你是日语翻译助手。将以下日文成人影片标题翻译为简洁的中文，"
-                    "只输出翻译结果，不要任何解释。"
-                ),
-            },
-            {"role": "user", "content": text},
-        ],
+        "messages": messages,
         "max_tokens": 256,
-        "temperature": 0.3,
+        "temperature": temperature,
     }).encode()
     req = urllib.request.Request(
         "https://api.deepseek.com/chat/completions",
@@ -62,19 +55,43 @@ def translate_title_once(avid, title):
     )
     with urllib.request.urlopen(req, timeout=DS_TRANSLATE_TIMEOUT) as resp:
         result = json.loads(resp.read().decode())
-    zh = (result.get("choices") or [{}])[0].get("message", {}).get("content", "")
-    zh = (zh or "").strip()
-    if not zh:
+    return ((result.get("choices") or [{}])[0].get("message", {}) or {}).get("content", "") or ""
+
+
+def translate_title_once(avid, title, actresses=None):
+    """Call DeepSeek for one title body. Returns Chinese titleZh without actress names."""
+    if not DS_API_KEY:
+        raise RuntimeError("DEEPSEEK_API_KEY is not set")
+    from src.weekly import actresses as actress_util
+
+    body, _names = actress_util.title_for_translate(title, actresses)
+    text = f"{avid}: {body}" if body else f"{avid}: {title}"
+    # Primary prompt, then milder fallback if content filter returns empty
+    prompts = [
+        actress_util.translate_system_prompt(),
+        "将日文影片标题译为简洁简体中文。只输出中文标题，不要女优姓名，不要解释。",
+    ]
+    last_empty = False
+    for i, sys_p in enumerate(prompts):
+        zh = _deepseek_chat(
+            [{"role": "system", "content": sys_p}, {"role": "user", "content": text}],
+            temperature=0.3 if i == 0 else 0.2,
+        ).strip()
+        if zh:
+            # Never append actress names into titleZh — they live in actresses[]
+            return zh
+        last_empty = True
+    if last_empty:
         raise RuntimeError("empty translation")
-    return zh
+    raise RuntimeError("empty translation")
 
 
-def translate_title_with_retry(avid, title):
+def translate_title_with_retry(avid, title, actresses=None):
     """Retry with exponential backoff on 429/5xx and transient errors."""
     last_err = None
     for attempt in range(1, DS_TRANSLATE_RETRIES + 1):
         try:
-            return translate_title_once(avid, title)
+            return translate_title_once(avid, title, actresses=actresses)
         except Exception as e:
             last_err = e
             code = _http_status(e)
@@ -92,8 +109,22 @@ def translate_title_with_retry(avid, title):
     raise last_err
 
 
-def batch_translate(items, passes=None):
-    """Translate missing titleZh with per-item retry; optional second pass for leftovers.
+def strip_actresses_from_title_zh(items):
+    """Strip actress names from existing titleZh (title vs name separation)."""
+    from src.weekly import actresses as actress_util
+
+    n = 0
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        actress_util.ensure_actresses(item)
+        if actress_util.finalize_title_zh(item):
+            n += 1
+    return n
+
+
+def batch_translate(items, passes=None, checkpoint_path=None):
+    """Translate missing titleZh with multi-pass retry and optional checkpoint writes.
 
     Returns (ok_count, fail_count).
     """
@@ -102,6 +133,13 @@ def batch_translate(items, passes=None):
     if not DS_API_KEY:
         log("Skip translate: DEEPSEEK_API_KEY not set")
         return 0, 0
+
+    # Always peel names off existing titleZh first
+    stripped = strip_actresses_from_title_zh(items)
+    if stripped:
+        log(f"Stripped actress names from {stripped} titleZh fields")
+        if checkpoint_path:
+            atomic_write_json(checkpoint_path, items)
 
     total_ok = total_fail = 0
     for pass_i in range(1, passes + 1):
@@ -120,13 +158,25 @@ def batch_translate(items, passes=None):
             avid = (item.get("id") or "").upper()
             title = item.get("title") or ""
             try:
-                item["titleZh"] = translate_title_with_retry(avid, title)
+                from src.weekly import actresses as actress_util
+                actress_util.ensure_actresses(item)
+                item["titleZh"] = translate_title_with_retry(
+                    avid, title, actresses=item.get("actresses")
+                )
+                actress_util.finalize_title_zh(item)
                 ok += 1
             except Exception as e:
                 fail += 1
                 log(f"Translate {avid} failed after retries: {e}")
             if (idx + 1) % 10 == 0 or (idx + 1) == n:
                 log(f"Translated {idx + 1}/{n} (ok={ok} fail={fail})")
+            # Checkpoint so SIGTERM does not lose whole pass
+            if checkpoint_path and DS_TRANSLATE_CHECKPOINT > 0:
+                if (idx + 1) % DS_TRANSLATE_CHECKPOINT == 0 or (idx + 1) == n:
+                    try:
+                        atomic_write_json(checkpoint_path, items)
+                    except Exception as e:
+                        log(f"Translate checkpoint write failed: {e}")
             time.sleep(DS_TRANSLATE_SLEEP)
         total_ok += ok
         total_fail += fail
@@ -152,19 +202,35 @@ def _main_locked():
     existing_ids = {i["id"].upper() for i in existing if i.get("id")}
     log(f"Existing: {len(existing)}")
 
-    # 1. 补封面
+    # 1. 补封面（列表挂了也先落盘）
     if not LIST_ONLY:
         n = merge.fill_covers(existing, WEEKLY_DIR)
         if n:
             log(f"Filled {n} covers")
+            try:
+                atomic_write_json(WEEKLY_JSON, existing)
+            except Exception as e:
+                log(f"Cover checkpoint write failed: {e}")
 
-    # 2. 98堂 forum-37 列表获取番号+标题（默认 3 页；封面稍后 MGS/DMM）
-    recent = sources.get_recent(MAX_PAGES)
+    # 2. 列表：默认 98堂 forum-37，失败重试 + 回退 JavBus（见 sources.get_recent）
+    recent = []
+    try:
+        recent = sources.get_recent(MAX_PAGES) or []
+    except Exception as e:
+        log(f"List source crashed (continuing without new items): {e}")
+        recent = []
+
     freshness_counts = {}
     for item in recent:
         marker = item.get("freshness") or item.get("source") or "unknown"
         freshness_counts[marker] = freshness_counts.get(marker, 0) + 1
-    log(f"Weekly list items: {len(recent)} ({freshness_counts})")
+    if recent:
+        log(f"Weekly list items: {len(recent)} ({freshness_counts})")
+    else:
+        log(
+            "WARNING: weekly list empty after plwt retries + fallback; "
+            "no new titles this run (covers/titleZh still updated)"
+        )
 
     new_items = []
     for item in recent:
@@ -193,7 +259,22 @@ def _main_locked():
                 download_images=True,
                 force_images=javbus.cover_needs_refresh(avid, WEEKLY_DIR),
             )
-            item["magnet"] = sukebei.search(avid, "")
+            # Magnet: 默认从 98堂帖子页取；论坛没有再 sukebei
+            magnet = ""
+            forum_url = (item.get("forumUrl") or "").strip()
+            if forum_url:
+                try:
+                    chinese_forum.set_proxy(PROXY)
+                    magnet = chinese_forum.fetch_thread_magnet(forum_url) or ""
+                    if magnet:
+                        log(f"  magnet from forum for {avid}")
+                except Exception as e:
+                    log(f"  forum magnet fail {avid}: {e}")
+            if not magnet:
+                magnet = sukebei.search(avid, "") or ""
+                if magnet:
+                    log(f"  magnet from sukebei for {avid}")
+            item["magnet"] = magnet
             # 补齐缺失字段
             for k in ["titleZh", "titleJp", "poster", "duration", "actresses", "genres", "fanarts", "size"]:
                 item.setdefault(k, "")
@@ -220,9 +301,9 @@ def _main_locked():
         if not isinstance(item.get("genres"), list): item["genres"] = []
         if not isinstance(item.get("fanarts"), list): item["fanarts"] = []
 
-    # 3. DeepSeek: missing titleZh (retry + second pass for 503 leftovers)
+    # 3. DeepSeek: missing titleZh (multi-pass + checkpoint; leftovers → launcher retry)
     if not LIST_ONLY:
-        batch_translate(merged)
+        batch_translate(merged, checkpoint_path=WEEKLY_JSON)
 
     atomic_write_json(WEEKLY_JSON, merged)
     still = sum(
@@ -230,11 +311,49 @@ def _main_locked():
         if not str(i.get("titleZh") or "").strip() and str(i.get("title") or "").strip()
     )
     log(f"=== Done: {len(merged)} items (+{len(new_items)} new) titleZh_missing={still} ===")
+    # 供 heal 探针展示上次刮削结果（不触发自动重刮）
+    try:
+        from datetime import datetime as _dt
+        last_path = os.environ.get("LAST_SCRAPE_PATH", "/db/last_scrape.json")
+        payload = {
+            "ok": True,
+            "ts": _dt.now().isoformat(timespec="seconds"),
+            "total": len(merged),
+            "new": len(new_items),
+            "titlezh_missing": still,
+            "source": os.environ.get("WEEKLY_LIST_SOURCE", "plwt"),
+        }
+        os.makedirs(os.path.dirname(last_path) or ".", exist_ok=True)
+        with open(last_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log(f"last_scrape write failed: {e}")
 
 
 def main():
-    with weekly_update_lock(WEEKLY_JSON):
-        _main_locked()
+    try:
+        with weekly_update_lock(WEEKLY_JSON):
+            _main_locked()
+    except Exception as e:
+        log(f"FATAL: {e}")
+        try:
+            from datetime import datetime as _dt
+            last_path = os.environ.get("LAST_SCRAPE_PATH", "/db/last_scrape.json")
+            os.makedirs(os.path.dirname(last_path) or ".", exist_ok=True)
+            with open(last_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "ok": False,
+                        "ts": _dt.now().isoformat(timespec="seconds"),
+                        "error": str(e)[:300],
+                    },
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+        except Exception:
+            pass
+        raise
 
 
 if __name__ == "__main__":

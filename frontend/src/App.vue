@@ -83,7 +83,7 @@
 
         <main class="app-main">
           <router-view v-slot="{ Component }">
-            <keep-alive :include="['HomeView', 'WeeklyView']">
+            <keep-alive :include="['HomeView', 'WeeklyView', 'GenreBrowseView']">
               <component :is="Component" :key="routeViewKey" />
             </keep-alive>
           </router-view>

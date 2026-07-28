@@ -100,6 +100,26 @@ class QueueAPITest(unittest.TestCase):
             self.assertTrue(queue_api.qb_remove_code("300MIUM-1395"))
             self.assertEqual(qb_request.call_args.args[1]["hashes"], "numeric")
 
+    def test_resolve_actresses_prefers_mgs_and_normalizes_rename(self):
+        with patch("src.weekly.mgs.fetch_detail", return_value={"actresses": ["河北彩花"]}), patch(
+            "src.weekly.dmm.fetch_metadata"
+        ) as dmm_fetch:
+            payload, error = queue_api.resolve_actresses_remote("snos233")
+        self.assertEqual(error, "")
+        self.assertEqual(payload["code"], "SNOS-233")
+        self.assertEqual(payload["source"], "mgs")
+        self.assertEqual(payload["actresses"], ["河北彩伽"])
+        dmm_fetch.assert_not_called()
+
+    def test_resolve_actresses_falls_back_to_dmm(self):
+        with patch("src.weekly.mgs.fetch_detail", return_value={"actresses": []}), patch(
+            "src.weekly.dmm.fetch_metadata", return_value={"actresses": ["小島みこ"]}
+        ):
+            payload, error = queue_api.resolve_actresses_remote("OMG032")
+        self.assertEqual(error, "")
+        self.assertEqual(payload["source"], "dmm")
+        self.assertEqual(payload["actresses"], ["小島みこ"])
+
 
 if __name__ == "__main__":
     unittest.main()

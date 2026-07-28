@@ -41,13 +41,175 @@ var (
 	actressAgesFile      = getEnv("ACTRESS_AGES_FILE", "/db/actress_ages.json")
 	weeklyWatchedFile    = getEnv("WEEKLY_WATCHED_FILE", "/db/weekly_watched.json")
 	blockedActresses     map[string]bool
-	blockedGenres        map[string]bool
-	blockedKeywords      map[string]bool
-	favActresses         map[string]bool
-	actressAges          map[string]int
-	actressAgeLimit      = 45
-	blockedListsMtx      sync.RWMutex
+	// foldActressKey(name) -> exact blocked spelling (covers 繁简/空白/尾标点)
+	blockedActressFolds map[string]string
+	blockedGenres       map[string]bool
+	blockedKeywords     map[string]bool
+	favActresses        map[string]bool
+	// fold key -> exact fav spelling
+	favActressFolds map[string]string
+	actressAges     map[string]int
+	actressAgeLimit = 45
+	blockedListsMtx sync.RWMutex
 )
+
+// foldActressKey normalizes a name for blacklist/favorite matching.
+// Keeps exact display spelling in the primary map; this is only for lookup.
+func foldActressKey(name string) string {
+	s := strings.TrimSpace(name)
+	if s == "" {
+		return ""
+	}
+	// strip common trailing junk from bad scrapes: 川上ゆう（
+	s = strings.Trim(s, " \t　（）()【】[]「」『』・·.,。．!！?？:：;；-_—–")
+	// drop spaces / middle dots
+	replacer := strings.NewReplacer(
+		" ", "", "　", "", "・", "", "·", "", "．", "", ".", "",
+		"　", "",
+	)
+	s = replacer.Replace(s)
+	// minimal 繁→简 / 旧字体 so 千葉/千叶、優/优、島/岛 能对上
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '優':
+			r = '优'
+		case '愛':
+			r = '爱'
+		case '澤':
+			r = '泽'
+		case '辺':
+			r = '边'
+		case '黒':
+			r = '黑'
+		case '桜':
+			r = '樱'
+		case '実':
+			r = '实'
+		case '広':
+			r = '广'
+		case '滝':
+			r = '泷'
+		case '児':
+			r = '儿'
+		case '亜':
+			r = '亚'
+		case '斎':
+			r = '斋'
+		case '満':
+			r = '满'
+		case '浜':
+			r = '滨'
+		case '戸':
+			r = '户'
+		case '瀬':
+			r = '濑'
+		case '亀':
+			r = '龟'
+		case '竜':
+			r = '龙'
+		case '嶋', '島':
+			r = '岛'
+		case '斉':
+			r = '齐'
+		case '緒':
+			r = '绪'
+		case '絵':
+			r = '绘'
+		case '華':
+			r = '华'
+		case '葉':
+			r = '叶'
+		case '薫':
+			r = '薰'
+		case '蘭':
+			r = '兰'
+		case '鷹':
+			r = '鹰'
+		case '畝':
+			r = '亩'
+		case '雫':
+			// same in both
+		}
+		if r >= 'A' && r <= 'Z' {
+			r = r + ('a' - 'A')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func rebuildActressFoldMaps() {
+	blockedActressFolds = make(map[string]string, len(blockedActresses))
+	for name, on := range blockedActresses {
+		if !on {
+			continue
+		}
+		key := foldActressKey(name)
+		if key == "" {
+			continue
+		}
+		// first spelling wins (file order is rebuilt via load)
+		if _, ok := blockedActressFolds[key]; !ok {
+			blockedActressFolds[key] = name
+		}
+	}
+	favActressFolds = make(map[string]string, len(favActresses))
+	for name, on := range favActresses {
+		if !on {
+			continue
+		}
+		key := foldActressKey(name)
+		if key == "" {
+			continue
+		}
+		if _, ok := favActressFolds[key]; !ok {
+			favActressFolds[key] = name
+		}
+	}
+}
+
+func isBlockedActressName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	// check name + known rename aliases (e.g. 河北彩花 / 河北彩伽)
+	candidates := []string{name}
+	// actressAliasGroup is in handlers.go same package
+	for _, alt := range actressAliasGroup(name) {
+		candidates = append(candidates, alt)
+	}
+	for _, c := range candidates {
+		if blockedActresses[c] {
+			return true
+		}
+		key := foldActressKey(c)
+		if key != "" {
+			if _, ok := blockedActressFolds[key]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isFavActressName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if favActresses[name] {
+		return true
+	}
+	key := foldActressKey(name)
+	if key == "" {
+		return false
+	}
+	_, ok := favActressFolds[key]
+	return ok
+}
 
 func loadBlockedLists() {
 	blockedListsMtx.Lock()
@@ -76,6 +238,7 @@ func loadBlockedLists() {
 	loadBlockedFromFile(blockedKeywordsFile, blockedKeywords)
 	actressAges = make(map[string]int)
 	loadActressAges()
+	rebuildActressFoldMaps()
 }
 
 func loadActressAges() {
@@ -173,9 +336,10 @@ var (
 
 // VideoItem 表示视频列表项
 type VideoItem struct {
-	ID     string `json:"id"`
-	Title  string `json:"title"`
-	Poster string `json:"poster"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Poster    string   `json:"poster"`
+	Actresses []string `json:"actresses,omitempty"`
 }
 
 // VideoDetail 视频详细信息
@@ -185,6 +349,7 @@ type VideoDetail struct {
 	ReleaseDate string   `json:"releaseDate"`
 	Fanarts     []string `json:"fanarts"`
 	VideoFile   string   `json:"videoFile,omitempty"`
+	Actresses   []string `json:"actresses,omitempty"`
 }
 
 // NfoFile NFO文件结构
@@ -193,6 +358,9 @@ type NfoFile struct {
 	Title       string   `xml:"title"`
 	ReleaseDate string   `xml:"releasedate"`
 	Premiered   string   `xml:"premiered"`
+	Actors      []struct {
+		Name string `xml:"name"`
+	} `xml:"actor"`
 }
 
 type MetadataTitleFile struct {
@@ -237,7 +405,7 @@ func getEnv(key, defaultVal string) string {
 
 func containsBlockedActress(actresses []string) bool {
 	for _, actress := range actresses {
-		if blockedActresses[actress] {
+		if isBlockedActressName(actress) {
 			return true
 		}
 	}
@@ -317,11 +485,13 @@ func main() {
 	mux.HandleFunc("/api/addvideo/", addVideoHandler)
 	mux.HandleFunc("/file/", imageHandler)
 	mux.HandleFunc("/api/weekly", weeklyHandler)
+	mux.HandleFunc("/api/weekly/by-genre/", byGenreHandler)
 	mux.HandleFunc("/api/weekly-watched", weeklyWatchedHandler)
 	mux.HandleFunc("/api/queue/", queueHandler)
 	mux.HandleFunc("/api/failed-ack/", failedAckHandler)
 	mux.HandleFunc("/api/failed-ack", failedAckHandler)
 	mux.HandleFunc("/api/block-actress/", blockActressHandler)
+	mux.HandleFunc("/api/block-by-code/", blockByCodeHandler)
 	mux.HandleFunc("/api/block-genre/", blockGenreHandler)
 	mux.HandleFunc("/api/video-status/", videoStatusHandler)
 	mux.HandleFunc("/api/fav-actress/", favActressHandler)
@@ -449,16 +619,17 @@ func buildVideoListCache() error {
 			continue
 		}
 
-		title, _, err := parseTitleAndDate(dirName)
+		title, _, actors, err := parseTitleDateActors(dirName)
 		if err != nil {
 			logger.Printf("Failed to parse NFO for %s: %v", dirName, err)
 			title = videoID
 		}
 
 		videoListCache = append(videoListCache, VideoItem{
-			ID:     videoID,
-			Title:  title,
-			Poster: fmt.Sprintf("/file/%s/%s", videoID, posterFile),
+			ID:        videoID,
+			Title:     title,
+			Poster:    fmt.Sprintf("/file/%s/%s", videoID, posterFile),
+			Actresses: actors,
 		})
 		count++
 	}
@@ -489,11 +660,17 @@ func findFileInDir(base, dirName, suffix string) string {
 }
 
 func parseTitleAndDate(videoID string) (title, releaseDate string, err error) {
+	title, releaseDate, _, err = parseTitleDateActors(videoID)
+	return title, releaseDate, err
+}
+
+// parseTitleDateActors: library NFO title + JP actress names (preferred spelling).
+func parseTitleDateActors(videoID string) (title, releaseDate string, actresses []string, err error) {
 	nfoPath := findFileInDir(basePath, videoID, ".nfo")
 	if nfoPath != "" {
 		file, err := os.Open(nfoPath)
 		if err != nil {
-			return "", "", fmt.Errorf("open file failed: %w", err)
+			return "", "", nil, fmt.Errorf("open file failed: %w", err)
 		}
 		defer file.Close()
 
@@ -504,26 +681,37 @@ func parseTitleAndDate(videoID string) (title, releaseDate string, err error) {
 
 		var nfo NfoFile
 		if err := decoder.Decode(&nfo); err != nil {
-			return "", "", fmt.Errorf("xml decode failed: %w", err)
+			return "", "", nil, fmt.Errorf("xml decode failed: %w", err)
 		}
 
 		date := nfo.ReleaseDate
 		if date == "" {
 			date = nfo.Premiered
 		}
-		if nfo.Title != "" {
-			return nfo.Title, date, nil
+		seen := map[string]bool{}
+		for _, a := range nfo.Actors {
+			n := preferredActressSpelling(strings.TrimSpace(a.Name))
+			if n == "" || seen[n] {
+				continue
+			}
+			seen[n] = true
+			actresses = append(actresses, n)
 		}
-		if fallback := fallbackTitleForVideo(videoID); fallback != "" {
-			return fallback, date, nil
+		title = nfo.Title
+		if title == "" {
+			if fallback := fallbackTitleForVideo(videoID); fallback != "" {
+				title = fallback
+			} else {
+				title = cleanVideoID(videoID)
+			}
 		}
-		return cleanVideoID(videoID), date, nil
+		return title, date, actresses, nil
 	}
 
 	if fallback := fallbackTitleForVideo(videoID); fallback != "" {
-		return fallback, "", nil
+		return fallback, "", nil, nil
 	}
-	return "", "", fmt.Errorf("no title metadata found")
+	return "", "", nil, fmt.Errorf("no title metadata found")
 }
 
 func fallbackTitleForVideo(videoID string) string {

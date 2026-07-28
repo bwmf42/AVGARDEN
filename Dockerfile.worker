@@ -23,6 +23,11 @@ COPY video_id.py /app/
 COPY weekly_store.py /app/
 COPY weekly_updater.py /app/
 COPY plwt_art_backfill.py /app/
+COPY plwt_genre_normalize.py /app/
+COPY plwt_actress_fix.py /app/
+COPY plwt_titlezh_repair.py /app/
+COPY plwt_translate_missing.py /app/
+COPY heal_runner.py /app/
 COPY weekly_backfill_details.py /app/
 COPY replace_chinese.py /app/
 RUN mkdir -p /data /db /cfg /logs

@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from . import actresses as actress_util
 from . import dmm, genre_zh, javbus, javdatabase, mgs
 
 
@@ -42,6 +43,11 @@ def _merge_unique(base, extra):
     return out
 
 
+def _merge_actresses(base, extra):
+    """Merge actress lists, drop placeholders like ----."""
+    return actress_util.clean_actresses(_merge_unique(base, extra))
+
+
 def apply_mgs_meta(item: dict, meta: dict) -> bool:
     """Apply MGS detail fields onto item. Returns True if anything changed."""
     if not meta:
@@ -55,7 +61,7 @@ def apply_mgs_meta(item: dict, meta: dict) -> bool:
 
     if meta.get("actresses"):
         before = list(item.get("actresses") or [])
-        item["actresses"] = _merge_unique(before, meta["actresses"])
+        item["actresses"] = _merge_actresses(before, meta["actresses"])
         if item["actresses"] != before:
             changed = True
 
@@ -109,7 +115,7 @@ def apply_javbus_meta(item: dict, detail: dict) -> bool:
     for key in ("actresses",):
         if detail.get(key):
             before = list(item.get(key) or [])
-            item[key] = _merge_unique(before, detail[key])
+            item[key] = _merge_actresses(before, detail[key])
             if item[key] != before:
                 changed = True
 
@@ -158,9 +164,16 @@ def apply_dmm_meta(item: dict, meta: dict) -> bool:
         return False
     changed = False
 
-    if meta.get("actresses") and not item.get("actresses"):
-        item["actresses"] = _as_list(meta["actresses"])
-        changed = True
+    if meta.get("actresses"):
+        before = list(item.get("actresses") or [])
+        merged = _merge_actresses(before, meta["actresses"])
+        # only fill when empty or previous was junk
+        if not actress_util.clean_actresses(before) and merged:
+            item["actresses"] = merged
+            changed = True
+        elif merged and before != merged and not actress_util.clean_actresses(before):
+            item["actresses"] = merged
+            changed = True
     if meta.get("genres") and not item.get("genres"):
         item["genres"] = genre_zh.translate_genres(meta["genres"])
         changed = True
@@ -182,9 +195,13 @@ def apply_javdatabase_meta(item: dict, meta: dict) -> bool:
     if not meta:
         return False
     changed = False
-    if meta.get("actresses") and not item.get("actresses"):
-        item["actresses"] = _as_list(meta["actresses"])
-        changed = True
+    if meta.get("actresses"):
+        before = list(item.get("actresses") or [])
+        if not actress_util.clean_actresses(before):
+            merged = actress_util.clean_actresses(meta["actresses"])
+            if merged:
+                item["actresses"] = merged
+                changed = True
     if meta.get("genres") and not item.get("genres"):
         item["genres"] = genre_zh.translate_genres(meta["genres"])
         changed = True
@@ -283,12 +300,15 @@ def enrich_item(
     # Always normalize genres via static map + persistent memory (no per-scrape AI)
     genre_zh.normalize_item_genres(item)
 
+    # Drop ---- placeholders; fall back to trailing names on JP title
+    actress_util.ensure_actresses(item)
+
     return item
 
 
 def needs_enrich(item: dict) -> bool:
     """True if missing core SOAV fields."""
-    if not item.get("actresses"):
+    if not actress_util.clean_actresses(item.get("actresses") or []):
         return True
     genres = item.get("genres") or []
     if not genres:

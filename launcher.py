@@ -179,6 +179,104 @@ def merge_watcher():
             log(f"Merge watcher error: {e}")
 
 
+def run_titlezh_retry(reason=""):
+    """补译缺失 titleZh（DeepSeek 偶发失败的自动重试）。
+
+    前台只记有产出/失败；空转只打 launcher 控制台。
+    """
+    tag = f" ({reason})" if reason else ""
+    log(f"Running plwt_translate_missing{tag}...")
+    try:
+        proc = subprocess.run(
+            ["/app/venv/bin/python3", "/app/plwt_translate_missing.py"],
+            timeout=3600,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        if proc.stdout:
+            sys.stdout.write(proc.stdout)
+            sys.stdout.flush()
+        if proc.stderr:
+            sys.stderr.write(proc.stderr)
+            sys.stderr.flush()
+        # 解析补译结果：有 ok/fail/stripped 才写前台
+        ok = fail = stripped = None
+        for line in out.splitlines():
+            if "Done ok=" in line or "Translate done: ok=" in line:
+                # Done ok=48 fail=16 stripped=0 ...
+                import re as _re
+                m = _re.search(r"ok=(\d+).*fail=(\d+)", line)
+                if m:
+                    ok, fail = int(m.group(1)), int(m.group(2))
+                m2 = _re.search(r"stripped=(\d+)", line)
+                if m2:
+                    stripped = int(m2.group(1))
+            if "Missing titleZh before:" in line and "0" in line.split(":")[-1]:
+                pass
+        if ok is None and fail is None:
+            if proc.returncode != 0:
+                log_write("TitleZhRetry", f"补译失败{tag}: exit={proc.returncode}")
+            else:
+                log(f"TitleZhRetry empty run{tag}")
+        elif (ok or 0) > 0 or (fail or 0) > 0 or (stripped or 0) > 0:
+            log_write(
+                "TitleZhRetry",
+                f"补译完成{tag}: ok={ok or 0} fail={fail or 0}"
+                + (f" stripped={stripped}" if stripped else ""),
+            )
+        else:
+            log(f"TitleZhRetry nothing to do{tag}")
+    except Exception as e:
+        log(f"plwt_translate_missing failed{tag}: {e}")
+        log_write("TitleZhRetry", f"补译失败{tag}: {e}")
+
+
+def titlezh_retry_watcher():
+    """定时补漏：缺 titleZh 时自动重试（默认每 3 小时）。
+
+    自愈 heal_runner 也会补译；此处保留作更长周期兜底。
+    """
+    hours = float(os.environ.get("TITLEZH_RETRY_INTERVAL_H", "3") or "3")
+    interval = max(1800.0, hours * 3600.0)
+    # 启动后稍等，避免和开机刮削抢锁
+    time.sleep(120)
+    while running:
+        try:
+            run_titlezh_retry("scheduled")
+        except Exception as e:
+            log(f"titlezh_retry_watcher error: {e}")
+        # sleep in chunks so SIGTERM can exit
+        slept = 0.0
+        while running and slept < interval:
+            time.sleep(min(60.0, interval - slept))
+            slept += 60.0
+
+
+def heal_watcher():
+    """周期自愈（默认 1h）：补译、队列对齐、探活告警。不重刮、不删种。"""
+    if os.environ.get("HEAL_ENABLE", "1").strip().lower() in ("0", "false", "no", "off"):
+        log("Heal watcher disabled (HEAL_ENABLE=0)")
+        return
+    hours = float(os.environ.get("HEAL_INTERVAL_H", "1") or "1")
+    interval = max(900.0, hours * 3600.0)
+    # 启动后 3 分钟再跑，避开开机刮削/锁
+    time.sleep(180)
+    py = os.environ.get("WORKER_PYTHON", "/app/venv/bin/python3")
+    script = "/app/heal_runner.py"
+    while running:
+        try:
+            log("Running heal_runner...")
+            subprocess.run([py, script], timeout=3900, check=False)
+        except Exception as e:
+            log(f"heal_runner error: {e}")
+        slept = 0.0
+        while running and slept < interval:
+            time.sleep(min(60.0, interval - slept))
+            slept += 60.0
+
+
 def daily_updater():
     """每天 13:00-18:00 随机时间运行 weekly_updater"""
     while running:
@@ -195,13 +293,31 @@ def daily_updater():
             time.sleep(60)
             continue
         log("Running weekly_updater...")
+        scrape_ok = False
         try:
-            subprocess.run(["/app/venv/bin/python3", "/app/weekly_updater.py"], timeout=7200, check=True)
-            log_write("DailyUpdater", "刮削完成 (weekly_updater)")
-            mark_daily_update_completed(run_day)
+            # 不 capture：长任务实时进 docker logs；SSL 已在 sources/forum 内重试+回退
+            proc = subprocess.run(
+                ["/app/venv/bin/python3", "/app/weekly_updater.py"],
+                timeout=7200,
+                check=False,
+            )
+            if proc.returncode == 0:
+                log_write("DailyUpdater", "刮削完成 (weekly_updater)")
+                mark_daily_update_completed(run_day)
+                scrape_ok = True
+            else:
+                msg = f"weekly_updater exit={proc.returncode}（详见 docker logs 中 WeeklyUpdater/Sources/ChineseForum）"
+                log(msg)
+                log_write("DailyUpdater", f"刮削失败: exit={proc.returncode} 见容器日志")
+        except subprocess.TimeoutExpired:
+            log("weekly_updater timed out after 7200s")
+            log_write("DailyUpdater", "刮削失败: 超时 7200s")
         except Exception as e:
             log(f"weekly_updater failed: {e}")
             log_write("DailyUpdater", f"刮削失败: {e}")
+        # 无论刮削成败都补译（偶发 DeepSeek 失败 / 中断后的缺口）
+        run_titlezh_retry("after-scrape" if scrape_ok else "after-scrape-fail")
+        if not scrape_ok:
             time.sleep(3600)
             continue
         log("Running replace_chinese...")
@@ -259,6 +375,12 @@ def main():
     # 4. 启动中文版合并检查(每2小时)
     t2 = threading.Thread(target=merge_watcher, daemon=True)
     t2.start()
+    # 5. 缺 titleZh 定时补译（DeepSeek 偶发失败）
+    t3 = threading.Thread(target=titlezh_retry_watcher, daemon=True)
+    t3.start()
+    # 6. 自愈：补译/队列对齐/探活（不重刮）
+    t4 = threading.Thread(target=heal_watcher, daemon=True)
+    t4.start()
 
     # 等待任意一个退出
     while running:

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -889,12 +891,12 @@ func filterWeeklyItems(items []map[string]interface{}, mp4Index map[string]bool,
 	defer blockedListsMtx.RUnlock()
 	filtered := make([]map[string]interface{}, 0)
 	for _, item := range items {
-		// 过滤屏蔽演员
+		// 过滤屏蔽演员（精确 + fold：空白/尾标点/常见繁简）
 		actresses, ok := item["actresses"].([]interface{})
 		if ok && len(blockedActresses) > 0 {
 			blocked := false
 			for _, a := range actresses {
-				if name, ok := a.(string); ok && blockedActresses[name] {
+				if name, ok := a.(string); ok && isBlockedActressName(name) {
 					blocked = true
 					break
 				}
@@ -904,11 +906,11 @@ func filterWeeklyItems(items []map[string]interface{}, mp4Index map[string]bool,
 			}
 		}
 
-		// 检查是否有收藏女优（跳过标签屏蔽）
+		// 检查是否有收藏女优（跳过标签屏蔽；同样用 fold）
 		hasFavActress := false
 		if actresses, ok := item["actresses"].([]interface{}); ok && len(favActresses) > 0 {
 			for _, a := range actresses {
-				if name, ok := a.(string); ok && favActresses[name] {
+				if name, ok := a.(string); ok && isFavActressName(name) {
 					hasFavActress = true
 					break
 				}
@@ -1057,6 +1059,76 @@ func weeklyHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(cached)
 }
 
+// byGenreHandler GET /api/weekly/by-genre/{tag}
+// 返回 weekly.json 中带该标签的作品（不应用屏蔽标签过滤，供设置页浏览屏蔽标签入口）
+func byGenreHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	raw, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/api/weekly/by-genre/"))
+	if err != nil {
+		httpError(w, "Invalid genre tag", http.StatusBadRequest)
+		return
+	}
+	tag := strings.TrimSpace(raw)
+	if tag == "" || strings.Contains(tag, "/") {
+		httpError(w, "Missing genre tag", http.StatusBadRequest)
+		return
+	}
+
+	weeklyPath := filepath.Join(basePath, "__weekly__", "weekly.json")
+	data, err := ioutil.ReadFile(weeklyPath)
+	if err != nil {
+		httpError(w, "Weekly data not found", http.StatusNotFound)
+		return
+	}
+
+	var items []map[string]interface{}
+	if err := json.Unmarshal(data, &items); err != nil || items == nil {
+		items = []map[string]interface{}{}
+	}
+
+	mp4Index := getMediaIndex()
+	activeQueueIndex := getActiveQueueIndex()
+	matched := make([]map[string]interface{}, 0)
+	for _, item := range items {
+		genres, ok := item["genres"].([]interface{})
+		if !ok {
+			continue
+		}
+		hasTag := false
+		for _, g := range genres {
+			if s, ok := g.(string); ok && s == tag {
+				hasTag = true
+				break
+			}
+		}
+		if !hasTag {
+			continue
+		}
+
+		// 同步 downloaded / queue 状态（与 weekly 列表一致）
+		if id, ok := item["id"].(string); ok {
+			code := strings.ToUpper(id)
+			if status, active := activeQueueIndex[comparableVideoID(code)]; active {
+				item["downloaded"] = false
+				item["queueStatus"] = status
+			} else if mp4Index[code] {
+				item["downloaded"] = true
+				delete(item, "queueStatus")
+			} else {
+				item["downloaded"] = false
+				delete(item, "queueStatus")
+			}
+		}
+		matched = append(matched, item)
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(matched)
+}
+
 // queueHandler 代理到 Python queue_api (端口 31473)
 func queueHandler(w http.ResponseWriter, r *http.Request) {
 	targetURL := queueAPI + r.URL.Path
@@ -1099,7 +1171,14 @@ func queueHandler(w http.ResponseWriter, r *http.Request) {
 	proxyReq.ContentLength = int64(len(body))
 	resp, err := queueHTTPClient.Do(proxyReq)
 	if err != nil {
-		httpError(w, "Queue service unavailable", http.StatusServiceUnavailable)
+		// Explicit JSON so frontend can show a clear reason during deploy/restart
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error":   "queue_unavailable",
+			"message": "队列服务暂不可用（可能在部署/重启），请稍后或等待自动重试",
+		})
+		logger.Printf("HTTP Error 503: queue service unavailable: %v", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1243,6 +1322,404 @@ func blockListNameFromPath(path, prefix string) string {
 	return strings.TrimSpace(name)
 }
 
+// cleanActressNameForBlock trims junk labels used as placeholders in library/NFO.
+func cleanActressNameForBlock(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || name == "----" || name == "未知" || name == "不明" {
+		return ""
+	}
+	return name
+}
+
+var (
+	errActressesNotFound        = errors.New("no actresses found")
+	errActressLookupUnavailable = errors.New("actress lookup unavailable")
+)
+
+func normalizeBlockCode(raw string) string {
+	return normalizeUserVideoID(strings.TrimSpace(raw))
+}
+
+var blockLocalSuffixPattern = regexp.MustCompile(`(?i)(?:[-_](?:C|CH|UC|FHD_CH)|CH|-中文字幕|\(\d+\))$`)
+
+func normalizeBlockLocalDir(name string) string {
+	value := strings.TrimSpace(name)
+	for {
+		trimmed := blockLocalSuffixPattern.ReplaceAllString(value, "")
+		if trimmed == value {
+			break
+		}
+		value = strings.TrimSpace(trimmed)
+	}
+	return normalizeUserVideoID(value)
+}
+
+func blockCodeStartsWithDigit(code string) bool {
+	return code != "" && code[0] >= '0' && code[0] <= '9'
+}
+
+// actressesFromLibraryNFO reads <actor><name> from media-library NFO under /data.
+func actressesFromLibraryNFO(code string) []string {
+	code = normalizeBlockCode(code)
+	if code == "" {
+		return nil
+	}
+	candidates := make([]string, 0, 2)
+	if info, err := os.Stat(filepath.Join(basePath, code)); err == nil && info.IsDir() {
+		candidates = append(candidates, code)
+	}
+	if entries, err := os.ReadDir(basePath); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			localCode := normalizeBlockLocalDir(e.Name())
+			matchesCanonical := localCode == code
+			matchesLegacyPrefix := !blockCodeStartsWithDigit(code) && cleanVideoID(e.Name()) == code
+			if matchesCanonical || matchesLegacyPrefix {
+				candidates = append(candidates, e.Name())
+			}
+		}
+	}
+	seenDir := map[string]bool{}
+	for _, dir := range candidates {
+		if dir == "" || seenDir[dir] {
+			continue
+		}
+		seenDir[dir] = true
+		nfoPath := findFileInDir(basePath, dir, ".nfo")
+		if nfoPath == "" {
+			continue
+		}
+		f, err := os.Open(nfoPath)
+		if err != nil {
+			continue
+		}
+		var nfo NfoFile
+		err = xml.NewDecoder(f).Decode(&nfo)
+		f.Close()
+		if err != nil {
+			continue
+		}
+		out := make([]string, 0, len(nfo.Actors))
+		seen := map[string]bool{}
+		for _, a := range nfo.Actors {
+			n := cleanActressNameForBlock(a.Name)
+			if n == "" || seen[n] {
+				continue
+			}
+			seen[n] = true
+			out = append(out, n)
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return nil
+}
+
+// actressesFromRemoteQueue asks queue_api (MGS then DMM) when library has no names.
+func actressesFromRemoteQueue(code string) (names []string, source string, err error) {
+	code = normalizeBlockCode(code)
+	if code == "" {
+		return nil, "", fmt.Errorf("invalid code")
+	}
+	u := strings.TrimRight(queueAPI, "/") + "/api/resolve-actresses/" + url.PathEscape(code)
+	resp, err := queueHTTPClient.Get(u)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", err
+	}
+	var payload struct {
+		Code      string   `json:"code"`
+		Source    string   `json:"source"`
+		Actresses []string `json:"actresses"`
+		Error     string   `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil, "", err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, payload.Source, errActressesNotFound
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		n := minInt(120, len(body))
+		return nil, payload.Source, fmt.Errorf("%w: queue_api status %d: %s", errActressLookupUnavailable, resp.StatusCode, string(body[:n]))
+	}
+	if payload.Error != "" && len(payload.Actresses) == 0 {
+		return nil, payload.Source, errActressesNotFound
+	}
+	out := make([]string, 0, len(payload.Actresses))
+	seen := map[string]bool{}
+	for _, a := range payload.Actresses {
+		n := cleanActressNameForBlock(a)
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	src := payload.Source
+	if src == "" {
+		src = "remote"
+	}
+	return out, src, nil
+}
+
+// actressAliasGroup: 改名等同人（屏蔽任一则整组命中；写入时写全组）
+func actressAliasGroup(name string) []string {
+	name = strings.TrimSpace(name)
+	groups := [][]string{
+		{"河北彩伽", "河北彩花"},
+	}
+	for _, g := range groups {
+		for _, n := range g {
+			if n == name {
+				return append([]string(nil), g...)
+			}
+		}
+	}
+	return []string{name}
+}
+
+// preferredActressSpelling: 展示/屏蔽主用名（改名后的现行拼写）
+func preferredActressSpelling(name string) string {
+	name = cleanActressNameForBlock(name)
+	if name == "" {
+		return ""
+	}
+	g := actressAliasGroup(name)
+	return g[0]
+}
+
+func resolveActressesForBlock(code string) (names []string, source string, err error) {
+	code = normalizeBlockCode(code)
+	if code == "" {
+		return nil, "", fmt.Errorf("invalid code")
+	}
+	raw := actressesFromLibraryNFO(code)
+	source = "library"
+	if len(raw) == 0 {
+		raw, source, err = actressesFromRemoteQueue(code)
+		if err != nil && len(raw) == 0 {
+			return nil, source, err
+		}
+	}
+	// 日文主用名去重（河北彩花 → 河北彩伽）
+	out := make([]string, 0, len(raw))
+	seen := map[string]bool{}
+	for _, a := range raw {
+		n := preferredActressSpelling(a)
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	if len(out) == 0 {
+		return nil, "none", fmt.Errorf("no actresses found")
+	}
+	if source == "" {
+		source = "remote"
+	}
+	return out, source, nil
+}
+
+func blockActressNames(names []string) (blocked, already []string, err error) {
+	// expand aliases so old/new spellings both land in blocklist
+	toBlock := make([]string, 0)
+	aliasMembers := make(map[string]bool)
+	seen := map[string]bool{}
+	for _, raw := range names {
+		group := actressAliasGroup(preferredActressSpelling(raw))
+		for _, n := range group {
+			n = cleanActressNameForBlock(n)
+			if n == "" || seen[n] {
+				continue
+			}
+			if len(group) > 1 {
+				aliasMembers[n] = true
+			}
+			seen[n] = true
+			toBlock = append(toBlock, n)
+		}
+	}
+	for _, name := range toBlock {
+		blockedListsMtx.RLock()
+		on := blockedActresses[name]
+		if !aliasMembers[name] {
+			on = isBlockedActressName(name)
+		}
+		blockedListsMtx.RUnlock()
+		if on {
+			already = append(already, preferredActressSpelling(name))
+			continue
+		}
+		if e := appendBlockedActress(name); e != nil {
+			return blocked, already, e
+		}
+		blockedListsMtx.Lock()
+		if blockedActresses == nil {
+			blockedActresses = make(map[string]bool)
+		}
+		blockedActresses[name] = true
+		if blockedActressFolds == nil {
+			blockedActressFolds = make(map[string]string)
+		}
+		if key := foldActressKey(name); key != "" {
+			// fold all aliases to preferred spelling for match
+			pref := preferredActressSpelling(name)
+			blockedActressFolds[key] = pref
+			for _, alt := range actressAliasGroup(pref) {
+				if k := foldActressKey(alt); k != "" {
+					blockedActressFolds[k] = pref
+				}
+			}
+		}
+		blockedListsMtx.Unlock()
+		blocked = append(blocked, preferredActressSpelling(name))
+		logger.Printf("Blocked actress (by-code): %s", name)
+	}
+	// de-dupe already/blocked display names
+	blocked = uniqueStrings(blocked)
+	already = uniqueStrings(already)
+	if len(blocked) > 0 {
+		invalidateWeeklyCache()
+	}
+	return blocked, already, nil
+}
+
+func uniqueStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// blockByCodeHandler:
+//
+//	GET  /api/block-by-code/{code}  → resolve actresses (library → MGS/DMM)
+//	POST /api/block-by-code/{code}  body {"actresses":["…"]} → block explicit list only
+func blockByCodeHandler(w http.ResponseWriter, r *http.Request) {
+	raw := strings.TrimPrefix(r.URL.Path, "/api/block-by-code/")
+	raw = strings.Trim(raw, "/")
+	if i := strings.Index(raw, "/"); i >= 0 {
+		raw = raw[:i]
+	}
+	code, err := url.PathUnescape(raw)
+	if err != nil {
+		code = raw
+	}
+	code = normalizeBlockCode(code)
+	if code == "" {
+		httpError(w, "invalid code", http.StatusBadRequest)
+		return
+	}
+
+	if r.Method == http.MethodGet {
+		names, source, err := resolveActressesForBlock(code)
+		if err != nil && len(names) == 0 {
+			status := http.StatusNotFound
+			message := "未找到女优"
+			if strings.Contains(err.Error(), "invalid") {
+				status = http.StatusBadRequest
+				message = "番号格式无效"
+			} else if errors.Is(err, errActressLookupUnavailable) || strings.Contains(err.Error(), "connection") {
+				status = http.StatusBadGateway
+				message = "查询服务暂不可用"
+			}
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"code":      code,
+				"source":    source,
+				"actresses": []string{},
+				"error":     err.Error(),
+				"message":   message,
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":      code,
+			"source":    source,
+			"actresses": names,
+			"message":   fmt.Sprintf("来源：%s · 找到 %d 人", sourceLabel(source), len(names)),
+		})
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		Actresses []string `json:"actresses"`
+	}
+	if r.Body != nil {
+		defer r.Body.Close()
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	// 一律显式名单：前端勾选后提交；禁止省略名单时全员屏蔽
+	if len(body.Actresses) == 0 {
+		httpError(w, "请选择要屏蔽的女优", http.StatusBadRequest)
+		return
+	}
+	blocked, already, err := blockActressNames(body.Actresses)
+	if err != nil {
+		httpError(w, "Failed to block", http.StatusInternalServerError)
+		return
+	}
+	msg := fmt.Sprintf("已屏蔽 %d 人", len(blocked))
+	if len(already) > 0 {
+		msg += fmt.Sprintf("，已在列表 %d 人", len(already))
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"code":      code,
+		"blocked":   blocked,
+		"already":   already,
+		"message":   msg,
+		"actresses": body.Actresses,
+	})
+}
+
+func sourceLabel(source string) string {
+	switch source {
+	case "library":
+		return "媒体库"
+	case "mgs":
+		return "MGS"
+	case "dmm":
+		return "DMM"
+	case "none":
+		return "无"
+	default:
+		if source == "" {
+			return "未知"
+		}
+		return source
+	}
+}
+
 // blockActressHandler 添加演员到屏蔽列表
 func blockActressHandler(w http.ResponseWriter, r *http.Request) {
 	name := blockListNameFromPath(r.URL.Path, "/api/block-actress/")
@@ -1264,6 +1741,13 @@ func blockActressHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	blockedListsMtx.Lock()
 	blockedActresses[name] = true
+	// keep fold index in sync so renamed/extracted spellings still match
+	if blockedActressFolds == nil {
+		blockedActressFolds = make(map[string]string)
+	}
+	if key := foldActressKey(name); key != "" {
+		blockedActressFolds[key] = name
+	}
 	blockedListsMtx.Unlock()
 	invalidateWeeklyCache()
 	logger.Printf("Blocked actress: %s", name)
@@ -1615,11 +2099,27 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	logDir := getEnv("LOG_DIR", "/logs")
-	logFiles := discoverLogFiles(logDir)
-	if len(logFiles) == 0 && logDir != "/logs" {
-		logFiles = discoverLogFiles("/logs")
-	}
 	includeDebug := r.URL.Query().Get("debug") == "1"
+	// 前台默认只看 av-garden.log（生命周期）；debug=1 才合并 loguru 等明细
+	var logFiles []string
+	if includeDebug {
+		logFiles = discoverLogFiles(logDir)
+		if len(logFiles) == 0 && logDir != "/logs" {
+			logFiles = discoverLogFiles("/logs")
+		}
+	} else {
+		for _, dir := range []string{logDir, "/logs", "/app/logs"} {
+			p := filepath.Join(dir, "av-garden.log")
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				logFiles = []string{p}
+				break
+			}
+		}
+		if len(logFiles) == 0 {
+			// 无生命周期文件时不回退到全量，避免刷屏；debug 才看明细
+			logFiles = nil
+		}
+	}
 
 	type logLine struct {
 		text string

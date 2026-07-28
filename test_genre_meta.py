@@ -6,37 +6,44 @@ from src.weekly import dmm, enrich, genre_zh, javdatabase, mgs
 
 
 class TestGenreZh(unittest.TestCase):
-    def test_basic_align_javbus(self):
+    def test_basic_mgs_dmm_mainland(self):
         self.assertEqual(genre_zh.translate_genre("中出し"), "中出")
-        self.assertEqual(genre_zh.translate_genre("独占配信"), "DMM獨家")
-        self.assertEqual(genre_zh.translate_genre("フルハイビジョン(FHD)"), "高畫質")
-        self.assertEqual(genre_zh.translate_genre("人妻"), "已婚婦女")
-        self.assertEqual(genre_zh.translate_genre("人妻・主婦"), "已婚婦女")
-        self.assertEqual(genre_zh.translate_genre("単体作品"), "單體作品")
-        self.assertEqual(genre_zh.translate_genre("素人"), "業餘")
-        self.assertEqual(genre_zh.translate_genre("ハメ撮り"), "第一人稱攝影")
+        self.assertEqual(genre_zh.translate_genre("独占配信"), "DMM独家")
+        self.assertEqual(genre_zh.translate_genre("フルハイビジョン(FHD)"), "高清")
+        self.assertEqual(genre_zh.translate_genre("人妻"), "人妻")
+        self.assertEqual(genre_zh.translate_genre("人妻・主婦"), "人妻")
+        self.assertEqual(genre_zh.translate_genre("単体作品"), "单体作品")
+        self.assertEqual(genre_zh.translate_genre("素人"), "素人")
+        self.assertEqual(genre_zh.translate_genre("ハメ撮り"), "主观视角")
+        self.assertEqual(genre_zh.translate_genre("小柄"), "娇小")
+        self.assertEqual(genre_zh.translate_genre("ミニ系"), "娇小")
         self.assertEqual(genre_zh.translate_genre("寝取り・寝取られ・NTR"), "NTR")
         self.assertEqual(genre_zh.translate_genre("NTR"), "NTR")
         self.assertEqual(genre_zh.translate_genre("寝取り・寝取られ"), "NTR")
-        self.assertEqual(genre_zh.translate_genre("サンプル動画"), "樣片")
+        self.assertEqual(genre_zh.translate_genre("サンプル動画"), "样片")
         self.assertEqual(genre_zh.translate_genre("アクメ・オーガズム"), "高潮")
         self.assertEqual(genre_zh.translate_genre("バイブ"), "按摩棒")
         self.assertEqual(genre_zh.translate_genre("ゲロ"), "呕吐")
         self.assertEqual(genre_zh.translate_genre("シックスナイン"), "69")
         self.assertEqual(genre_zh.translate_genre("即ハメ"), "即插")
+        self.assertEqual(genre_zh.translate_genre("スレンダー"), "苗条")
 
-    def test_javbus_passthrough(self):
-        # already-library tags stay the same
-        for g in ("高畫質", "單體作品", "DMM獨家", "業餘", "已婚婦女", "顏射", "苗條"):
-            self.assertEqual(genre_zh.translate_genre(g), g)
+    def test_javbus_trad_to_simp(self):
+        # JavBus-style traditional Chinese → simplified only (or mapped canonical)
+        self.assertEqual(genre_zh.translate_genre("女戰士"), "女战士")
+        self.assertEqual(genre_zh.translate_genre("觸手"), "触手")
+        self.assertEqual(genre_zh.translate_genre("顏射"), "颜射")
+        self.assertEqual(genre_zh.translate_genre("單體作品"), "单体作品")
+        self.assertEqual(genre_zh.translate_genre("DMM獨家"), "DMM独家")
+        self.assertEqual(genre_zh.translate_genre("苗條"), "苗条")
 
     def test_list_dedupe(self):
         out = genre_zh.translate_genres(["巨乳", "巨乳", "中出し", "高畫質"])
-        self.assertEqual(out, ["巨乳", "中出", "高畫質"])
+        self.assertEqual(out, ["巨乳", "中出", "高清"])
 
     def test_merge(self):
-        out = genre_zh.merge_genres(["已婚婦女"], ["中出し", "人妻"])
-        self.assertEqual(out, ["已婚婦女", "中出"])
+        out = genre_zh.merge_genres(["人妻"], ["中出し", "人妻"])
+        self.assertEqual(out, ["人妻", "中出"])
 
     def test_memory_persist(self):
         import os
@@ -50,12 +57,12 @@ class TestGenreZh(unittest.TestCase):
             genre_zh._memory = {}
             genre_zh._memory_loaded = False
             genre_zh._memory_dirty = False
-            genre_zh.remember("テストタグXYZ", "測試標籤")
+            genre_zh.remember("テストタグXYZ", "测试标签")
             self.assertTrue(genre_zh.save_memory())
             genre_zh._memory = {}
             genre_zh._memory_loaded = False
             genre_zh.load_memory(force=True)
-            self.assertEqual(genre_zh.translate_genre("テストタグXYZ"), "測試標籤")
+            self.assertEqual(genre_zh.translate_genre("テストタグXYZ"), "测试标签")
         finally:
             genre_zh._MEMORY_PATH = old
             genre_zh._memory_loaded = False
@@ -72,16 +79,15 @@ class TestGenreZh(unittest.TestCase):
         os.close(fd)
         try:
             with open(path, "w", encoding="utf-8") as f:
-                f.write("觸手\n紧缚\n變性者\n超乳\n")
-            # force path via env-like override
+                f.write("触手\n紧缚\n变性者\n超乳\n")
             genre_zh._blocked_loaded = False
             old_fn = genre_zh._default_blocked_path
             genre_zh._default_blocked_path = lambda: path
             try:
-                self.assertEqual(genre_zh.snap_to_blocked("触手"), "觸手")
+                self.assertEqual(genre_zh.snap_to_blocked("觸手"), "触手")
                 self.assertEqual(genre_zh.snap_to_blocked("緊縛"), "紧缚")
-                self.assertEqual(genre_zh.translate_genre("触手"), "觸手")
-                self.assertEqual(genre_zh.translate_genre("変性者"), "變性者")
+                self.assertEqual(genre_zh.translate_genre("觸手"), "触手")
+                self.assertEqual(genre_zh.translate_genre("変性者"), "变性者")
                 self.assertEqual(genre_zh.translate_genre("爆乳"), "超乳")
             finally:
                 genre_zh._default_blocked_path = old_fn
@@ -169,9 +175,9 @@ class TestMgsParse(unittest.TestCase):
         self.assertIn("pb_e_siro-5711", meta["cover"])
         self.assertEqual(len(meta["samples"]), 1)
         zh = genre_zh.translate_genres(meta["genres"])
-        self.assertIn("DMM獨家", zh)
-        self.assertIn("業餘", zh)
-        self.assertIn("高畫質", zh)
+        self.assertIn("DMM独家", zh)
+        self.assertIn("素人", zh)
+        self.assertIn("高清", zh)
         self.assertIn("巨乳", zh)
 
     def test_generic_mgs_page_is_not_metadata(self):
@@ -319,7 +325,7 @@ class TestDmmMetadata(unittest.TestCase):
             item = {"id": "EBWH-359", "actresses": [], "genres": [], "duration": ""}
             enrich.enrich_item(item, download_images=False)
             self.assertEqual(item["actresses"], ["Marika Sonoda"])
-            self.assertEqual(item["genres"], ["運動員", "巨乳", "高畫質"])
+            self.assertEqual(item["genres"], ["运动员", "巨乳", "高清"])
             self.assertEqual(item["duration"], "150分钟")
             self.assertEqual(item["metaSource"], "javdatabase")
         finally:

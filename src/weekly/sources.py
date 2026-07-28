@@ -140,9 +140,73 @@ def get_recent_javbus(max_pages=1):
     return items
 
 
+def _fallback_source():
+    """plwt 失败时的备用源。WEEKLY_LIST_FALLBACK=none 可关闭。"""
+    raw = os.environ.get("WEEKLY_LIST_FALLBACK", "javbus").strip().lower()
+    if raw in ("0", "none", "off", "false", "no", ""):
+        return ""
+    return raw
+
+
 def get_recent(max_pages=3):
-    """每日推荐列表：默认 98堂 forum-37；WEEKLY_LIST_SOURCE=javbus 回退。"""
+    """每日推荐列表：默认 98堂 forum-37；失败自动重试并回退 JavBus。
+
+    环境变量：
+      WEEKLY_LIST_SOURCE=plwt|javbus  主源（默认 plwt）
+      WEEKLY_LIST_FALLBACK=javbus|none  plwt 失败回退（默认 javbus）
+      WEEKLY_PLWT_ATTEMPTS=3          plwt 外层重试次数
+    """
     src = _list_source()
     if src in ("javbus", "jav", "bus"):
+        print("[Sources] list source=javbus (explicit)", flush=True)
         return get_recent_javbus(max_pages)
-    return get_recent_plwt(max_pages)
+
+    # Default 2: SSL 全挂时尽快回退 javbus；偶发抖动仍有一次复试
+    attempts = max(1, int(os.environ.get("WEEKLY_PLWT_ATTEMPTS", "2") or "2"))
+    last_err = None
+    for i in range(1, attempts + 1):
+        try:
+            items = get_recent_plwt(max_pages)
+            if items:
+                if i > 1:
+                    print(f"[Sources] plwt ok on attempt {i}/{attempts}: {len(items)} items", flush=True)
+                return items
+            print(f"[Sources] plwt empty (attempt {i}/{attempts})", flush=True)
+            last_err = "empty list"
+        except Exception as e:
+            last_err = e
+            print(f"[Sources] plwt attempt {i}/{attempts} failed: {e}", flush=True)
+        if i < attempts:
+            delay = min(15.0, 2.0 ** i + random.uniform(0, 1.5))
+            print(f"[Sources] retry plwt in {delay:.1f}s", flush=True)
+            time.sleep(delay)
+
+    fb = _fallback_source()
+    if not fb:
+        print(f"[Sources] plwt failed ({last_err}); fallback disabled", flush=True)
+        return []
+
+    print(f"[Sources] plwt failed ({last_err}); fallback -> {fb}", flush=True)
+    if fb in ("javbus", "jav", "bus"):
+        try:
+            # 回退时多翻一页，补偿「今日新種」过滤
+            pages = max(int(max_pages or 1), 2)
+            # 无标记时扫整页，否则 fallback 经常 0 条
+            old = os.environ.get("WEEKLY_SCAN_ALL_CARDS")
+            if not (old or "").strip():
+                os.environ["WEEKLY_SCAN_ALL_CARDS"] = "1"
+            try:
+                items = get_recent_javbus(pages)
+            finally:
+                if old is None:
+                    os.environ.pop("WEEKLY_SCAN_ALL_CARDS", None)
+                else:
+                    os.environ["WEEKLY_SCAN_ALL_CARDS"] = old
+            print(f"[Sources] javbus fallback: {len(items)} items", flush=True)
+            return items
+        except Exception as e:
+            print(f"[Sources] javbus fallback failed: {e}", flush=True)
+            return []
+
+    print(f"[Sources] unknown fallback {fb!r}", flush=True)
+    return []

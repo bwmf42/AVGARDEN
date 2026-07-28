@@ -35,6 +35,29 @@ weekly_json_lock = threading.Lock()
 queue_state_lock = threading.RLock()
 
 
+def _actress_is_blocked(name: str) -> bool:
+    """Match blocked actresses with fold (空白/尾标点/常见繁简), same as Go."""
+    raw = (name or "").strip()
+    if not raw:
+        return False
+    if raw in BLOCKED_ACTRESSES:
+        return True
+    try:
+        from src.weekly import actresses as actress_util
+
+        # file + env via actress_util; also honor in-process env set
+        if actress_util.is_blocked_actress(raw):
+            return True
+        # env-only names may not be in file
+        fold = actress_util.fold_actress_key(raw)
+        for b in BLOCKED_ACTRESSES:
+            if actress_util.fold_actress_key(b) == fold:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def queue_route_locked(method):
     def wrapped(self, *args, **kwargs):
         path = urlparse(self.path).path.rstrip("/")
@@ -562,13 +585,12 @@ def write_to_missav_db(code):
                     duration = item.get("duration", "")
                     break
 
-        # 屏蔽演员检查
-        if BLOCKED_ACTRESSES:
-            act_list = json.loads(actresses) if isinstance(actresses, str) else actresses
-            if any(a in BLOCKED_ACTRESSES for a in act_list):
-                log(f"Blocked: {code} (actress in blocklist)")
-                conn.close()
-                return False
+        # 屏蔽演员检查（精确 + fold，与 Go weekly 过滤一致）
+        act_list = json.loads(actresses) if isinstance(actresses, str) else actresses
+        if any(_actress_is_blocked(a) for a in (act_list or [])):
+            log(f"Blocked: {code} (actress in blocklist)")
+            conn.close()
+            return False
 
         # Insert into MissAV table
         now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -753,6 +775,47 @@ def build_online_detail(raw_code):
         return None, "lookup failed"
 
 
+def resolve_actresses_remote(raw_code):
+    """Resolve JP actress names via MGS then DMM (no artwork/magnet)."""
+    code = normalize_online_code(raw_code)
+    if not code:
+        return None, "invalid code"
+    proxy = ONLINE_PROXY
+    try:
+        from src.weekly import actresses as actress_util
+        from src.weekly import dmm, mgs
+
+        mgs.set_proxy(proxy)
+        dmm.set_proxy(proxy)
+
+        # MGS first
+        try:
+            meta = mgs.fetch_detail(code)
+        except Exception as e:
+            log(f"resolve-actresses MGS {code}: {e}")
+            meta = None
+        if meta and meta.get("actresses"):
+            names = actress_util.clean_actresses(meta.get("actresses"))
+            if names:
+                return {"code": code, "source": "mgs", "actresses": names}, ""
+
+        # DMM
+        try:
+            meta = dmm.fetch_metadata(code)
+        except Exception as e:
+            log(f"resolve-actresses DMM {code}: {e}")
+            meta = None
+        if meta and meta.get("actresses"):
+            names = actress_util.clean_actresses(meta.get("actresses"))
+            if names:
+                return {"code": code, "source": "dmm", "actresses": names}, ""
+
+        return {"code": code, "source": "none", "actresses": []}, "no actresses found"
+    except Exception as e:
+        log(f"resolve-actresses failed {code}: {e}")
+        return None, "lookup failed"
+
+
 def localize_weekly_fanarts(raw_code):
     code = normalize_online_code(raw_code)
     if not code:
@@ -834,6 +897,19 @@ class QueueHandler(BaseHTTPRequestHandler):
             if not item:
                 status = 400 if error == "invalid code" else 404
                 self._json({"error": error}, status)
+                return
+            self._json(item)
+            return
+
+        if path.startswith("/api/resolve-actresses/"):
+            raw_code = path.replace("/api/resolve-actresses/", "", 1)
+            item, error = resolve_actresses_remote(raw_code)
+            if not item:
+                status = 400 if error == "invalid code" else 502
+                self._json({"error": error, "actresses": []}, status)
+                return
+            if error and not item.get("actresses"):
+                self._json({**item, "error": error}, 404)
                 return
             self._json(item)
             return
@@ -1105,12 +1181,14 @@ class QueueHandler(BaseHTTPRequestHandler):
         if existing is None:
             state.append({"code": code, "status": "queued", "added_at": time.time()})
             save_state(state)
+            log_write("Queue", f"{code} 已加入下载列表")
             self._json({"status": "added", "code": code})
         else:
             existing["status"] = "queued"
             if not existing.get("added_at"):
                 existing["added_at"] = time.time()
             save_state(state)
+            # 重复入队静默（前台不刷）
             self._json({"status": "already in queue", "code": code})
 
     @queue_route_locked

@@ -64,10 +64,10 @@
                                         </button>
                                         <template v-if="blockingName === a">
                                             <span class="block-confirm">屏蔽?</span>
-                                            <button class="block-yes" @click.stop="doBlock(a)">确认</button>
-                                            <button class="block-no" @click.stop="blockingName = null">取消</button>
+                                            <button class="block-yes" :disabled="blockInFlight" @click.stop="doBlock(a)">确认</button>
+                                            <button class="block-no" :disabled="blockInFlight" @click.stop="blockingName = null">取消</button>
                                         </template>
-                                        <button v-else class="block-btn" @click.stop="blockingName = a" title="屏蔽此女优">屏蔽</button>
+                                        <button v-else class="block-btn" :disabled="blockInFlight" @click.stop="blockingName = a" title="屏蔽此女优">屏蔽</button>
                                     </span>
                                 </div>
                             </div>
@@ -79,10 +79,10 @@
                                         {{ g }}
                                         <template v-if="blockingGenre === g">
                                             <span class="block-confirm">屏蔽?</span>
-                                            <button class="block-yes" @click.stop="doBlockGenre(g)">确认</button>
-                                            <button class="block-no" @click.stop="blockingGenre = null">取消</button>
+                                            <button class="block-yes" :disabled="blockInFlight" @click.stop="doBlockGenre(g)">确认</button>
+                                            <button class="block-no" :disabled="blockInFlight" @click.stop="blockingGenre = null">取消</button>
                                         </template>
-                                        <button v-else class="block-btn" :class="{ visible: hoverGenre === g }" @mouseenter.stop="showGenreActions(g)" @mouseleave.stop="hideGenreActions(g)" @click.stop="blockingGenre = g" title="屏蔽此标签">屏蔽</button>
+                                        <button v-else class="block-btn" :class="{ visible: hoverGenre === g }" :disabled="blockInFlight" @mouseenter.stop="showGenreActions(g)" @mouseleave.stop="hideGenreActions(g)" @click.stop="blockingGenre = g" title="屏蔽此标签">屏蔽</button>
                                     </span>
                                 </div>
                             </div>
@@ -111,10 +111,13 @@
                                     class="btn-download"
                                     :class="{ error: queueState === 'error' }"
                                     @click="addToQueue"
-                                    :disabled="queueState === 'adding'">
-                                    {{ queueState === 'error' ? '添加失败，重试' : '加入下载队列' }}
+                                    :disabled="queueBusy">
+                                    {{ queueState === 'error' ? (queueErrorReason ? '加入失败，重试' : '添加失败，重试') : '加入下载队列' }}
                                 </button>
                                 <button v-if="queueState === 'adding'" class="btn-download" disabled>添加中...</button>
+                                <button v-if="queueState === 'waiting_ready'" class="btn-download waiting" disabled>
+                                    等待服务就绪…
+                                </button>
                                 <div v-if="queueState === 'success'" class="btn-download success">已加入队列</div>
                                 <div v-if="queueState === 'queued'" class="btn-download queued">已加入队列</div>
                                 <div v-if="queueState === 'downloading'" class="btn-download downloading">
@@ -128,6 +131,9 @@
                                     播放 (AV/GARDEN)
                                 </a>
                             </div>
+                            <p v-if="queueHintText" class="queue-hint" :class="{ error: queueState === 'error' }">
+                                {{ queueHintText }}
+                            </p>
                         </div>
                     </aside>
                 </div>
@@ -141,7 +147,7 @@
                         </div>
                     </div>
                     <!-- Lightbox (like AV/GARDEN DetailView) -->
-                    <div v-if="showLightbox" class="lightbox" @click="handleLightboxClick">
+                    <div v-if="showLightbox" class="lightbox" @click="closeLightbox">
                         <div class="lightbox-content" @click.stop>
                             <button class="lightbox-close" @click="closeLightbox">关闭</button>
                             <button class="lightbox-nav lightbox-prev" @click.stop="prevImage">上一张</button>
@@ -187,6 +193,7 @@ import {
     normalizeWatchedIDs,
     recordWatchedOrderID,
     readLocalWatchedIDs,
+    readWatchedOrderIDs,
     saveWatchedIDs,
     syncWatchedIDs
 } from '../api/weeklyWatched'
@@ -221,6 +228,10 @@ export default {
             queueProgress: 0,
             queueSubmittedAt: 0,
             queueSubmittedId: '',
+            queueErrorReason: '',
+            queueHint: '',
+            queueAddToken: 0,
+            blockInFlight: false,
             blockingName: null,
             blockingGenre: null,
             hoverGenre: null,
@@ -242,19 +253,42 @@ export default {
         isOnlineSource() {
             return this.$route.query.source === 'online'
         },
+        isGenreBrowse() {
+            return this.$route.query.from === 'genre' && !!String(this.$route.query.tag || '').trim()
+        },
+        genreBrowseTag() {
+            return String(this.$route.query.tag || '').trim()
+        },
         fanartList() {
             return this.video?.fanarts || []
         },
         mediaKey() {
             return normalizeVideoID(this.video?.id || this.id)
         },
+        queueBusy() {
+            return this.queueState === 'adding' || this.queueState === 'waiting_ready'
+        },
         queueStateLabel() {
             if (this.queueState === 'downloading') return `下载中 ${this.queueProgress}%`
             if (this.queueState === 'queued') return '等待中'
             if (this.queueState === 'failed') return '下载失败'
             if (this.queueState === 'adding') return '添加中'
+            if (this.queueState === 'waiting_ready') return '等待服务就绪后加入'
             if (this.queueState === 'success') return '已加入队列'
+            if (this.queueState === 'error') {
+                return this.queueErrorReason ? `加入失败：${this.queueErrorReason}` : '加入失败'
+            }
             return '未在队列中'
+        },
+        queueHintText() {
+            if (this.queueHint) return this.queueHint
+            if (this.queueState === 'error' && this.queueErrorReason) {
+                return this.queueErrorReason
+            }
+            if (this.queueState === 'waiting_ready') {
+                return '服务暂不可用（可能在部署/重启），就绪后将自动加入队列'
+            }
+            return ''
         }
     },
     async created() {
@@ -264,7 +298,14 @@ export default {
         window.addEventListener('keyup', this.handlePageKeyup, true)
         this.unlockPageScroll()
         this.loadWatched()
-        this.syncWatched().then(() => {
+        this.syncWatched().then(async () => {
+            if (this.isGenreBrowse) {
+                try {
+                    const items = await this.getWeeklyItems()
+                    this.rebuildBrowseList(this.id, items)
+                } catch (e) {}
+                return
+            }
             if (weeklyDetailCache.items) this.rebuildBrowseList(this.id)
         })
         await this.loadRoute(this.id)
@@ -392,7 +433,20 @@ export default {
                 })
             } catch(e) {}
         },
+        browseStateKey(tab) {
+            if (this.isGenreBrowse) {
+                return `genre:${this.genreBrowseTag}:${tab || 'unwatched'}`
+            }
+            return tab || 'unwatched'
+        },
         async getWeeklyItems(force = false) {
+            if (this.isGenreBrowse) {
+                const tag = this.genreBrowseTag
+                const resp = await fetch('/api/weekly/by-genre/' + encodeURIComponent(tag))
+                if (!resp.ok) return []
+                const data = await resp.json().catch(() => [])
+                return Array.isArray(data) ? data : []
+            }
             const now = Date.now()
             if (
                 !force &&
@@ -419,28 +473,60 @@ export default {
             }
             return weeklyDetailCache.promise
         },
+        // 与 WeeklyView 已看列表一致：watchedOrder 末尾 = 最近看过，列表降序 = 最近在最上
+        sortWatchedByRecency(videos) {
+            const order = readWatchedOrderIDs()
+            if (!order.length) return videos
+            const orderIndex = new Map(order.map((id, index) => [normalizeVideoID(id), index]))
+            return [...videos].sort((a, b) => {
+                const ai = orderIndex.get(normalizeVideoID(a.id))
+                const bi = orderIndex.get(normalizeVideoID(b.id))
+                const aKnown = ai !== undefined
+                const bKnown = bi !== undefined
+                if (aKnown && bKnown) return bi - ai
+                if (aKnown) return -1
+                if (bKnown) return 1
+                return 0
+            })
+        },
         rebuildBrowseList(targetId, weeklyItems = weeklyDetailCache.items || []) {
             const normalizedTarget = normalizeVideoID(targetId)
             const canonicalTarget = canonicalVideoID(targetId)
             const allById = new Map(weeklyItems.map(v => [normalizeVideoID(v.id), v]))
             const undownloaded = weeklyItems.filter(v => !v.downloaded)
             const tab = this.$route.query.tab || 'unwatched'
-            const savedIds = this.readBrowseState(tab, canonicalTarget)
 
-            if (savedIds) {
-                this.allVideos = savedIds.map(id => allById.get(normalizeVideoID(id))).filter(Boolean)
-            } else if (tab === 'watched') {
-                this.allVideos = undownloaded.filter(v => this.isWatched(v.id))
+            if (tab === 'watched') {
+                // 已看：始终按最近观看排序，不用 session 旧顺序（否则点列表第一张会变成 124/N）
+                this.allVideos = this.sortWatchedByRecency(
+                    undownloaded.filter(v => this.isWatched(v.id))
+                )
             } else {
-                this.allVideos = undownloaded.filter(v => !this.isWatched(v.id))
+                const savedIds = this.readBrowseState(this.browseStateKey(tab), canonicalTarget)
+                if (savedIds) {
+                    this.allVideos = savedIds.map(id => allById.get(normalizeVideoID(id))).filter(Boolean)
+                } else {
+                    this.allVideos = undownloaded.filter(v => !this.isWatched(v.id))
+                }
             }
 
-            if (!this.allVideos.some(v => normalizeVideoID(v.id) === canonicalTarget)) {
+            if (!this.allVideos.some(v => normalizeVideoID(v.id) === canonicalTarget || normalizeVideoID(v.id) === normalizedTarget)) {
                 const current = allById.get(normalizedTarget) || allById.get(canonicalTarget)
                 if (current) this.allVideos = [current, ...this.allVideos]
             }
 
-            this.saveBrowseState(tab, this.allVideos)
+            // 已看：点进的那张固定为 1/N（列表本身已是最近观看在前）
+            if (tab === 'watched') {
+                const pivot = this.allVideos.findIndex(v => {
+                    const id = normalizeVideoID(v.id)
+                    return id === normalizedTarget || id === canonicalTarget
+                })
+                if (pivot > 0) {
+                    this.allVideos = this.allVideos.slice(pivot).concat(this.allVideos.slice(0, pivot))
+                }
+            }
+
+            this.saveBrowseState(this.browseStateKey(tab), this.allVideos)
             if (!this.setVideoFromCurrentList(targetId)) {
                 this.currentIndex = -1
                 this.video = null
@@ -499,6 +585,9 @@ export default {
             this.queueProgress = 0
             this.queueSubmittedAt = 0
             this.queueSubmittedId = ''
+            this.queueErrorReason = ''
+            this.queueHint = ''
+            this.queueAddToken++
         },
         loadWatched() {
             this.watchedSet = new Set(readLocalWatchedIDs())
@@ -543,7 +632,17 @@ export default {
                 this.$router.push({ name: 'search' })
                 return
             }
-            this.$router.push('/weekly')
+            if (this.isGenreBrowse) {
+                const tab = this.$route.query.tab
+                this.$router.push({
+                    name: 'weekly-genre',
+                    params: { tag: this.genreBrowseTag },
+                    query: tab === 'watched' ? { tab: 'watched' } : {}
+                })
+                return
+            }
+            const tab = this.$route.query.tab
+            this.$router.push({ name: 'weekly', query: tab === 'watched' ? { tab: 'watched' } : {} })
         },
         loadFavActresses() {
             if (!this.video?.actresses) return
@@ -581,7 +680,7 @@ export default {
             this.$router.push({
                 name: 'weekly-detail',
                 params: { id: target.id },
-                query: { tab: this.$route.query.tab || 'unwatched' }
+                query: { ...this.$route.query }
             }).catch(() => {
                 this.navInFlight = false
             })
@@ -656,15 +755,26 @@ export default {
                 if (submittedMatchesTarget && this.queueSubmittedAt && Date.now() - this.queueSubmittedAt < QUEUE_FAILED_GRACE_MS) {
                     this.queueState = 'queued'
                     this.queueProgress = 0
+                    this.queueErrorReason = ''
+                    this.queueHint = ''
                     return
                 }
-                if (this.queueState !== 'adding' && this.queueState !== 'error') {
+                if (
+                    this.queueState !== 'adding' &&
+                    this.queueState !== 'waiting_ready' &&
+                    this.queueState !== 'error'
+                ) {
                     this.queueState = 'idle'
                     this.queueProgress = 0
                 }
                 return
             }
             this.queueProgress = current.progress || 0
+            // Server already has this code — clear transient add errors
+            if (this.queueState === 'error' || this.queueState === 'waiting_ready' || this.queueState === 'adding') {
+                this.queueErrorReason = ''
+                this.queueHint = ''
+            }
             if (current.status === 'done') {
                 this.queueState = 'success'
                 this.queueSubmittedAt = 0
@@ -680,22 +790,30 @@ export default {
             }
         },
         async doBlock(name) {
+            if (this.blockInFlight) return
             this.blockingName = null
+            this.blockInFlight = true
             try {
                 const resp = await fetch('/api/block-actress/' + encodeURIComponent(name), {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${import.meta.env.VITE_API_KEY || ''}` }
                 })
                 if (resp.ok) await this.afterBlockRefresh({ actress: name })
-            } catch (e) {}
+            } catch (e) {
+            } finally {
+                this.blockInFlight = false
+            }
         },
-        /** After block: drop filtered titles from browse list immediately, then refetch. */
+        /**
+         * After block: drop filtered titles, then rotate so "next" becomes page 1/N.
+         * Avoids staying at high index (e.g. 12/N) and double-block on the next card.
+         */
         async afterBlockRefresh({ genre, actress } = {}) {
             if (this.isOnlineSource) {
                 this.$router.replace({ name: 'search' })
                 return
             }
-            const prevIndex = this.currentIndex
+            const prevIndex = Math.max(this.currentIndex, 0)
             const prevId = normalizeVideoID(this.video?.id || this.id)
 
             // Optimistic: remove matching items from current browse list
@@ -715,47 +833,63 @@ export default {
                 const items = await this.getWeeklyItems(true)
                 this.clearBrowseState()
                 const tab = this.$route.query.tab || 'unwatched'
-                // rebuild without re-injecting the blocked current id
                 const undownloaded = (items || []).filter(v => !v.downloaded)
                 if (tab === 'watched') {
                     this.allVideos = undownloaded.filter(v => this.isWatched(v.id))
                 } else {
                     this.allVideos = undownloaded.filter(v => !this.isWatched(v.id))
                 }
-                this.saveBrowseState(tab, this.allVideos)
             } catch (e) {
                 // keep optimistic list
             }
 
             window.dispatchEvent(new CustomEvent('av-garden-weekly-refresh'))
 
-            // Navigate to next remaining item near previous position
             if (!this.allVideos.length) {
                 this.clearBrowseState()
-                this.$router.replace({ name: 'weekly', query: { tab: this.$route.query.tab || 'unwatched' } })
+                this.goBackToWeekly()
                 return
             }
-            let nextIndex = Math.min(Math.max(prevIndex, 0), this.allVideos.length - 1)
-            // Prefer item after previous if previous was removed
-            const stillHere = this.allVideos.some(v => normalizeVideoID(v.id) === prevId)
-            if (!stillHere && prevIndex >= this.allVideos.length) {
-                nextIndex = this.allVideos.length - 1
-            } else if (!stillHere) {
-                nextIndex = Math.min(prevIndex, this.allVideos.length - 1)
-            }
-            const next = this.allVideos[nextIndex]
-            if (next && normalizeVideoID(next.id) !== prevId) {
-                this.$router.replace({
-                    name: 'weekly-detail',
-                    params: { id: next.id },
-                    query: { ...this.$route.query }
-                })
-            } else if (next && normalizeVideoID(next.id) === prevId) {
-                // current still allowed (e.g. blocked a tag it doesn't have) — stay
-                this.setVideoFromCurrentList(next.id)
+
+            // Pick the item that should become the new "page 1"
+            const remaining = this.allVideos
+            const prevPos = remaining.findIndex(v => normalizeVideoID(v.id) === prevId)
+            let pivot = 0
+            if (prevPos >= 0) {
+                // Current still allowed (e.g. blocked a tag it doesn't have): stay, as 1/N
+                // If user blocked something that removed others but not this, keep current as first.
+                // Prefer advancing when the blocked key matches current (actress/genre on this card).
+                const current = remaining[prevPos]
+                const blockedSelf =
+                    (actress && Array.isArray(current.actresses) && current.actresses.includes(actress)) ||
+                    (genre && Array.isArray(current.genres) && current.genres.includes(genre))
+                pivot = blockedSelf
+                    ? (prevPos + 1) % remaining.length
+                    : prevPos
             } else {
-                this.$router.replace({ name: 'weekly', query: { tab: this.$route.query.tab || 'unwatched' } })
+                // Current removed: item that slid into prevIndex is the old "next page"
+                pivot = Math.min(prevIndex, remaining.length - 1)
             }
+
+            // Rotate so pivot is index 0 → UI shows 1/N
+            this.allVideos = remaining.slice(pivot).concat(remaining.slice(0, pivot))
+            const tab = this.$route.query.tab || 'unwatched'
+            this.saveBrowseState(this.browseStateKey(tab), this.allVideos)
+
+            const first = this.allVideos[0]
+            if (!first?.id) {
+                this.goBackToWeekly()
+                return
+            }
+            if (normalizeVideoID(first.id) === prevId) {
+                this.setVideoFromCurrentList(first.id)
+                return
+            }
+            this.$router.replace({
+                name: 'weekly-detail',
+                params: { id: first.id },
+                query: { ...this.$route.query }
+            })
         },
         goNextAfterBlock() {
             // legacy entry: treat as refresh without extra filter key
@@ -771,42 +905,212 @@ export default {
             } catch(e) {}
         },
         async doBlockGenre(name) {
+            if (this.blockInFlight) return
             this.blockingGenre = null
+            this.blockInFlight = true
             try {
                 const resp = await fetch('/api/block-genre/' + encodeURIComponent(name), {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${import.meta.env.VITE_API_KEY || ''}` }
                 })
                 if (resp.ok) await this.afterBlockRefresh({ genre: name })
-            } catch (e) {}
+            } catch (e) {
+            } finally {
+                this.blockInFlight = false
+            }
         },
-        async addToQueue() {
-            const targetId = normalizeVideoID(this.video?.id || this.id)
-            this.queueState = 'adding'
-            this.queueSubmittedAt = Date.now()
-            this.queueSubmittedId = targetId
+        sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms))
+        },
+        async parseQueueError(resp) {
+            let body = {}
+            try {
+                body = await resp.json()
+            } catch (e) {
+                body = {}
+            }
+            const msg = String(body.message || body.error || '').trim()
+            if (resp.status === 409) {
+                if (/cancel/i.test(msg)) return '取消进行中，请稍后再试'
+                return msg || '请求冲突，请稍后再试'
+            }
+            if (resp.status === 400) return msg || '番号无效'
+            if (resp.status === 503 || /unavailable|重启/i.test(msg)) {
+                return msg || '队列服务暂不可用（可能在部署/重启）'
+            }
+            if (resp.status === 502 || resp.status === 504) {
+                return msg || '网关超时，服务可能在重启'
+            }
+            if (!resp.status) return '连接中断（服务可能在重启）'
+            return msg || `加入失败（HTTP ${resp.status}）`
+        },
+        isRetryableQueueError(err) {
+            if (!err) return false
+            if (err.network) return true
+            const s = err.status
+            return s === 502 || s === 503 || s === 504
+        },
+        async isCodeInQueue(targetId) {
+            try {
+                const resp = await fetch('/api/queue/')
+                if (!resp.ok) return false
+                const items = await resp.json().catch(() => [])
+                const list = Array.isArray(items) ? items : []
+                const normalizedTarget = normalizeVideoID(targetId)
+                const canonicalTarget = canonicalVideoID(targetId)
+                return list.some(item => {
+                    const id = normalizeVideoID(item.code || item.id)
+                    const can = canonicalVideoID(item.code || item.id)
+                    return id === normalizedTarget ||
+                        id === canonicalTarget ||
+                        can === normalizedTarget ||
+                        can === canonicalTarget
+                })
+            } catch (e) {
+                return false
+            }
+        },
+        async waitForApiReady(token, maxMs = 90000) {
+            const start = Date.now()
+            let delay = 1000
+            while (Date.now() - start < maxMs) {
+                if (token !== this.queueAddToken) return false
+                try {
+                    const resp = await fetch('/api/version', { cache: 'no-store' })
+                    if (resp.ok) {
+                        // also poke queue list — empty body on half-up server still fails
+                        const q = await fetch('/api/queue/', { cache: 'no-store' })
+                        if (q.ok) return true
+                    }
+                } catch (e) {
+                    // keep waiting
+                }
+                this.queueHint = '服务暂不可用（可能在部署/重启），等待恢复…'
+                await this.sleep(delay)
+                delay = Math.min(3000, delay + 500)
+            }
+            return false
+        },
+        async postToQueue(targetId) {
             try {
                 const resp = await fetch('/api/queue/', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({code: targetId})
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: targetId })
                 })
                 if (resp.ok) {
-                    this.queueState = 'queued'
-                    this.showToast(targetId + ' 已加入下载队列', 'info')
-                    window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
-                } else {
-                    this.queueState = 'error'
-                    this.queueSubmittedAt = 0
-                    this.queueSubmittedId = ''
-                    this.showToast(targetId + ' 加入下载队列失败，请重试', 'warn')
+                    return { ok: true }
+                }
+                const reason = await this.parseQueueError(resp)
+                return {
+                    ok: false,
+                    status: resp.status,
+                    reason,
+                    retryable: resp.status === 502 || resp.status === 503 || resp.status === 504
                 }
             } catch (e) {
-                this.queueState = 'error'
-                this.queueSubmittedAt = 0
-                this.queueSubmittedId = ''
-                this.showToast(targetId + ' 加入下载队列失败，请重试', 'warn')
+                return {
+                    ok: false,
+                    network: true,
+                    status: 0,
+                    reason: '连接中断（服务可能在重启）',
+                    retryable: true
+                }
             }
+        },
+        async addToQueue() {
+            const targetId = normalizeVideoID(this.video?.id || this.id)
+            if (!targetId || this.queueBusy) return
+
+            const token = ++this.queueAddToken
+            this.queueState = 'adding'
+            this.queueErrorReason = ''
+            this.queueHint = '正在加入下载队列…'
+            this.queueSubmittedAt = Date.now()
+            this.queueSubmittedId = targetId
+
+            // Already in queue? (e.g. previous click succeeded but UI showed error)
+            if (await this.isCodeInQueue(targetId)) {
+                if (token !== this.queueAddToken) return
+                this.queueState = 'queued'
+                this.queueHint = ''
+                this.queueErrorReason = ''
+                this.showToast(targetId + ' 已在下载队列中', 'info')
+                window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
+                return
+            }
+
+            const maxPostAttempts = 4
+            let lastReason = ''
+            for (let attempt = 1; attempt <= maxPostAttempts; attempt++) {
+                if (token !== this.queueAddToken) return
+
+                if (attempt > 1) {
+                    this.queueState = 'waiting_ready'
+                    this.queueHint = `服务暂不可用，等待就绪后自动加入（${attempt}/${maxPostAttempts}）…`
+                    this.showToast(targetId + ' 等待服务就绪后自动加入…', 'warn')
+                    const ready = await this.waitForApiReady(token, 90000)
+                    if (token !== this.queueAddToken) return
+                    if (!ready) {
+                        lastReason = '等待服务就绪超时'
+                        break
+                    }
+                    // Reconcile after wait — may already be queued from half-success
+                    if (await this.isCodeInQueue(targetId)) {
+                        this.queueState = 'queued'
+                        this.queueHint = ''
+                        this.queueErrorReason = ''
+                        this.showToast(targetId + ' 已在下载队列中', 'info')
+                        window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
+                        return
+                    }
+                    this.queueState = 'adding'
+                    this.queueHint = '服务已恢复，正在加入队列…'
+                }
+
+                const result = await this.postToQueue(targetId)
+                if (token !== this.queueAddToken) return
+
+                if (result.ok) {
+                    this.queueState = 'queued'
+                    this.queueHint = ''
+                    this.queueErrorReason = ''
+                    this.showToast(targetId + ' 已加入下载队列', 'info')
+                    window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
+                    return
+                }
+
+                lastReason = result.reason || '加入失败'
+                // Non-retryable (400/409 etc.)
+                if (!result.retryable && !result.network) {
+                    break
+                }
+                // Retryable: loop continues with wait_ready
+                if (attempt < maxPostAttempts) {
+                    this.queueState = 'waiting_ready'
+                    this.queueHint = lastReason + '，将自动重试…'
+                    await this.sleep(800 * attempt)
+                }
+            }
+
+            // Final reconcile: request may have succeeded despite client error
+            if (await this.isCodeInQueue(targetId)) {
+                if (token !== this.queueAddToken) return
+                this.queueState = 'queued'
+                this.queueHint = ''
+                this.queueErrorReason = ''
+                this.showToast(targetId + ' 已在下载队列中', 'info')
+                window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
+                return
+            }
+
+            if (token !== this.queueAddToken) return
+            this.queueState = 'error'
+            this.queueErrorReason = lastReason || '加入失败'
+            this.queueHint = this.queueErrorReason
+            this.queueSubmittedAt = 0
+            this.queueSubmittedId = ''
+            this.showToast(targetId + ' 加入失败：' + this.queueErrorReason, 'warn')
         },
         showToast(msg, type) {
             window.dispatchEvent(new CustomEvent('av-garden-toast', { detail: { msg, type } }))
@@ -838,16 +1142,6 @@ export default {
             if (e.key === 'Escape') this.closeLightbox()
             if (e.key === 'ArrowLeft') this.prevImage()
             if (e.key === 'ArrowRight') this.nextImage()
-        },
-        handleLightboxClick(e) {
-            // Click on left half for previous, right half for next.
-            const rect = e.currentTarget.getBoundingClientRect()
-            const x = e.clientX - rect.left
-            if (x < rect.width / 2) {
-                this.prevImage()
-            } else {
-                this.nextImage()
-            }
         }
     }
 }
@@ -1066,6 +1360,25 @@ export default {
   border-color: #cfe7ff;
   color: var(--info-color);
   cursor: default;
+}
+
+.btn-download.waiting {
+  background: #fff9ed;
+  border-color: #ffe0ad;
+  color: var(--warning-color);
+  cursor: wait;
+}
+
+.queue-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted-color);
+  font-weight: 600;
+}
+
+.queue-hint.error {
+  color: var(--danger-color);
 }
 
 .info-section {

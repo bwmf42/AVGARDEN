@@ -3,6 +3,7 @@ import HomeView from '../views/HomeView.vue'
 import DetailView from '../views/DetailView.vue'
 import WeeklyView from '../views/WeeklyView.vue'
 import WeeklyDetailView from '../views/WeeklyDetailView.vue'
+import GenreBrowseView from '../views/GenreBrowseView.vue'
 import DownloadView from '../views/DownloadView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import LogsView from '../views/LogsView.vue'
@@ -23,6 +24,12 @@ const routes = [
         path: '/weekly/downloaded',
         name: 'weekly-downloaded',
         component: WeeklyView
+    },
+    {
+        path: '/weekly/genre/:tag',
+        name: 'weekly-genre',
+        component: GenreBrowseView,
+        props: true
     },
     {
         path: '/weekly/:id',

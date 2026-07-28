@@ -21,7 +21,7 @@ from xml.dom import minidom
 
 SAVE_PATH = Path(os.environ.get("SAVE_PATH", "/data"))
 DS_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-DS_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+DS_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 CODE_RE = re.compile(r"([A-Z]{2,}\d*)-(\d+)", re.I)
 JAPANESE_KANA_RE = re.compile(r"[\u3040-\u30ff]")
 

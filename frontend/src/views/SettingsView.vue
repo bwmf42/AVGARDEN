@@ -18,6 +18,43 @@
             </button>
         </div>
 
+        <div class="section block-code-section">
+            <h2>按番号屏蔽女优</h2>
+            <p class="hint">输入番号，查询并选择要屏蔽的女优。</p>
+            <div class="add-row">
+                <input
+                    v-model="blockCode"
+                    class="add-input"
+                    placeholder="输入番号，如 SNOS-233"
+                    :disabled="blockCodeBusy"
+                    @input="resetBlockLookup"
+                    @keyup.enter="lookupBlockCode"
+                />
+                <button class="add-btn" :disabled="blockCodeBusy || !blockCode.trim()" @click="lookupBlockCode">
+                    {{ blockCodeBusy ? '查询中…' : '查询女优' }}
+                </button>
+            </div>
+            <p v-if="blockCodeMsg" class="block-code-msg" :class="{ err: blockCodeErr }">{{ blockCodeMsg }}</p>
+            <div v-if="blockCandidates.length" class="candidate-list">
+                <label
+                    v-for="name in blockCandidates"
+                    :key="name"
+                    class="candidate-item"
+                >
+                    <input type="checkbox" :value="name" v-model="blockSelected" :disabled="blockCodeBusy" />
+                    <span>{{ name }}</span>
+                </label>
+            </div>
+            <button
+                v-if="blockCandidates.length"
+                class="scrape-btn block-selected-btn"
+                :disabled="blockCodeBusy || blockSelected.length === 0"
+                @click="submitBlockSelected"
+            >
+                屏蔽所选（{{ blockSelected.length }}）
+            </button>
+        </div>
+
         <div class="section">
             <div class="add-row">
                 <input v-model="newItem" :placeholder="'添加' + currentTab.label" class="add-input"
@@ -27,7 +64,11 @@
 
             <div class="list">
                 <div v-for="item in currentList" :key="item" class="list-item">
-                    <span>{{ item }}</span>
+                    <span
+                        :class="{ 'item-link': activeTab === 'genres' }"
+                        :title="activeTab === 'genres' ? '浏览该标签作品' : undefined"
+                        @click="activeTab === 'genres' && browseGenre(item)"
+                    >{{ item }}</span>
                     <button class="del-btn" @click="removeItem(item)">移除</button>
                 </div>
                 <div v-if="currentList.length === 0" class="empty">暂无</div>
@@ -56,6 +97,14 @@ export default {
             keywords: [],
             scrapeRunning: false,
             scrapeMessage: '手动更新每日推荐，适合错过当天自动刮削时使用。',
+            blockCode: '',
+            blockCodeBusy: false,
+            blockCodeMsg: '',
+            blockCodeErr: false,
+            blockCandidates: [],
+            blockSelected: [],
+            blockSource: '',
+            blockResolvedCode: '',
         }
     },
     computed: {
@@ -128,6 +177,88 @@ export default {
                 this.scrapeMessage = '刮削请求失败，请检查服务状态。'
             } finally {
                 this.scrapeRunning = false
+            }
+        },
+        browseGenre(tag) {
+            const name = String(tag || '').trim()
+            if (!name) return
+            this.$router.push({ name: 'weekly-genre', params: { tag: name } })
+        },
+        resetBlockLookup() {
+            if (this.blockCodeBusy) return
+            this.blockCodeMsg = ''
+            this.blockCodeErr = false
+            this.blockCandidates = []
+            this.blockSelected = []
+            this.blockSource = ''
+            this.blockResolvedCode = ''
+        },
+        async lookupBlockCode() {
+            const code = String(this.blockCode || '').trim()
+            if (!code || this.blockCodeBusy) return
+            this.blockCodeBusy = true
+            this.blockCodeMsg = ''
+            this.blockCodeErr = false
+            this.blockCandidates = []
+            this.blockSelected = []
+            this.blockSource = ''
+            this.blockResolvedCode = ''
+            try {
+                const resp = await fetch('/api/block-by-code/' + encodeURIComponent(code))
+                const data = await resp.json().catch(() => ({}))
+                if (!resp.ok) {
+                    this.blockCodeErr = true
+                    this.blockCodeMsg = data.message || data.error || '未找到女优'
+                    return
+                }
+                const list = Array.isArray(data.actresses) ? data.actresses.filter(Boolean) : []
+                this.blockCandidates = list
+                this.blockSource = data.source || ''
+                this.blockResolvedCode = data.code || code
+                this.blockCodeMsg = data.message || `找到 ${list.length} 人`
+                // 单人默认勾选；多人默认不勾，避免误伤
+                this.blockSelected = list.length === 1 ? [...list] : []
+            } catch (e) {
+                this.blockCodeErr = true
+                this.blockCodeMsg = '查询失败，请检查服务状态'
+            } finally {
+                this.blockCodeBusy = false
+            }
+        },
+        async submitBlockSelected() {
+            const code = String(this.blockResolvedCode || '').trim()
+            const names = (this.blockSelected || []).filter(Boolean)
+            if (!code || !names.length || this.blockCodeBusy) return
+            this.blockCodeBusy = true
+            this.blockCodeErr = false
+            try {
+                const resp = await fetch('/api/block-by-code/' + encodeURIComponent(code), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ actresses: names }),
+                })
+                const data = await resp.json().catch(() => ({}))
+                if (!resp.ok) {
+                    this.blockCodeErr = true
+                    this.blockCodeMsg = data.error || data.message || '屏蔽失败'
+                    return
+                }
+                this.blockCodeMsg = data.message || '已屏蔽'
+                // refresh list: newest first for blocked
+                for (const n of (data.blocked || names).slice().reverse()) {
+                    const idx = this.actresses.indexOf(n)
+                    if (idx >= 0) this.actresses.splice(idx, 1)
+                    this.actresses.unshift(n)
+                }
+                const handled = new Set([...(data.blocked || []), ...(data.already || [])])
+                this.blockCandidates = this.blockCandidates.filter(name => !handled.has(name))
+                this.blockSelected = []
+                await this.loadList('actresses')
+            } catch (e) {
+                this.blockCodeErr = true
+                this.blockCodeMsg = '屏蔽请求失败'
+            } finally {
+                this.blockCodeBusy = false
             }
         },
     }
@@ -285,6 +416,56 @@ export default {
   opacity: 0.68;
 }
 
+.block-code-section h2 {
+  margin: 0 0 6px;
+  color: var(--text-color);
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.block-code-section .hint {
+  margin: 0 0 12px;
+  color: var(--muted-color);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.block-code-msg {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--secondary-color);
+  font-weight: 700;
+}
+
+.block-code-msg.err {
+  color: #c0392b;
+}
+
+.candidate-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.candidate-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--rose-line);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--secondary-color);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.block-selected-btn {
+  margin-top: 4px;
+}
+
 .list {
   display: flex;
   flex-wrap: wrap;
@@ -302,6 +483,18 @@ export default {
   font-size: 13px;
   color: var(--secondary-color);
   font-weight: 700;
+}
+
+.item-link {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  transition: color 0.15s ease, text-decoration-color 0.15s ease;
+}
+
+.item-link:hover {
+  color: var(--primary-color);
+  text-decoration-color: var(--primary-color);
 }
 
 .del-btn {

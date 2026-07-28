@@ -153,38 +153,41 @@ def record_failed_download(avid):
     update_json(failed_queue_json_path, [], record)
 
 
-def _handle_failure(avid):
-    """处理下载失败：记录重试次数，超过上限则放弃并通知飞书"""
+def _handle_failure(avid, reason="下载失败"):
+    """处理下载失败：记录重试次数，超过上限则放弃并通知飞书。
+
+    前台 log_write 仅在最终放弃时写一条；中间重试只打 logger。
+    """
     if has_active_qb_task(avid):
         logger.info(f"[Worker] {avid} qB 任务仍在进行，跳过失败记录和飞书通知")
         return False
 
     retries = incr_retry(avid)
     if retries >= MAX_RETRIES:
-        logger.warning(f"[Worker] {avid} 失败 {retries} 次，放弃，写入失败队列")
+        logger.warning(f"[Worker] {avid} 失败 {retries} 次，放弃，写入失败队列 ({reason})")
         record_failed_download(avid)
+        log_write("Worker", f"{avid} 失败: {reason}（已重试{retries}次）")
         notify_feishu_all_failed(avid)
     else:
-        logger.warning(f"[Worker] {avid} 失败 ({retries}/{MAX_RETRIES})，放回队列重试")
+        logger.warning(f"[Worker] {avid} 失败 ({retries}/{MAX_RETRIES})，放回队列重试 ({reason})")
         append_unique(queue_path, avid)
     return True
 
-def _handle_magnet_unavailable(avid):
+def _handle_magnet_unavailable(avid, reason="磁链暂不可用"):
     """有磁链但 qB 没有接住时，只按磁链路径重试，不回退在线流。"""
     if has_active_qb_task(avid):
         logger.info(f"[Worker] {avid} qB 任务仍在进行，跳过在线流")
-        log_write("Worker", f"{avid} qB已接管下载")
+        log_write("Worker", f"{avid} 已交 qB 后台继续下载")
         return False
 
     retries = incr_retry(avid)
     if retries >= MAX_RETRIES:
-        logger.warning(f"[Worker] {avid} 磁链处理异常 {retries} 次，放弃")
+        logger.warning(f"[Worker] {avid} 磁链处理异常 {retries} 次，放弃 ({reason})")
         record_failed_download(avid)
-        log_write("Worker", f"{avid} 磁链处理异常，失败{retries}次已放弃")
+        log_write("Worker", f"{avid} 失败: {reason}（已重试{retries}次）")
         notify_feishu_all_failed(avid)
     else:
-        logger.warning(f"[Worker] {avid} 磁链暂不可用 ({retries}/{MAX_RETRIES})，放回队列重试")
-        log_write("Worker", f"{avid} 磁链暂不可用，等待重试({retries}/{MAX_RETRIES})")
+        logger.warning(f"[Worker] {avid} 磁链暂不可用 ({retries}/{MAX_RETRIES})，放回队列重试 ({reason})")
         append_unique(queue_path, avid)
     return True
 
@@ -271,7 +274,11 @@ def clear_retry(avid):
 
 
 def get_magnet_from_weekly(avid):
-    """从 weekly.json 获取番号的磁链（优先中文字幕版），尝试原始番号和清理后的番号"""
+    """从 weekly.json 获取番号的磁链。
+
+    默认: 98堂 forumUrl 进帖取链 → weekly 已存 magnet → MissAV/sukebei
+    （论坛帖是磁链权威源；sukebei 仅后备）
+    """
     def missav_fallback():
         try:
             from src.weekly import sukebei
@@ -279,11 +286,44 @@ def get_magnet_from_weekly(avid):
             magnet = sukebei.search_missav_magnet(avid)
             if magnet:
                 logger.info(f"[Magnet] Found MissAV magnet for {avid}")
-                log_write("Worker", f"{avid} MissAV找到磁链")
                 return magnet
         except Exception as e:
             logger.warning(f"[Magnet] MissAV fallback failed for {avid}: {e}")
         return None
+
+    def forum_magnet(forum_url, persist_id=None):
+        forum_url = (forum_url or "").strip()
+        if not forum_url:
+            return ""
+        try:
+            from src.weekly import chinese_forum
+            chinese_forum.set_proxy(myproxy)
+            magnet = chinese_forum.fetch_thread_magnet(forum_url) or ""
+            if not magnet:
+                return ""
+            logger.info(f"[Magnet] Found forum magnet for {avid}")
+            if persist_id and os.path.exists(WEEKLY_JSON):
+                try:
+                    with open(WEEKLY_JSON, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    changed = False
+                    for it in data:
+                        if it.get("id", "").upper() == str(persist_id).upper():
+                            if it.get("magnet") != magnet:
+                                it["magnet"] = magnet
+                                changed = True
+                            break
+                    if changed:
+                        tmp = WEEKLY_JSON + ".tmp"
+                        with open(tmp, "w", encoding="utf-8") as f:
+                            json.dump(data, f, ensure_ascii=False, indent=2)
+                        os.replace(tmp, WEEKLY_JSON)
+                except Exception as e:
+                    logger.warning(f"[Magnet] persist forum magnet failed: {e}")
+            return magnet
+        except Exception as e:
+            logger.warning(f"[Magnet] forum magnet failed for {avid}: {e}")
+            return ""
 
     if not os.path.exists(WEEKLY_JSON):
         logger.warning(f"[Magnet] weekly.json not found: {WEEKLY_JSON}")
@@ -292,23 +332,25 @@ def get_magnet_from_weekly(avid):
         from metadata import clean_avid
         with open(WEEKLY_JSON, "r", encoding="utf-8") as f:
             data = json.load(f)
-        # 尝试匹配: 原始番号 + clean_avid 后的番号
         codes_to_try = {avid.upper()}
         cleaned = clean_avid(avid)
         if cleaned != avid.upper():
             codes_to_try.add(cleaned)
         for item in data:
-            if item.get("id", "").upper() in codes_to_try:
-                magnet = item.get("magnet", "")
-                if magnet:
-                    logger.info(f"[Magnet] Found magnet for {avid} (weekly id: {item['id']})")
-                    return magnet
-                else:
-                    logger.warning(f"[Magnet] {avid} has no magnet in weekly.json")
-                    log_write("Worker", f"{avid} weekly.json无磁链")
-                    return missav_fallback()
+            if item.get("id", "").upper() not in codes_to_try:
+                continue
+            # 1) 默认论坛帖
+            magnet = forum_magnet(item.get("forumUrl"), persist_id=item.get("id"))
+            if magnet:
+                return magnet
+            # 2) weekly 已有（历史 sukebei 等）
+            magnet = (item.get("magnet") or "").strip()
+            if magnet:
+                logger.info(f"[Magnet] Found magnet for {avid} (weekly id: {item['id']})")
+                return magnet
+            logger.warning(f"[Magnet] {avid} no forum/weekly magnet")
+            return missav_fallback()
         logger.warning(f"[Magnet] {avid} not found in weekly.json")
-        log_write("Worker", f"{avid} 不在weekly.json中")
         return missav_fallback()
     except Exception as e:
         logger.error(f"[Magnet] Error reading weekly.json: {e}")
@@ -501,6 +543,10 @@ def find_and_rename_output(save_dir, avid, qb_content_path=None):
     return dst
 
 
+# 最近一次磁链路径的简短原因（供前台失败文案；明细仍在 logger）
+_last_magnet_reason = ""
+
+
 def try_magnet_download(avid, save_dir, magnet=None):
     """
     尝试通过 qBittorrent 磁链下载。
@@ -512,13 +558,17 @@ def try_magnet_download(avid, save_dir, magnet=None):
     - 获取到元数据后继续下载，最长 2 小时
     - 已进入 qB 但未完成时返回 pending，不当作下载成功
     """
+    global _last_magnet_reason
+    _last_magnet_reason = ""
     if is_cancel_requested(avid):
         cancel_qb_tasks(avid)
+        _last_magnet_reason = "已取消"
         return MAGNET_CANCELLED
     if magnet is None:
         magnet = get_magnet_from_weekly(avid)
     if not magnet:
         logger.info(f"[Magnet] {avid} no magnet available, skip")
+        _last_magnet_reason = "无可用磁链"
         return MAGNET_FAILED
 
     # 不预先创建 save_dir，等下载完再建，避免和 qB 目录冲突
@@ -545,8 +595,10 @@ def try_magnet_download(avid, save_dir, magnet=None):
         if not found:
             if has_active_qb_task(avid):
                 logger.info(f"[Magnet] {avid} already has active qB task, keep monitoring via Queue API")
+                _last_magnet_reason = "qB 已有任务"
                 return MAGNET_PENDING
             logger.warning(f"[Magnet] {avid} failed to add magnet to qBittorrent, fallback to stream")
+            _last_magnet_reason = "无法加入 qB"
             return MAGNET_FAILED
 
     logger.info(f"[Magnet] {avid} added to qBittorrent, waiting for metadata...")
@@ -557,6 +609,7 @@ def try_magnet_download(avid, save_dir, magnet=None):
     stale_count = 0
     torrent_hash = None
     file_selection_done = False
+    pending_reason = "已交 qB 后台继续下载"
 
     while True:
         if is_cancel_requested(avid) or not running:
@@ -565,6 +618,7 @@ def try_magnet_download(avid, save_dir, magnet=None):
                 qbittorrent_post("/api/v2/torrents/delete", {"hashes": torrent_hash, "deleteFiles": "false"})
             else:
                 cancel_qb_tasks(avid)
+            _last_magnet_reason = "已取消"
             return MAGNET_CANCELLED
         elapsed = time.time() - start
 
@@ -607,7 +661,8 @@ def try_magnet_download(avid, save_dir, magnet=None):
             # 还没出现在列表里，等 metadata
             if elapsed > 120:
                 logger.warning(f"[Magnet] {avid} not found in qBittorrent after 120s, giving up")
-                return MAGNET_FAILED
+                pending_reason = "元数据超时（qB 中未出现）"
+                break
             time.sleep(5)
             continue
 
@@ -650,28 +705,33 @@ def try_magnet_download(avid, save_dir, magnet=None):
         # 检查错误状态
         if state in ("error", "missingFiles"):
             logger.warning(f"[Magnet] {avid} qBittorrent state: {state}, giving up")
+            pending_reason = f"qB 状态异常 ({state})"
             break
 
         # ---- 超时判断 ----
         # 1. 元数据超时 (state 停在了 metaDL)
         if not metadata_received and elapsed > 120:
             logger.warning(f"[Magnet] {avid} no metadata after 120s, giving up")
+            pending_reason = "元数据超时"
             break
 
         if metadata_received:
             # 2. 完全没种 (availability=0): 等到有 metadata 后再等 5min
             if availability == 0 and elapsed > 300:
                 logger.warning(f"[Magnet] {avid} no seeds (availability=0) for 5min, giving up")
+                pending_reason = "无种子 5 分钟 (availability=0)"
                 break
 
             # 3. 有种子但极慢: 速度 < 10KB/s 且无进度持续 30min (360 * 5s)
             if dlspeed < 10 * 1024 and stale_count > 360:
                 logger.warning(f"[Magnet] {avid} stalled <10KB/s for 30min, giving up")
+                pending_reason = "速度过慢（30 分钟几乎无进度）"
                 break
 
         # 4. 总超时 2 小时
         if elapsed > 7200:
             logger.warning(f"[Magnet] {avid} total timeout (2h), downloaded: {downloaded/1024/1024:.1f} MB")
+            pending_reason = "下载超时 2 小时"
             break
 
         time.sleep(5)
@@ -683,6 +743,7 @@ def try_magnet_download(avid, save_dir, magnet=None):
     if elapsed > 7200:
         notify_feishu_magnet_timeout(avid, magnet)
 
+    _last_magnet_reason = pending_reason
     return MAGNET_PENDING
 
 
@@ -723,7 +784,7 @@ def download_video(avid):
         if retries >= MAX_RETRIES and not magnet:
             logger.warning(f"[Worker] {avid} 已失败 {retries} 次，放弃，写入失败队列")
             record_failed_download(avid)
-            log_write("Worker", f"{avid} 失败{retries}次已放弃")
+            log_write("Worker", f"{avid} 失败: 无可用源（已重试{retries}次）")
             release_lock()
             return True
         if retries >= MAX_RETRIES and magnet:
@@ -732,30 +793,33 @@ def download_video(avid):
             magnet_status = try_magnet_download(avid, save_dir, magnet)
             if magnet_status == MAGNET_CANCELLED:
                 logger.info(f"[Worker] {avid} 下载已取消")
-                log_write("Worker", f"{avid} 下载已取消")
+                log_write("Worker", f"{avid} 失败: 已取消")
                 clear_cancel_request(avid)
                 return False
             if magnet_status == MAGNET_COMPLETED:
                 gen_nfo()
                 logger.info(f"[Worker] {avid} 磁链下载完成!")
                 clear_retry(avid)
-                log_write("Worker", f"{avid} 磁链下载完成")
+                log_write("Worker", f"{avid} 下载完成")
                 release_lock()
                 return True
             if magnet_status == MAGNET_PENDING:
                 # 磁链已加 qB（还在下载中），不 fallback 到在线流
-                logger.info(f"[Worker] {avid} 磁链下载中(qB)，尚未完成")
-                log_write("Worker", f"{avid} qB已接管下载")
+                logger.info(f"[Worker] {avid} 磁链下载中(qB)，尚未完成 ({_last_magnet_reason})")
+                log_write(
+                    "Worker",
+                    f"{avid} 已交 qB 后台继续下载"
+                    + (f"（{_last_magnet_reason}）" if _last_magnet_reason else ""),
+                )
                 release_lock()
                 return False
 
-            _handle_magnet_unavailable(avid)
+            _handle_magnet_unavailable(avid, _last_magnet_reason or "磁链下载失败")
             release_lock()
             return False
 
         # ======= 第二步：无可用磁链，尝试在线流 =======
         logger.info(f"[Worker] {avid} 未找到磁链，尝试在线流...")
-        log_write("Worker", f"{avid} 未找到磁链，转在线流")
         mgr = downloaderMgr.DownloaderMgr()
 
         if len(sorted_downloaders) == 0:
@@ -766,7 +830,7 @@ def download_video(avid):
         for it in sorted_downloaders:
             if is_cancel_requested(avid) or not running:
                 logger.info(f"[Worker] {avid} 下载已取消")
-                log_write("Worker", f"{avid} 下载已取消")
+                log_write("Worker", f"{avid} 失败: 已取消")
                 clear_cancel_request(avid)
                 return False
             count += 1
@@ -789,7 +853,7 @@ def download_video(avid):
             if not downloader.downloadM3u8(info.m3u8, avid):
                 if is_cancel_requested(avid) or not running:
                     logger.info(f"[Worker] {avid} 下载已取消")
-                    log_write("Worker", f"{avid} 下载已取消")
+                    log_write("Worker", f"{avid} 失败: 已取消")
                     clear_cancel_request(avid)
                     return False
                 logger.error(f"[Worker] {avid} 视频下载失败 ({downloader.getDownloaderName()})")
@@ -805,25 +869,23 @@ def download_video(avid):
             gen_nfo()
             clear_retry(avid)
             logger.info(f"[Worker] {avid} 全部完成!")
-            log_write("Worker", f"{avid} 在线流下载完成")
+            log_write("Worker", f"{avid} 下载完成")
         else:
-            _handle_failure(avid)
+            _handle_failure(avid, "在线流失败")
 
     except ValueError as e:
         logger.error(f"[Worker] {e}")
         if is_cancel_requested(avid) or not running:
             clear_cancel_request(avid)
             return False
-        if _handle_failure(avid):
-            log_write("Worker", f"{avid} 所有源均失败")
-        else:
-            log_write("Worker", f"{avid} qB已接管下载，跳过在线流")
+        if not _handle_failure(avid, "所有源均失败"):
+            log_write("Worker", f"{avid} 已交 qB 后台继续下载")
     except Exception as e:
         logger.error(f"[Worker] 下载异常: {e}")
         import traceback
         logger.error(traceback.format_exc())
         if not is_cancel_requested(avid) and running:
-            _handle_failure(avid)
+            _handle_failure(avid, f"异常: {e}")
         else:
             clear_cancel_request(avid)
     finally:

@@ -138,7 +138,7 @@ class Sracper:
             import urllib.request
             api_key = os.environ["DEEPSEEK_API_KEY"]
             payload = json.dumps({
-                "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+                "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
                 "messages": [
                     {"role": "system", "content": "你是日语翻译助手。将日文成人影片标题翻译为简洁的中文，只输出翻译结果，不要任何解释。"},
                     {"role": "user", "content": metadata.title}
