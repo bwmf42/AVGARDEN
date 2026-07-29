@@ -90,6 +90,30 @@ class TestActresses(unittest.TestCase):
         self.assertIn("丰满", item["titleZh"])
         self.assertNotIn("藤沢麗央", item["titleZh"])
 
+    def test_title_zh_validity_rejects_truncated_results(self):
+        source = "SAN-478Z とても長い日本語の作品タイトルで翻訳結果に十分な本文が必要です"
+        self.assertFalse(a.is_valid_title_zh("", source, "SAN-478Z"))
+        self.assertFalse(a.is_valid_title_zh("SAN-478Z", source, "SAN-478Z"))
+        self.assertFalse(a.is_valid_title_zh("让", source, "SAN-478Z"))
+        self.assertFalse(
+            a.is_valid_title_zh(
+                "GOJI-106: 「请把我当",
+                "GOJI-106 「私を本当の恋人だと思ってください」長い日本語タイトル",
+                "GOJI-106",
+            )
+        )
+
+    def test_title_zh_validity_keeps_normal_short_titles(self):
+        self.assertTrue(a.is_valid_title_zh("标题", "Title", "KEEP-001"))
+        self.assertTrue(a.is_valid_title_zh("人妻交换", "夫婦交換", "KEEP-002"))
+        self.assertTrue(
+            a.is_valid_title_zh(
+                "HUNTC-499：无意中让男人勃起的女人随心所欲手交",
+                "HUNTC-499 無自覚に男を勃起させる女の気まぐれ手コキ",
+                "HUNTC-499",
+            )
+        )
+
     def test_fold_and_snap_blocked(self):
         import os
         import tempfile

@@ -12,7 +12,7 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.log_writer import write as log_write
-from src.weekly import artwork, enrich, javbus, mgs, sukebei
+from src.weekly import actresses as actress_util, artwork, enrich, javbus, mgs, sukebei
 from weekly_store import atomic_write_json, weekly_update_lock
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
@@ -131,7 +131,7 @@ def missing_fields(item):
         missing.append("fanarts")
     if not item.get("magnet"):
         missing.append("magnet")
-    if not item.get("titleZh"):
+    if not actress_util.item_has_valid_title_zh(item):
         missing.append("titleZh")
     if not has_local_cover(item):
         missing.append("cover")
@@ -154,9 +154,8 @@ def normalize_existing_actresses(items):
 
 
 def translate_title(item):
-    if item.get("titleZh") or not item.get("title") or not DS_API_KEY:
+    if actress_util.item_has_valid_title_zh(item) or not item.get("title") or not DS_API_KEY:
         return False
-    from src.weekly import actresses as actress_util
 
     actress_util.ensure_actresses(item)
     body, names = actress_util.title_for_translate(
@@ -186,7 +185,10 @@ def translate_title(item):
                 zh = f"{zh.rstrip(' ：:—–-')} {' '.join(names)}".strip()
             item["titleZh"] = zh
             actress_util.finalize_title_zh(item)
-            return True
+            if actress_util.item_has_valid_title_zh(item):
+                return True
+            item["titleZh"] = ""
+            log(f"{item.get('id')} translate failed: invalid or truncated translation")
     except (urllib.error.URLError, KeyError, ValueError, TimeoutError) as e:
         log(f"{item.get('id')} translate failed: {e}")
     return False

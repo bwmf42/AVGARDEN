@@ -56,6 +56,13 @@ class TestBackfillSelection(unittest.TestCase):
         self.assertIn("fanarts", backfill.missing_fields(item))
         self.assertTrue(backfill.needs_backfill(item))
 
+    def test_truncated_title_is_a_real_target(self):
+        item = self.complete_item()
+        item["title"] = "TEST-001 とても長い日本語の作品タイトルで翻訳結果に十分な本文が必要です"
+        item["titleZh"] = "让"
+        self.assertIn("titleZh", backfill.missing_fields(item))
+        self.assertTrue(backfill.needs_backfill(item))
+
 
 if __name__ == "__main__":
     unittest.main()

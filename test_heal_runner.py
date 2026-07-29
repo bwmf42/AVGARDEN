@@ -14,8 +14,13 @@ class TestHealRunner(unittest.TestCase):
             {"title": "b", "titleZh": "中文"},
             {"title": "", "titleZh": ""},
             {"title": "c"},
+            {
+                "id": "SAN-478Z",
+                "title": "SAN-478Z とても長い日本語の作品タイトルで翻訳結果に十分な本文が必要です",
+                "titleZh": "让",
+            },
         ]
-        self.assertEqual(h.count_titlezh_gaps(items), 2)
+        self.assertEqual(h.count_titlezh_gaps(items), 3)
 
     def test_cooldown(self):
         state = {}

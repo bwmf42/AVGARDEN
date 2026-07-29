@@ -106,9 +106,10 @@ def count_titlezh_gaps(items: Optional[list] = None) -> int:
     if items is None:
         items = load_json(WEEKLY_JSON, [])
     try:
-        from src.weekly import blocking
+        from src.weekly import actresses as actress_util, blocking
         rules = blocking.load_rules()
     except Exception:
+        actress_util = None
         blocking = None
         rules = None
     n = 0
@@ -117,7 +118,12 @@ def count_titlezh_gaps(items: Optional[list] = None) -> int:
             continue
         if blocking is not None and blocking.match_reason(i, rules):
             continue
-        if str(i.get("title") or "").strip() and not str(i.get("titleZh") or "").strip():
+        valid = (
+            actress_util.item_has_valid_title_zh(i)
+            if actress_util is not None
+            else bool(str(i.get("titleZh") or "").strip())
+        )
+        if str(i.get("title") or "").strip() and not valid:
             n += 1
     return n
 

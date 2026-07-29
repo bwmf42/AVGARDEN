@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or "/app")
 
 from weekly_store import atomic_write_json, weekly_update_lock
 from weekly_updater import WEEKLY_JSON, batch_translate, log, strip_actresses_from_title_zh
-from src.weekly import blocking
+from src.weekly import actresses as actress_util, blocking
 
 
 def main():
@@ -21,26 +21,26 @@ def main():
             items = json.load(handle)
         rules = blocking.load_rules()
         eligible = [item for item in items if not blocking.match_reason(item, rules)]
+        titles_before = [str(item.get("titleZh") or "") for item in items]
         missing_before = sum(
             1
             for i in eligible
-            if not str(i.get("titleZh") or "").strip()
-            and str(i.get("title") or "").strip()
+            if not actress_util.item_has_valid_title_zh(i) and str(i.get("title") or "").strip()
         )
         log(f"Missing titleZh before: {missing_before}")
         stripped = strip_actresses_from_title_zh(eligible)
         if stripped:
             log(f"Stripped actress names from {stripped} titleZh")
         ok, fail = batch_translate(items, checkpoint_path=WEEKLY_JSON)
-        if stripped or ok:
+        titles_changed = titles_before != [str(item.get("titleZh") or "") for item in items]
+        if stripped or titles_changed:
             atomic_write_json(WEEKLY_JSON, items)
         else:
             log("No title changes; weekly.json left untouched")
         missing_after = sum(
             1
             for i in eligible
-            if not str(i.get("titleZh") or "").strip()
-            and str(i.get("title") or "").strip()
+            if not actress_util.item_has_valid_title_zh(i) and str(i.get("title") or "").strip()
         )
         log(
             f"Done ok={ok} fail={fail} stripped={stripped} "

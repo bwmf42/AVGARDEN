@@ -4,7 +4,7 @@ import json, os, re, sys, time, random, urllib.error, urllib.request
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from src.weekly import sources, javbus, sukebei, merge, artwork, enrich, chinese_forum, blocking
+from src.weekly import actresses as actress_util, sources, javbus, sukebei, merge, artwork, enrich, chinese_forum, blocking
 from weekly_store import atomic_write_json, weekly_update_lock
 from weekly_watched_store import mark_many, mark_watched
 
@@ -234,7 +234,7 @@ def batch_translate(items, passes=None, checkpoint_path=None):
     for pass_i in range(1, passes + 1):
         to_translate = [
             i for i in eligible
-            if not str(i.get("titleZh") or "").strip() and str(i.get("title") or "").strip()
+            if not actress_util.item_has_valid_title_zh(i) and str(i.get("title") or "").strip()
         ]
         if not to_translate:
             if pass_i == 1:
@@ -246,15 +246,19 @@ def batch_translate(items, passes=None, checkpoint_path=None):
         for idx, item in enumerate(to_translate):
             avid = (item.get("id") or "").upper()
             title = item.get("title") or ""
+            item["titleZh"] = ""
             try:
-                from src.weekly import actresses as actress_util
                 actress_util.ensure_actresses(item)
                 item["titleZh"] = translate_title_with_retry(
                     avid, title, actresses=item.get("actresses")
                 )
                 actress_util.finalize_title_zh(item)
+                if not actress_util.item_has_valid_title_zh(item):
+                    item["titleZh"] = ""
+                    raise RuntimeError("invalid or truncated translation")
                 ok += 1
             except Exception as e:
+                item["titleZh"] = ""
                 fail += 1
                 log(f"Translate {avid} failed after retries: {e}")
             if (idx + 1) % 10 == 0 or (idx + 1) == n:
@@ -382,7 +386,7 @@ def _main_locked():
     atomic_write_json(WEEKLY_JSON, merged)
     still = sum(
         1 for i in merged
-        if not str(i.get("titleZh") or "").strip() and str(i.get("title") or "").strip()
+        if not actress_util.item_has_valid_title_zh(i) and str(i.get("title") or "").strip()
     )
     log(f"=== Done: {len(merged)} items (+{len(new_items)} new) titleZh_missing={still} ===")
     # 供 heal 探针展示上次刮削结果（不触发自动重刮）

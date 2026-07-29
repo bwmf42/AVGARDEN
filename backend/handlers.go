@@ -1010,6 +1010,15 @@ func filterWeeklyItems(items []map[string]interface{}, mp4Index map[string]bool,
 	defer blockedListsMtx.RUnlock()
 	filtered := make([]map[string]interface{}, 0)
 	for _, item := range items {
+		id, _ := item["id"].(string)
+		title, _ := item["title"].(string)
+		if title == "" {
+			title, _ = item["titleJp"].(string)
+		}
+		if titleZh, ok := item["titleZh"].(string); ok && !validTranslatedTitle(titleZh, title, id) {
+			item["titleZh"] = ""
+		}
+
 		// 过滤屏蔽演员（精确 + fold：空白/尾标点/常见繁简）
 		actresses, ok := item["actresses"].([]interface{})
 		if ok && len(blockedActresses) > 0 {

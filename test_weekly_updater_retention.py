@@ -6,6 +6,28 @@ from src.weekly import merge
 
 
 class WeeklyUpdaterRetentionTest(unittest.TestCase):
+    def test_batch_translate_retries_invalid_nonempty_result(self):
+        item = {
+            "id": "SAN-478Z",
+            "title": "SAN-478Z とても長い日本語の作品タイトルで翻訳結果に十分な本文が必要です",
+            "titleZh": "让",
+            "actresses": [],
+        }
+        with mock.patch.object(weekly_updater, "DS_API_KEY", "test"), \
+             mock.patch.object(weekly_updater.blocking, "load_rules", return_value={}), \
+             mock.patch.object(weekly_updater.blocking, "match_reason", return_value=""), \
+             mock.patch.object(
+                 weekly_updater,
+                 "translate_title_with_retry",
+                 side_effect=["让", "SAN-478Z：这是一个完整的中文翻译标题"],
+             ) as translate, \
+             mock.patch.object(weekly_updater.time, "sleep"):
+            ok, fail = weekly_updater.batch_translate([item], passes=2)
+
+        self.assertEqual((ok, fail), (1, 1))
+        self.assertEqual(translate.call_count, 2)
+        self.assertEqual(item["titleZh"], "SAN-478Z：这是一个完整的中文翻译标题")
+
     def test_blocked_item_never_fetches_artwork_or_magnet(self):
         item = {"id": "ABF-001", "title": "title"}
         with mock.patch.object(weekly_updater.enrich, "enrich_item", side_effect=lambda value, **_: value.update({"actresses": ["Blocked"]})), \

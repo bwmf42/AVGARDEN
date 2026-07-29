@@ -93,6 +93,16 @@ _ZH_NAME_TAIL = re.compile(
 )
 # Trailing "show all" garbage from some sources
 _SHOW_ALL_TAIL = re.compile(r"\s*▼\s*すべて表示する\s*$")
+_TITLE_BRACKETS = {
+    "「": "」",
+    "『": "』",
+    "“": "”",
+    "（": "）",
+    "【": "】",
+    "(": ")",
+    "[": "]",
+}
+_TITLE_BRACKET_CLOSE = {close: open_ for open_, close in _TITLE_BRACKETS.items()}
 
 
 def _strip_name_alias(name: str) -> str:
@@ -430,6 +440,64 @@ def title_for_translate(title: str, actresses: Sequence[str] | None = None) -> T
             work = re.sub(rf"(?:[\s　、,・]*{re.escape(name)})+\s*$", "", work)
         work = work.rstrip(" 、,。．.!！?？』」》—–-")
     return work.strip() or strip_code_prefix(title), acts
+
+
+def _effective_title_length(value: str) -> int:
+    return sum(1 for char in value if char.isalnum())
+
+
+def _has_balanced_title_brackets(value: str) -> bool:
+    stack = []
+    for char in value:
+        if char in _TITLE_BRACKETS:
+            stack.append(char)
+        elif char in _TITLE_BRACKET_CLOSE:
+            if not stack or stack.pop() != _TITLE_BRACKET_CLOSE[char]:
+                return False
+    return not stack
+
+
+def is_valid_title_zh(title_zh: str, source_title: str = "", video_id: str = "") -> bool:
+    """Return whether titleZh has enough complete body text to be displayed.
+
+    DeepSeek occasionally returns a code, one character, or a cut-off quoted
+    sentence. Those values must remain retryable instead of hiding the complete
+    source title in the API.
+    """
+    zh = str(title_zh or "").strip()
+    if not zh:
+        return False
+
+    body = _CODE_PREFIX.sub("", zh, count=1).strip()
+    if video_id and body == zh:
+        body = re.sub(
+            rf"^{re.escape(str(video_id).strip())}\s*[:：\-]?\s*",
+            "",
+            zh,
+            count=1,
+            flags=re.I,
+        ).strip()
+    body_len = _effective_title_length(body)
+    if body_len <= 1 or not _has_balanced_title_brackets(body):
+        return False
+
+    source_body = _CODE_PREFIX.sub("", str(source_title or "").strip(), count=1)
+    source_len = _effective_title_length(source_body)
+    if source_len >= 30 and body_len < 4:
+        return False
+    if source_len >= 60 and body_len < 8 and body_len * 8 < source_len:
+        return False
+    return True
+
+
+def item_has_valid_title_zh(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+    return is_valid_title_zh(
+        item.get("titleZh"),
+        item.get("title") or item.get("titleJp") or "",
+        item.get("id") or "",
+    )
 
 
 def finalize_title_zh(item: dict) -> bool:

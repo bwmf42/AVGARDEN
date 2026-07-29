@@ -3,7 +3,6 @@
 """Re-translate titleZh that were over-stripped (code + names only)."""
 import json
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or "/app")
@@ -11,30 +10,12 @@ from src.weekly import actresses as actress_util
 from weekly_store import atomic_write_json, weekly_update_lock
 from weekly_updater import WEEKLY_JSON, log, translate_title_with_retry
 
-_CODE = re.compile(
-    r"^(?:[A-Z0-9]{2,15}-?\d+[A-Z]?)[:：\s\-]*",
-    re.I,
-)
-
-
 def is_broken_title_zh(item: dict) -> bool:
     zh = str(item.get("titleZh") or "").strip()
     title = str(item.get("title") or "").strip()
     if not zh or not title:
         return False
-    acts = actress_util.clean_actresses(item.get("actresses") or [])
-    body = zh
-    for n in acts:
-        body = body.replace(n, " ")
-    body = _CODE.sub("", body)
-    body = re.sub(r"[\s　、,·・：:\-—–]+", "", body)
-    # broken if almost no content left but JP title is long
-    if len(body) < 6 and len(actress_util.strip_code_prefix(title)) > 20:
-        return True
-    # also if zh is shorter than half of title and mostly names
-    if acts and len(zh) < 22 and len(title) > 35:
-        return True
-    return False
+    return not actress_util.item_has_valid_title_zh(item)
 
 
 def main():
@@ -54,8 +35,12 @@ def main():
                 )
                 it["titleZh"] = zh
                 actress_util.finalize_title_zh(it)
+                if not actress_util.item_has_valid_title_zh(it):
+                    it["titleZh"] = ""
+                    raise RuntimeError("invalid or truncated translation")
                 ok += 1
             except Exception as e:
+                it["titleZh"] = ""
                 fail += 1
                 log(f"Repair {avid} failed: {e}")
             if (idx + 1) % 10 == 0 or (idx + 1) == len(broken):

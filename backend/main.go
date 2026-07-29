@@ -18,6 +18,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -697,6 +698,9 @@ const mainVideoMinAllocatedPercent int64 = 95
 var enforceMainVideoAllocation = true
 
 var multipartVideoSuffix = regexp.MustCompile(`(?i)^(.*?)[-_. ](?:CD|PART)?([1-9])$`)
+var translatedTitleCodePrefix = regexp.MustCompile(`(?i)^(?:[A-Z]{2,10}|[0-9]{2,5}[A-Z]{2,10})-?\d+[A-Z]?\s*[:：-]?\s*`)
+var translatedTitleBracketPairs = map[rune]rune{'「': '」', '『': '』', '“': '”', '（': '）', '【': '】', '(': ')', '[': ']'}
+var translatedTitleBracketClosing = map[rune]rune{'」': '「', '』': '『', '”': '“', '）': '（', '】': '【', ')': '(', ']': '['}
 
 type mainVideoCandidate struct {
 	path      string
@@ -884,8 +888,12 @@ func weeklyTitleForVideo(videoID string) string {
 			if id == "" {
 				continue
 			}
+			sourceTitle, _ := item["title"].(string)
 			for _, key := range []string{"titleZh", "title", "titleJp"} {
 				if title, ok := item[key].(string); ok {
+					if key == "titleZh" && !validTranslatedTitle(title, sourceTitle, id) {
+						continue
+					}
 					if clean := cleanTitleCandidate(title, id); clean != "" {
 						next[id] = clean
 						break
@@ -968,6 +976,68 @@ func cleanTitleCandidate(title, videoID string) string {
 		return ""
 	}
 	return title
+}
+
+func effectiveTitleLength(value string) int {
+	count := 0
+	for _, char := range value {
+		if unicode.IsLetter(char) || unicode.IsNumber(char) {
+			count++
+		}
+	}
+	return count
+}
+
+func hasBalancedTitleBrackets(value string) bool {
+	stack := make([]rune, 0, 2)
+	for _, char := range value {
+		if _, ok := translatedTitleBracketPairs[char]; ok {
+			stack = append(stack, char)
+			continue
+		}
+		open, ok := translatedTitleBracketClosing[char]
+		if !ok {
+			continue
+		}
+		if len(stack) == 0 || stack[len(stack)-1] != open {
+			return false
+		}
+		stack = stack[:len(stack)-1]
+	}
+	return len(stack) == 0
+}
+
+func stripTranslatedTitleCode(value, videoID string) string {
+	value = strings.TrimSpace(value)
+	videoID = strings.TrimSpace(videoID)
+	if videoID != "" && len(value) >= len(videoID) && strings.EqualFold(value[:len(videoID)], videoID) {
+		rest := value[len(videoID):]
+		if rest == "" || strings.ContainsRune(" \t:：-", []rune(rest)[0]) {
+			return strings.TrimSpace(strings.TrimLeft(rest, " \t:：-"))
+		}
+	}
+	return strings.TrimSpace(translatedTitleCodePrefix.ReplaceAllString(value, ""))
+}
+
+func validTranslatedTitle(translated, source, videoID string) bool {
+	translated = strings.TrimSpace(translated)
+	if translated == "" {
+		return false
+	}
+	body := stripTranslatedTitleCode(translated, videoID)
+	bodyLength := effectiveTitleLength(body)
+	if bodyLength <= 1 || !hasBalancedTitleBrackets(body) {
+		return false
+	}
+	sourceBody := stripTranslatedTitleCode(source, videoID)
+	sourceLength := effectiveTitleLength(sourceBody)
+	if sourceLength >= 30 && bodyLength < 4 {
+		return false
+	}
+	if sourceLength >= 60 && bodyLength < 8 && bodyLength*8 < sourceLength {
+		return false
+	}
+	return true
 }
 
 // listVideosHandler 获取视频列表（触发异步缓存刷新）
