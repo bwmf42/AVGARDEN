@@ -54,6 +54,7 @@
 ## 配置边界
 
 - 真实 `.env`、`cfg/configs.json`、`db/`、`logs/`、媒体目录、Cookie、Token、API key、webhook 不应提交。
+- `Dockerfile.worker.dockerignore` 必须持续排除 `cfg/configs.json`；Worker 镜像只能包含公开示例配置，不能把 NAS 现役配置写进镜像层。
 - 公开部署应从 `.env.example` 和 `cfg/configs.json.example` 复制配置。
 - qBittorrent 默认保存目录必须和 `AV_GARDEN_DATA_DIR` 指向同一份存储。
 - 中文字幕合并必须以 qB 文件列表中的精确文件编号、路径和大小为准，并持久记录来源；禁止按文件新旧或仅凭 `.av_garden_chinese` 标记删除正片。进行中、校验中或做种中的 qB 任务所占目录不得执行媒体清理；合并后只能用 `deleteFiles=false` 移除 qB 任务记录，禁止让 qB 递归删除作品目录。需要删除被替代的原版时，先停止任务并按 qB 文件清单逐文件删除，不能删除整个作品目录。

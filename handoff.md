@@ -12,12 +12,10 @@
 
 ## 当前发布状态
 
-- 本地 `main`、GitHub `main` 和 NAS 生产源码已对齐。
+- 本地 `main`、GitHub `main` 均为 `be7ce5b`；NAS 的部署脚本、Worker Dockerfile、规则和 Changelog 哈希与该提交一致。
 - Server 与 Worker 容器均为 `Up`；Server 对外端口 31471，Queue API 31473 仅容器网络可达。
-- 生产媒体库 `/api/videos` 当前返回 218 部；媒体数量会随 qB 在途任务变化。
-- 首次 30 天保留清理后，Weekly 原始数据为 967 条、API 可见 496 条、已看记录 1,010 条；Weekly 图片目录 496 个，孤儿和屏蔽图片目录都为 0。
-- qB `missingFiles` 为 0，剩余任务分类全部为 `AV_GARDEN`。
-- 本次部署替换且无容器引用的 Server/Worker 旧镜像各 1 个已精确删除，其他项目镜像未处理。
+- 2026-07-29 实测 Worker 单服务构建 58-59 秒、完整部署 82-90 秒、无变化部署 2 秒；Worker 镜像为 13 层且不含现役 `cfg/configs.json`。
+- 媒体、Weekly、已看和 qB 数量都是运行时数据，不在交接文档固定记录；以生产 API 和 qB 当前状态为准。
 
 ## 关键运行规则
 
@@ -32,6 +30,8 @@
 - Weekly 未看条目无限保留；手动已看从 `watched_at` 起保留 30 天，到期删除条目、图片和已看记录。
 - 屏蔽条目先取最小匹配元数据并记为已看，跳过图片、磁链、翻译和下载，从收录时间起保留 30 天。
 - Launcher 每天 04:30 按精确 manifest 执行保留清理并先备份；`__online__`、应用日志和日常维护记录保留 30 天。
+- `deploy.sh` 先对比临时目录与现役源码，只构建并重启受影响服务；未知运行时文件安全地重建两者，纯文档和无变化部署不重启。
+- Worker 构建上下文由 `Dockerfile.worker.dockerignore` 限制，必须排除 NAS 现役 `cfg/configs.json`；远端构建日志成功后删除，失败时保留供排查。
 
 ## 数据清理记录
 
@@ -44,7 +44,7 @@
 - Weekly 保留结果：同路径追加 `.result.json`；删除 844 条过期 Weekly、1,605 条过期已看记录和 1,315 个过期/屏蔽图片目录，释放约 795.66 MiB。
 - 本次备份：`/db/backups/weekly-retention-index-20260729-040927.json.gz` 和 `weekly-retention-watched-20260729-040927.json.gz`。
 
-`MIKR-109`、`PRED-886`、`SNOS-264` 已重新入队，`DEBZ-015` 原任务保留。它们的进度会继续变化，不应把本文件中的瞬时状态当固定验收值。
+2026-07-29 清理当时，`MIKR-109`、`PRED-886`、`SNOS-264` 被重新入队，`DEBZ-015` 原任务保留。这只是当次清理记录，不代表当前队列。
 
 ## 维护命令
 
@@ -94,6 +94,6 @@ npm audit --registry=https://registry.npmjs.org --audit-level=low
 
 生产验证至少检查 Compose、`/api/version`、`/api/videos`、`/api/weekly`、`/api/queue-status` 和一个真实 Range 请求。
 
-## 待观察
+## 动态运行态
 
-仅剩下载运行态：`SNOS-264`、`DEBZ-015`、`MIKR-109`、`PRED-886` 尚未全部结束。进度会继续变化，不应作为固定验收值。
+qB 下载、媒体数量和 Weekly 可见数量会持续变化。接手时直接检查 `/api/queue-status`、`/api/videos` 和 `/api/weekly`，不要把历史交接里的任务编号或数量当成当前事实。
