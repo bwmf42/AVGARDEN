@@ -12,7 +12,7 @@
 
 ## 当前发布状态
 
-- 本地 `main`、GitHub `main` 均为 `be7ce5b`；NAS 的部署脚本、Worker Dockerfile、规则和 Changelog 哈希与该提交一致。
+- 本地 `main` 与 GitHub `main` 已对齐；增量部署功能基线为 `be7ce5b`，之后的提交只同步知识面。NAS 的部署脚本和 Worker Dockerfile 与本地现役文件哈希一致。
 - Server 与 Worker 容器均为 `Up`；Server 对外端口 31471，Queue API 31473 仅容器网络可达。
 - 2026-07-29 实测 Worker 单服务构建 58-59 秒、完整部署 82-90 秒、无变化部署 2 秒；Worker 镜像为 13 层且不含现役 `cfg/configs.json`。
 - 媒体、Weekly、已看和 qB 数量都是运行时数据，不在交接文档固定记录；以生产 API 和 qB 当前状态为准。
