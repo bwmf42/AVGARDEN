@@ -78,6 +78,11 @@ def write_json(path, value):
         _write_json_unlocked(path, value)
 
 
+def write_queue(path, items):
+    with _locked(path):
+        _write_unlocked(path, items)
+
+
 def update_json(path, default, updater):
     with _locked(path):
         value = default

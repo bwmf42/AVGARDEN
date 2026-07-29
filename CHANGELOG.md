@@ -8,6 +8,7 @@
 
 ### Added
 
+- Added one shared manual-download source resolver for online search, queue additions, and Worker consumption. It caches the verified result under `/db` so search-to-download never repeats the 98堂/Sukebei lookup, while abandoned one-time searches still clean up their source cache.
 - Added guarded daily Weekly retention at 04:30: unviewed entries stay indefinitely, watched entries and their Weekly artwork expire after 30 days, and every run writes and revalidates an exact manifest plus compressed JSON backups.
 - Added metadata-first blocking in the Weekly updater. Items matching blocked actresses, genres, keywords, or the existing age filter are recorded as watched, kept metadata-only for 30 days, and never request artwork, magnets, or title translation.
 - Added a separate dry-run-first Weekly artwork maintenance command that only selects unreferenced directories older than 30 days by default, validates direct-child paths and signatures again at apply time, and backs up the current Weekly index before deletion.
@@ -24,6 +25,8 @@
 
 ### Changed
 
+- Manual download selection now follows one deterministic chain: exact Chinese `forum-103` result from 98堂; otherwise the largest exact Chinese Sukebei torrent; otherwise the earliest-uploaded exact original Sukebei torrent; otherwise online stream. JavBus, Nyaa, and MissAV are no longer magnet candidates in this path.
+- 98堂 exact searches are serialized across processes with a 31-second minimum interval and one query per code, avoiding the site's search-rate limit. Sukebei candidates now carry parsed title, size, upload time, and exact/Chinese flags.
 - Made Server and Worker share a locked, atomic watched-state format with an internal manual/blocked reason while preserving the existing `/api/weekly-watched` response. The server is authoritative after browser migration, expired IDs absent from Weekly cannot be restored, online abnormal-search cache retention is 30 days, and routine maintenance records retain 30 days with at least the newest three copies.
 - Deployment now records the two previously running A/GARDEN image IDs and removes only those exact images after both replacement containers and the public API pass health checks.
 - Moved the Worker and Queue API onto the private Compose network, made the Go server use `http://worker:31473`, added server connection timeouts, and changed deployment sync to `rsync --delete` with explicit protection for runtime configuration, database, and logs.
@@ -50,8 +53,6 @@
 - Added a media-library NFO title backfill script to translate older local titles while preserving original titles.
 - Added preview artifacts for the 02 media-hub direction under `design-demos/`.
 - Added a visible-unwatched weekly backfill script for filling details, local covers, magnets, and translated titles only for items that pass current filters and are still 未看.
-- Added JavBus detail-page magnet list lookup as the first weekly magnet source, before Sukebei/Nyaa and MissAV fallbacks.
-
 - Moved the NAS deployment root to `/42/docker/AVGARDEN` and updated local deployment guidance to keep future deploys in the Docker app folder.
 - Limited normal weekly scraping to JavBus cards marked 今日新種; 昨日新種 can still be included via `WEEKLY_FRESHNESS_MARKERS` for one-off recovery runs.
 - Weekly merge now keeps undownloaded recommendations beyond the old 30-day window, so the 未看 pool can continue accumulating until you watch or download them.
@@ -72,6 +73,8 @@
 
 ### Fixed
 
+- Fixed online search and queue addition selecting different torrents by persisting and reusing the server-verified source result. Exact matching rejects longer similar codes, and original selection no longer follows seed count or file size.
+- Fixed freshly added tasks disappearing after Worker popped `download_queue.txt`: Worker now writes `current_download.txt` before starting source resolution, Queue API keeps a short registration grace period, and qB duplicate/status checks cover all categories.
 - Prevented blocked Weekly entries from repeatedly consuming image, magnet, and translation requests, and removed the old release-date/downloaded merge eviction so entries that have not been watched are not discarded by age.
 - Prevented scheduled title repair from rewriting an unchanged `weekly.json`, so no-op runs no longer invalidate reviewed maintenance manifests or churn the 5.5 MB index.
 - Excluded active qB downloads from completed-media poster repair even when a nearly finished sparse file temporarily passes the 95% allocation rule, derived the final repair count from execution-time state while still requiring a source for every poster, and made cleanup apply-time activity guards honor numeric-prefix compatibility aliases.

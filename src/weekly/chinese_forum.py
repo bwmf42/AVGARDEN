@@ -16,7 +16,7 @@ import time
 import html as html_lib
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import quote_plus, urljoin
 
 from curl_cffi import requests
 
@@ -96,6 +96,18 @@ _CODE_CANDIDATE = re.compile(
     r")\b"
 )
 _MAGNET_RE = re.compile(r"(magnet:\?xt=urn:btih:[a-zA-Z0-9]{32,40}[^\s\"'<>]*)", re.I)
+_SEARCH_RESULT = re.compile(
+    r'<li\b[^>]*class=["\'][^"\']*\bpbw\b[^"\']*["\'][^>]*>(.*?)</li>',
+    re.I | re.S,
+)
+_SEARCH_THREAD_LINK = re.compile(
+    r'<h3\b[^>]*>.*?<a\b[^>]*href=["\']([^"\']*(?:mod=viewthread|thread-\d+)[^"\']*)["\'][^>]*>(.*?)</a>',
+    re.I | re.S,
+)
+_SEARCH_FORUM_LINK = re.compile(
+    r'<a\b[^>]*href=["\'][^"\']*forum-(\d+)-\d+\.html[^"\']*["\'][^>]*>(.*?)</a>',
+    re.I | re.S,
+)
 
 
 def set_proxy(proxy: Optional[str]):
@@ -283,6 +295,35 @@ def extract_magnets(html: str) -> List[str]:
     return found
 
 
+def parse_search_html(value: str, avid: str, base: str = BASE, fid: str = FID) -> List[dict]:
+    """Parse exact video-ID matches from one Discuz forum search response."""
+    target = normalize_video_id(avid)
+    if not target:
+        return []
+
+    results = []
+    for block in _SEARCH_RESULT.findall(value or ""):
+        link_match = _SEARCH_THREAD_LINK.search(block)
+        forum_match = _SEARCH_FORUM_LINK.search(block)
+        if not link_match or not forum_match or forum_match.group(1) != str(fid):
+            continue
+        title = _strip_tags(link_match.group(2))
+        if extract_video_id(title) != target:
+            continue
+        date_match = re.search(r"\b(20\d{2}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?)\b", block)
+        magnets = extract_magnets(block)
+        results.append({
+            "id": target,
+            "title": title,
+            "forumUrl": urljoin(base.rstrip("/") + "/", html_lib.unescape(link_match.group(1))),
+            "forumName": _strip_tags(forum_match.group(2)),
+            "postDate": date_match.group(1) if date_match else "",
+            "magnet": magnets[0] if magnets else "",
+            "source": "plwt-chinese-search",
+        })
+    return results
+
+
 def extract_thread_images(value: str, base: str = BASE) -> List[str]:
     """Extract first-post attachment images, preferring full zoom/file URLs."""
     first_post = re.search(
@@ -329,6 +370,9 @@ class ForumClient:
 
     def list_url(self, page: int) -> str:
         return f"{self.base}/forum-{self.fid}-{int(page)}.html"
+
+    def search_url(self, query: str) -> str:
+        return f"{self.base}/search.php?mod=forum&searchsubmit=yes&srchtxt={quote_plus(query)}"
 
     def _headers(self, referer: Optional[str] = None) -> dict:
         h = dict(HEADERS)
@@ -513,6 +557,18 @@ class ForumClient:
             raise ValueError("refusing non-list URL")
         return self._get_html(url)
 
+    def search_exact(self, avid: str) -> List[dict]:
+        code = normalize_video_id(avid)
+        if not code:
+            return []
+        html = self._get_html(self.search_url(code))
+        if not html:
+            return []
+        if "30 秒" in html and "搜索" in html and "间隔" in html:
+            _log(f"search rate limited: {code}")
+            return []
+        return parse_search_html(html, code, base=self.base, fid=self.fid)
+
     def fetch_thread_html(self, forum_url: str) -> Optional[str]:
         """拉取帖子页 HTML（仅 thread- 路径）。"""
         url = (forum_url or "").strip()
@@ -567,6 +623,29 @@ def fetch_thread_magnet(forum_url: str) -> str:
     except Exception as e:
         _log(f"fetch_thread_magnet failed: {e}")
         return ""
+
+
+def search_exact_chinese(avid: str, client: Optional[ForumClient] = None) -> Optional[dict]:
+    """Search forum-103 once and return the first exact entry with a magnet."""
+    code = normalize_video_id(avid)
+    if not code:
+        return None
+    own_client = client is None
+    client = client or ForumClient(fid=FID)
+    if own_client and not client.ensure_safe():
+        return None
+    results = client.search_exact(code)
+    for index, item in enumerate(results[:3]):
+        magnet = (item.get("magnet") or "").strip()
+        if not magnet:
+            magnet = client.fetch_thread_magnet(item.get("forumUrl") or "")
+        if magnet:
+            result = dict(item)
+            result["magnet"] = magnet
+            return result
+        if index + 1 < min(3, len(results)):
+            time.sleep(random.uniform(THREAD_DELAY_MIN, THREAD_DELAY_MAX))
+    return None
 
 
 def get_list_until(

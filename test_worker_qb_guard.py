@@ -1,4 +1,6 @@
 import unittest
+import os
+import tempfile
 from unittest import mock
 
 from qb_task_guard import has_matching_qb_task
@@ -67,6 +69,33 @@ class WorkerQBGuardTest(unittest.TestCase):
         ):
             self.assertFalse(worker.download_video("HUNTC-583"))
         downloader_manager.assert_not_called()
+
+    @unittest.skipUnless(worker is not None, "requires the Worker container runtime")
+    def test_worker_marks_current_before_starting_download(self):
+        with tempfile.TemporaryDirectory() as root:
+            current_path = os.path.join(root, "current_download.txt")
+            original_running = worker.running
+            worker.running = True
+
+            def assert_current(_):
+                with open(current_path, encoding="utf-8") as handle:
+                    self.assertEqual(handle.read().strip(), "SSIS-951")
+                worker.running = False
+                return False
+
+            try:
+                with mock.patch.object(worker, "current_download_path", current_path), mock.patch.object(
+                    worker.data, "initialize_db"
+                ), mock.patch.object(
+                    worker, "read_queue_first_line", return_value="SSIS-951"
+                ), mock.patch.object(
+                    worker, "download_video", side_effect=assert_current
+                ), mock.patch.object(worker.time, "sleep"):
+                    worker.worker_loop()
+            finally:
+                worker.running = original_running
+            with open(current_path, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "")
 
 
 if __name__ == "__main__":

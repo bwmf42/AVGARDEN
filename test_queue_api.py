@@ -9,6 +9,7 @@ from contextlib import ExitStack
 from unittest.mock import patch
 
 import queue_api
+import download_source
 from queue_store import append_unique, read_queue, write_json
 
 
@@ -82,6 +83,18 @@ class QueueAPITest(unittest.TestCase):
             status, payload = self.request("/api/queue/")
         self.assertEqual(status, 200)
         self.assertEqual(payload, [])
+
+    def test_recent_registration_stays_visible_after_worker_pops_queue(self):
+        write_json(self.state_path, [{
+            "code": "SSIS-951",
+            "status": "queued",
+            "added_at": time.time(),
+        }])
+        with patch.object(queue_api, "qb_api", return_value=[]):
+            status, payload = self.request("/api/queue/")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload[0]["code"], "SSIS-951")
+        self.assertEqual(payload[0]["status"], "queued")
 
     def test_main_video_index_resolves_numeric_prefix_alias_without_overriding_primary(self):
         real_save_path = os.path.realpath(self.save_path)
@@ -157,6 +170,33 @@ class QueueAPITest(unittest.TestCase):
         self.assertEqual(removed, ["OLD-001"])
         self.assertFalse(os.path.exists(old_dir))
         self.assertTrue(os.path.isdir(fresh_dir))
+
+    def test_leaving_unqueued_online_detail_clears_source_cache(self):
+        online_dir = os.path.join(self.temp_dir.name, "online")
+        source_path = os.path.join(self.temp_dir.name, "download_sources.json")
+        os.makedirs(os.path.join(online_dir, "SSIS-951"))
+        download_source.save_cached_source(
+            "SSIS-951", {"source": "sukebei_chinese"}, path=source_path
+        )
+        with patch.object(queue_api, "ONLINE_DIR", online_dir), patch.object(
+            download_source, "SOURCE_CACHE_PATH", source_path
+        ):
+            self.assertTrue(queue_api.cleanup_online_detail("SSIS-951"))
+        self.assertIsNone(download_source.get_cached_source("SSIS-951", path=source_path))
+
+    def test_queued_online_detail_keeps_source_for_worker(self):
+        online_dir = os.path.join(self.temp_dir.name, "online")
+        source_path = os.path.join(self.temp_dir.name, "download_sources.json")
+        os.makedirs(os.path.join(online_dir, "SSIS-951"))
+        append_unique(self.queue_path, "SSIS-951")
+        download_source.save_cached_source(
+            "SSIS-951", {"source": "sukebei_chinese"}, path=source_path
+        )
+        with patch.object(queue_api, "ONLINE_DIR", online_dir), patch.object(
+            download_source, "SOURCE_CACHE_PATH", source_path
+        ):
+            self.assertTrue(queue_api.cleanup_online_detail("SSIS-951"))
+        self.assertIsNotNone(download_source.get_cached_source("SSIS-951", path=source_path))
 
 
 if __name__ == "__main__":

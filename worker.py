@@ -21,9 +21,8 @@ from src.log_writer import write as log_write
 from main_video import find_main_video
 from process_control import clear_cancel_request, is_cancel_requested, terminate_active_process
 from qb_task_guard import has_matching_qb_task
-from queue_store import append_unique, pop_first, read_json, update_json
+from queue_store import append_unique, pop_first, read_json, update_json, write_queue
 from video_id import local_video_id_aliases, normalize_video_id, safe_video_dir
-from weekly_store import update_json as update_weekly_json
 
 # 从 comm 加载配置
 from src.comm import *
@@ -64,7 +63,7 @@ logger.info(f"[Worker] proxy={myproxy}")
 
 # 工作锁文件（与 main.py 共用，确保单例下载）
 work_lock = os.path.join(project_root, "work")
-WEEKLY_JSON = os.path.join(save_path, "__weekly__", "weekly.json")
+current_download_path = os.environ.get("CURRENT_PATH", os.path.join(queue_dir, "current_download.txt"))
 
 running = True
 
@@ -87,6 +86,21 @@ def read_queue_first_line():
     except Exception as e:
         logger.error(f"[Worker] Error reading queue: {e}")
         return None
+
+
+def set_current_download(avid):
+    write_queue(current_download_path, [avid])
+
+
+def clear_current_download(avid):
+    current = ""
+    try:
+        with open(current_download_path, encoding="utf-8") as handle:
+            current = handle.read().strip()
+    except OSError:
+        pass
+    if current.upper() == str(avid or "").upper():
+        write_queue(current_download_path, [])
 
 
 def is_locked():
@@ -286,81 +300,17 @@ def clear_retry(avid):
 
 
 def get_magnet_from_weekly(avid):
-    """从 weekly.json 获取番号的磁链。
+    """Compatibility wrapper around the shared download-source resolver."""
+    from download_source import resolve_download_source
 
-    默认: 98堂 forumUrl 进帖取链 → weekly 已存 magnet → MissAV/sukebei
-    （论坛帖是磁链权威源；sukebei 仅后备）
-    """
-    def missav_fallback():
-        try:
-            from src.weekly import sukebei
-            sukebei.set_proxy(myproxy)
-            magnet = sukebei.search_missav_magnet(avid)
-            if magnet:
-                logger.info(f"[Magnet] Found MissAV magnet for {avid}")
-                return magnet
-        except Exception as e:
-            logger.warning(f"[Magnet] MissAV fallback failed for {avid}: {e}")
-        return None
-
-    def forum_magnet(forum_url, persist_id=None):
-        forum_url = (forum_url or "").strip()
-        if not forum_url:
-            return ""
-        try:
-            from src.weekly import chinese_forum
-            chinese_forum.set_proxy(myproxy)
-            magnet = chinese_forum.fetch_thread_magnet(forum_url) or ""
-            if not magnet:
-                return ""
-            logger.info(f"[Magnet] Found forum magnet for {avid}")
-            if persist_id and os.path.exists(WEEKLY_JSON):
-                try:
-                    def persist(data):
-                        for it in data if isinstance(data, list) else []:
-                            if it.get("id", "").upper() == str(persist_id).upper():
-                                it["magnet"] = magnet
-                                break
-                        return data
-
-                    update_weekly_json(WEEKLY_JSON, [], persist)
-                except Exception as e:
-                    logger.warning(f"[Magnet] persist forum magnet failed: {e}")
-            return magnet
-        except Exception as e:
-            logger.warning(f"[Magnet] forum magnet failed for {avid}: {e}")
-            return ""
-
-    if not os.path.exists(WEEKLY_JSON):
-        logger.warning(f"[Magnet] weekly.json not found: {WEEKLY_JSON}")
-        return missav_fallback()
-    try:
-        from metadata import clean_avid
-        with open(WEEKLY_JSON, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        codes_to_try = {avid.upper()}
-        cleaned = clean_avid(avid)
-        if cleaned != avid.upper():
-            codes_to_try.add(cleaned)
-        for item in data:
-            if item.get("id", "").upper() not in codes_to_try:
-                continue
-            # 1) 默认论坛帖
-            magnet = forum_magnet(item.get("forumUrl"), persist_id=item.get("id"))
-            if magnet:
-                return magnet
-            # 2) weekly 已有（历史 sukebei 等）
-            magnet = (item.get("magnet") or "").strip()
-            if magnet:
-                logger.info(f"[Magnet] Found magnet for {avid} (weekly id: {item['id']})")
-                return magnet
-            logger.warning(f"[Magnet] {avid} no forum/weekly magnet")
-            return missav_fallback()
-        logger.warning(f"[Magnet] {avid} not found in weekly.json")
-        return missav_fallback()
-    except Exception as e:
-        logger.error(f"[Magnet] Error reading weekly.json: {e}")
-        return missav_fallback()
+    source = resolve_download_source(avid, proxy=myproxy)
+    magnet = (source.get("magnet") or "").strip()
+    size = float(source.get("size_gib") or 0)
+    logger.info(
+        f"[DownloadSource] {avid} selected {source.get('source') or 'unknown'}"
+        + (f" ({size:.1f} GiB)" if size else "")
+    )
+    return magnet
 
 
 def notify_feishu_magnet_timeout(avid, magnet):
@@ -782,7 +732,7 @@ def download_video(avid):
     log_write("Worker", f"{avid} 开始下载")
 
     try:
-        # ======= 第一步：优先尝试磁链下载（中文字幕） =======
+        # ======= 第一步：共享解析器优先选择磁链 =======
         save_dir = safe_video_dir(save_path, avid)
         magnet = get_magnet_from_weekly(avid)
         retries = get_retries(avid)
@@ -824,7 +774,7 @@ def download_video(avid):
             return False
 
         # ======= 第二步：无可用磁链，尝试在线流 =======
-        logger.info(f"[Worker] {avid} 未找到磁链，尝试在线流...")
+        logger.info(f"[Worker] {avid} 98堂/Sukebei 未找到磁链，尝试在线流...")
         mgr = downloaderMgr.DownloaderMgr()
 
         if len(sorted_downloaders) == 0:
@@ -852,7 +802,7 @@ def download_video(avid):
             if not info:
                 logger.error(f"[Worker] {avid} 元数据获取失败 ({downloader.getDownloaderName()})")
                 if count >= len(sorted_downloaders):
-                    raise ValueError(f"{avid} 所有下载器均失败")
+                    raise ValueError(f"{avid} 98堂、Sukebei 和在线流均无可用源")
                 continue
 
             if not downloader.downloadM3u8(info.m3u8, avid):
@@ -863,7 +813,7 @@ def download_video(avid):
                     return False
                 logger.error(f"[Worker] {avid} 视频下载失败 ({downloader.getDownloaderName()})")
                 if count >= len(sorted_downloaders):
-                    raise ValueError(f"{avid} 所有下载器均失败")
+                    raise ValueError(f"{avid} 98堂、Sukebei 和在线流均无可用源")
                 continue
 
             downloaded = True
@@ -883,7 +833,7 @@ def download_video(avid):
         if is_cancel_requested(avid) or not running:
             clear_cancel_request(avid)
             return False
-        if not _handle_failure(avid, "所有源均失败"):
+        if not _handle_failure(avid, "98堂、Sukebei 和在线流均无可用源"):
             log_write("Worker", f"{avid} 已交 qB 后台继续下载")
     except Exception as e:
         logger.error(f"[Worker] 下载异常: {e}")
@@ -918,7 +868,11 @@ def worker_loop():
                 if not avid:
                     logger.error(f"[Worker] 丢弃非法队列项: {raw_avid!r}")
                     continue
-                download_video(avid)
+                set_current_download(avid)
+                try:
+                    download_video(avid)
+                finally:
+                    clear_current_download(avid)
                 # 下载完后短暂等待再取下一个
                 time.sleep(3)
             else:

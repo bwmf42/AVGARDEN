@@ -48,6 +48,7 @@ main_video_cache_root = ""
 main_video_cache_time = 0.0
 main_video_cache = {}
 MAIN_VIDEO_CACHE_TTL_SECONDS = int(os.environ.get("MAIN_VIDEO_CACHE_TTL_SECONDS", "30"))
+QUEUE_REGISTRATION_GRACE_SECONDS = int(os.environ.get("QUEUE_REGISTRATION_GRACE_SECONDS", "120"))
 
 
 def _actress_is_blocked(name: str) -> bool:
@@ -202,7 +203,7 @@ def qb_api(endpoint):
 
 
 def qb_remove_code(code, delete_files=False):
-    torrents = qb_api("/api/v2/torrents/info?category=AV_GARDEN")
+    torrents = qb_api("/api/v2/torrents/info")
     if not isinstance(torrents, list):
         return False
     hashes = []
@@ -233,7 +234,7 @@ def qb_remove_code(code, delete_files=False):
 def get_qb_progress(save_dir, torrents=None):
     """从 qBittorrent 获取指定下载目录的进度 {size, speed, progress_pct}"""
     if torrents is None:
-        torrents = qb_api("/api/v2/torrents/info?category=AV_GARDEN")
+        torrents = qb_api("/api/v2/torrents/info")
     if not torrents:
         return None
     code = os.path.basename(save_dir.rstrip("/")).upper()
@@ -721,11 +722,34 @@ def cleanup_online_detail(code):
     abs_target = os.path.abspath(target)
     if not abs_target.startswith(root + os.sep):
         return False
+    removed = False
     if os.path.isdir(abs_target):
         shutil.rmtree(abs_target)
         log(f"Cleaned online temp detail: {code}")
+        removed = True
+    if not _has_registered_job(code):
+        try:
+            from download_source import delete_cached_source
+            delete_cached_source(code)
+        except Exception as e:
+            log(f"Online source cache cleanup failed for {code}: {e}")
+    return removed
+
+
+def _has_registered_job(code):
+    target = normalize_online_code(code)
+    if not target:
+        return False
+    if target == read_current_download():
         return True
-    return False
+    if target in {normalize_online_code(item) for item in read_queue(QUEUE_PATH)}:
+        return True
+    return any(
+        normalize_online_code(item.get("code")) == target
+        and item.get("status") in ("queued", "downloading")
+        for item in load_state()
+        if isinstance(item, dict)
+    )
 
 
 def cleanup_expired_online_details(now=None):
@@ -755,6 +779,11 @@ def online_cleanup_loop(stop_event=None):
     stop_event = stop_event or threading.Event()
     while not stop_event.wait(ONLINE_CLEANUP_INTERVAL_SECONDS):
         cleanup_expired_online_details()
+        try:
+            from download_source import cleanup_expired_sources
+            cleanup_expired_sources()
+        except Exception as e:
+            log(f"Download source TTL cleanup failed: {e}")
 
 
 def download_online_cover(code, image_url):
@@ -795,9 +824,9 @@ def build_online_detail(raw_code):
     if not code:
         return None, "invalid code"
     try:
-        from src.weekly import artwork, javbus, sukebei
+        from download_source import resolve_download_source
+        from src.weekly import artwork, javbus
         javbus.set_proxy(ONLINE_PROXY)
-        sukebei.set_proxy(ONLINE_PROXY)
         artwork.set_proxy(ONLINE_PROXY)
         html = javbus.fetch_page(code)
         if not html:
@@ -832,8 +861,9 @@ def build_online_detail(raw_code):
                 item["cover"] = download_online_cover(code, remote_cover)
                 item["poster"] = item["cover"]
 
-        if not item.get("magnet"):
-            item["magnet"] = sukebei.search(code, html)
+        source = resolve_download_source(code, proxy=ONLINE_PROXY)
+        item["magnet"] = source.get("magnet") or ""
+        item["magnetSource"] = source.get("source") or ""
         return item, ""
     except Exception as e:
         log(f"Online detail lookup failed for {code}: {e}")
@@ -985,7 +1015,7 @@ class QueueHandler(BaseHTTPRequestHandler):
         queue_codes = read_queue_file()
         current_code = read_current_download()
         failed_codes = load_failure_codes()
-        qb_torrents = qb_api("/api/v2/torrents/info?category=AV_GARDEN")
+        qb_torrents = qb_api("/api/v2/torrents/info")
         if not isinstance(qb_torrents, list):
             qb_torrents = []
         
@@ -1137,6 +1167,16 @@ class QueueHandler(BaseHTTPRequestHandler):
                         "progress_pct": 0,
                     }
                     continue
+                added_at = float(item.get("added_at") or 0)
+                if added_at and time.time() - added_at < QUEUE_REGISTRATION_GRACE_SECONDS:
+                    result[c] = {
+                        "code": c,
+                        "status": "queued",
+                        "size": 0,
+                        "speed": 0,
+                        "progress_pct": 0,
+                    }
+                    continue
                 # Orphan: only scraped sidecar under __weekly__ etc., no real job
                 if find_ts_path(c) is None:
                     log(f"Removing stale queued state: {c} (not in queue/qB/current)")
@@ -1221,7 +1261,7 @@ class QueueHandler(BaseHTTPRequestHandler):
         clear_failure_record(code)
 
         # 检查 qBittorrent 是否已有此番号（含 queuedDL + tags）
-        qb_torrents = qb_api("/api/v2/torrents/info?category=AV_GARDEN")
+        qb_torrents = qb_api("/api/v2/torrents/info")
         cleaned = clean_avid(code)
         if isinstance(qb_torrents, list):
             for t in qb_torrents:
@@ -1327,6 +1367,11 @@ def main():
     # 启动自检：恢复残留锁、扫描未完成下载
     startup_recovery()
     cleanup_expired_online_details()
+    try:
+        from download_source import cleanup_expired_sources
+        cleanup_expired_sources()
+    except Exception as e:
+        log(f"Download source startup cleanup failed: {e}")
     threading.Thread(target=online_cleanup_loop, daemon=True).start()
     
     server = ThreadingHTTPServer(("0.0.0.0", port), QueueHandler)

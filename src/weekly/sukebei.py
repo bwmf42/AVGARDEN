@@ -1,7 +1,8 @@
-"""Sukebei/MissAV 磁链搜索"""
+"""Sukebei/MissAV magnet search and deterministic candidate selection."""
 import html
 import logging
-import re, urllib.parse, time, random
+import re, urllib.parse
+from datetime import datetime
 from curl_cffi import requests
 
 logger = logging.getLogger(__name__)
@@ -10,6 +11,7 @@ SEARCH_URLS = [
     "https://sukebei.nyaa.si/?q=",
     "https://nyaa.si/?q=",
 ]
+SUKEBEI_SEARCH_URL = SEARCH_URLS[0]
 
 CILI_URL = "https://cilisousuo.co/search?q="
 MISSAV_HOSTS = [
@@ -183,8 +185,8 @@ def _parse_nyaa_candidates(avid, page_html):
         view_match = re.search(r'/view/(\d+)', row)
         title_match = re.search(r'/view/\d+"[^>]*title="([^"]*)"', row)
         title = html.unescape(title_match.group(1) if title_match else "")
-        upper_title = title.upper()
         size_gib = _parse_nyaa_size_gib(row)
+        published_ts, published_at = _parse_nyaa_date(row)
         candidates.append({
             "magnet": html.unescape(magnet_match.group(1)),
             "title": title,
@@ -194,11 +196,49 @@ def _parse_nyaa_candidates(avid, page_html):
             "danger": "danger" in row_class.split(),
             "seeds": int(seeds_match[0]) if seeds_match else 0,
             "size_gib": size_gib,
-            "is_exact": avid.upper() in upper_title or avid.replace("-", "").upper() in upper_title.replace("-", ""),
-            "is_cn": any(kw in upper_title for kw in ["中文字幕", "中文", "[-C]", "[-CH]", "CHINESE"]),
+            "is_exact": _title_has_exact_code(avid, title),
+            "is_cn": _title_has_chinese_marker(avid, title),
+            "published_ts": published_ts,
+            "published_at": published_at,
             "index": index,
         })
     return candidates
+
+
+def _title_has_exact_code(avid, title):
+    code = str(avid or "").strip().upper()
+    if not code:
+        return False
+    flexible = r"[\s._-]*".join(re.escape(part) for part in re.split(r"[-_]", code))
+    return bool(re.search(
+        rf"(?<![A-Z0-9]){flexible}(?:[\s._-]*(?:C|CH))?(?![A-Z0-9])",
+        str(title or "").upper(),
+    ))
+
+
+def _title_has_chinese_marker(avid, title):
+    upper = str(title or "").upper()
+    if any(marker in upper for marker in ("中文字幕", "高清中文", "中文", "CHINESE", "FHD_CH")):
+        return True
+    code = str(avid or "").strip().upper()
+    flexible = r"[\s._-]*".join(re.escape(part) for part in re.split(r"[-_]", code))
+    return bool(re.search(rf"(?<![A-Z0-9]){flexible}[\s._-]*(?:C|CH)(?![A-Z0-9])", upper))
+
+
+def _parse_nyaa_date(row):
+    timestamp_match = re.search(r'data-timestamp=["\'](\d+)["\']', row, re.I)
+    if timestamp_match:
+        timestamp = int(timestamp_match.group(1))
+        return timestamp, datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
+    date_match = re.search(r"\b(20\d{2}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?)\b", row)
+    if not date_match:
+        return 0, ""
+    value = date_match.group(1)
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d %H:%M" if " " in value else "%Y-%m-%d")
+        return int(parsed.timestamp()), value
+    except ValueError:
+        return 0, value
 
 def _parse_nyaa_size_gib(row):
     size_match = re.search(r'<td class="text-center"[^>]*>\s*(\d+(?:\.\d+)?)\s*([KMGT]iB)\s*</td>', row, re.I)
@@ -227,17 +267,63 @@ def _nyaa_candidate_score(candidate):
         -candidate["index"],
     )
 
-def search(avid, page_html=""):
-    """搜索磁链，多源兜底，优先 JavBus 列表，其次 sukebei/nyaa，最后 MissAV。"""
-    try:
-        from src.weekly import javbus
-        javbus.set_proxy(PROXY)
-        magnet = javbus.search_magnet(avid, page_html)
-        if magnet:
-            logger.info("[JavBus] selected %s magnet from detail list", avid)
-            return magnet
-    except Exception as e:
-        logger.info("[JavBus] magnet lookup failed for %s: %s", avid, e)
 
-    magnet = _search_nyaa(avid, [f"{avid} 中文字幕", f"{avid} 中文", avid])
-    return magnet or search_missav_magnet(avid)
+def select_preferred_candidate(candidates):
+    """Pick largest Chinese candidate, otherwise the earliest original."""
+    exact = [candidate for candidate in candidates if candidate.get("is_exact") and candidate.get("magnet")]
+    chinese = [candidate for candidate in exact if candidate.get("is_cn")]
+    if chinese:
+        return max(
+            chinese,
+            key=lambda candidate: (
+                float(candidate.get("size_gib") or 0),
+                -int(candidate.get("published_ts") or 0),
+                int(candidate.get("index") or 0),
+            ),
+        )
+    if not exact:
+        return None
+    dated = [candidate for candidate in exact if int(candidate.get("published_ts") or 0) > 0]
+    if dated:
+        return min(dated, key=lambda candidate: (int(candidate["published_ts"]), -int(candidate.get("index") or 0)))
+    return max(exact, key=lambda candidate: int(candidate.get("index") or 0))
+
+
+def search_preferred(avid):
+    """Search Sukebei once and return the selected structured candidate."""
+    code = str(avid or "").strip().upper()
+    if not code:
+        return None
+    try:
+        url = f"{SUKEBEI_SEARCH_URL}{urllib.parse.quote(code)}"
+        response = requests.get(
+            url,
+            proxies=_proxies(),
+            headers=HEADERS,
+            impersonate="chrome110",
+            timeout=20,
+        )
+        if response.status_code != 200:
+            logger.info("[Sukebei] search %s returned HTTP %s", code, response.status_code)
+            return None
+        candidate = select_preferred_candidate(_parse_nyaa_candidates(code, response.text))
+        if not candidate:
+            logger.info("[Sukebei] no exact candidate for %s", code)
+            return None
+        logger.info(
+            "[Sukebei] selected %s mode=%s size=%.1fGiB date=%s title=%s",
+            code,
+            "largest-chinese" if candidate.get("is_cn") else "earliest-original",
+            candidate.get("size_gib") or 0,
+            candidate.get("published_at") or "unknown",
+            candidate.get("title", "")[:120],
+        )
+        return candidate
+    except Exception as exc:
+        logger.info("[Sukebei] lookup failed for %s: %s", code, exc)
+        return None
+
+def search(avid, page_html=""):
+    """Compatibility wrapper for the current Sukebei-only magnet lookup."""
+    candidate = search_preferred(avid)
+    return candidate.get("magnet", "") if candidate else ""
