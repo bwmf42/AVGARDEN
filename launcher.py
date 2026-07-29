@@ -209,7 +209,7 @@ def run_titlezh_retry(reason=""):
             sys.stderr.write(proc.stderr)
             sys.stderr.flush()
         # 解析补译结果：有 ok/fail/stripped 才写前台
-        ok = fail = stripped = None
+        ok = fail = stripped = cleared = None
         for line in out.splitlines():
             if "Done ok=" in line or "Translate done: ok=" in line:
                 # Done ok=48 fail=16 stripped=0 ...
@@ -220,6 +220,9 @@ def run_titlezh_retry(reason=""):
                 m2 = _re.search(r"stripped=(\d+)", line)
                 if m2:
                     stripped = int(m2.group(1))
+                m3 = _re.search(r"cleared=(\d+)", line)
+                if m3:
+                    cleared = int(m3.group(1))
             if "Missing titleZh before:" in line and "0" in line.split(":")[-1]:
                 pass
         if ok is None and fail is None:
@@ -227,11 +230,12 @@ def run_titlezh_retry(reason=""):
                 log_write("TitleZhRetry", f"补译失败{tag}: exit={proc.returncode}")
             else:
                 log(f"TitleZhRetry empty run{tag}")
-        elif (ok or 0) > 0 or (fail or 0) > 0 or (stripped or 0) > 0:
+        elif (ok or 0) > 0 or (fail or 0) > 0 or (stripped or 0) > 0 or (cleared or 0) > 0:
             log_write(
                 "TitleZhRetry",
                 f"补译完成{tag}: ok={ok or 0} fail={fail or 0}"
-                + (f" stripped={stripped}" if stripped else ""),
+                + (f" stripped={stripped}" if stripped else "")
+                + (f" cleared={cleared}" if cleared else ""),
             )
         else:
             log(f"TitleZhRetry nothing to do{tag}")

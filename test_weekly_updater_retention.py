@@ -6,6 +6,17 @@ from src.weekly import merge
 
 
 class WeeklyUpdaterRetentionTest(unittest.TestCase):
+    def test_clear_untranslatable_title_zh(self):
+        items = [
+            {"id": "NLD-032", "title": "NLD-032", "titleZh": "NLD-032: NLD-032"},
+            {"id": "SIMP-021", "title": "SIMP-021 Ran", "titleZh": "诱人美腿"},
+            {"id": "GVH-861", "title": "GVH-861 禁断介護 西元めいさ", "titleZh": "禁忌的看护", "actresses": ["西元めいさ"]},
+        ]
+        self.assertEqual(weekly_updater.clear_untranslatable_title_zh(items), 2)
+        self.assertEqual(items[0]["titleZh"], "")
+        self.assertEqual(items[1]["titleZh"], "")
+        self.assertEqual(items[2]["titleZh"], "禁忌的看护")
+
     def test_batch_translate_retries_invalid_nonempty_result(self):
         item = {
             "id": "SAN-478Z",

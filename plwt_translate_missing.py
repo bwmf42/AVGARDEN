@@ -9,7 +9,13 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or "/app")
 
 from weekly_store import atomic_write_json, weekly_update_lock
-from weekly_updater import WEEKLY_JSON, batch_translate, log, strip_actresses_from_title_zh
+from weekly_updater import (
+    WEEKLY_JSON,
+    batch_translate,
+    clear_untranslatable_title_zh,
+    log,
+    strip_actresses_from_title_zh,
+)
 from src.weekly import actresses as actress_util, blocking
 
 
@@ -22,6 +28,9 @@ def main():
         rules = blocking.load_rules()
         eligible = [item for item in items if not blocking.match_reason(item, rules)]
         titles_before = [str(item.get("titleZh") or "") for item in items]
+        cleared = clear_untranslatable_title_zh(eligible)
+        if cleared:
+            log(f"Cleared {cleared} untranslatable titleZh fields")
         missing_before = sum(
             1
             for i in eligible
@@ -44,7 +53,7 @@ def main():
         )
         log(
             f"Done ok={ok} fail={fail} stripped={stripped} "
-            f"missing_after={missing_after} path={WEEKLY_JSON}"
+            f"cleared={cleared} missing_after={missing_after} path={WEEKLY_JSON}"
         )
 
 

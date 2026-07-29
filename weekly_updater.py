@@ -126,6 +126,18 @@ def strip_actresses_from_title_zh(items):
     return n
 
 
+def clear_untranslatable_title_zh(items):
+    """Clear invented translations when the source is only a code or name."""
+    n = 0
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("titleZh") or "").strip() and not actress_util.item_has_translatable_title(item):
+            item["titleZh"] = ""
+            n += 1
+    return n
+
+
 def _legacy_first_seen(item):
     """Best available timestamp for items created before retention tracking."""
     for key in ("postDate", "releaseDate"):
@@ -216,12 +228,19 @@ def batch_translate(items, passes=None, checkpoint_path=None):
     """
     if passes is None:
         passes = max(1, DS_TRANSLATE_PASSES)
-    if not DS_API_KEY:
-        log("Skip translate: DEEPSEEK_API_KEY not set")
-        return 0, 0
 
     rules = blocking.load_rules()
     eligible = [item for item in items if not blocking.match_reason(item, rules)]
+
+    cleared = clear_untranslatable_title_zh(eligible)
+    if cleared:
+        log(f"Cleared {cleared} untranslatable titleZh fields")
+        if checkpoint_path:
+            atomic_write_json(checkpoint_path, items)
+
+    if not DS_API_KEY:
+        log("Skip translate: DEEPSEEK_API_KEY not set")
+        return 0, 0
 
     # Always peel names off existing titleZh first
     stripped = strip_actresses_from_title_zh(eligible)
