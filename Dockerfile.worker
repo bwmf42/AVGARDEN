@@ -21,6 +21,7 @@ COPY queue_api.py /app/
 COPY launcher.py /app/
 COPY process_control.py /app/
 COPY queue_store.py /app/
+COPY download_source.py /app/
 COPY video_id.py /app/
 COPY weekly_store.py /app/
 COPY weekly_watched_store.py /app/
