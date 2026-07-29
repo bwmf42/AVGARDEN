@@ -90,6 +90,17 @@ class TestActresses(unittest.TestCase):
         self.assertIn("丰满", item["titleZh"])
         self.assertNotIn("藤沢麗央", item["titleZh"])
 
+    def test_finalize_keeps_short_body_after_code(self):
+        item = {
+            "id": "GVH-861",
+            "title": "GVH-861 禁断介護 西元めいさ",
+            "titleZh": "GVH-861: 禁忌护理",
+            "actresses": ["西元めいさ"],
+        }
+        self.assertFalse(a.finalize_title_zh(item))
+        self.assertEqual(item["titleZh"], "GVH-861: 禁忌护理")
+        self.assertTrue(a.item_has_valid_title_zh(item))
+
     def test_title_zh_validity_rejects_truncated_results(self):
         source = "SAN-478Z とても長い日本語の作品タイトルで翻訳結果に十分な本文が必要です"
         self.assertFalse(a.is_valid_title_zh("", source, "SAN-478Z"))

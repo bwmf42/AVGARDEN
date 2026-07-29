@@ -571,6 +571,9 @@ def finalize_title_zh(item: dict) -> bool:
         if not m:
             break
         tok = m.group(1)
+        prefix_body = _CODE_PREFIX.sub("", stripped[: m.start()]).strip(" ：:—–-、,")
+        if tok not in act_set and _effective_title_length(prefix_body) == 0:
+            break
         if tok in act_set or _looks_like_person_name(tok):
             stripped = stripped[: m.start()].rstrip(" ：:—–-、,")
             continue
