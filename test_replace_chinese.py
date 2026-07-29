@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.parse
 from unittest import mock
 
 import replace_chinese
@@ -39,6 +40,25 @@ class ReplaceChineseSafetyTest(unittest.TestCase):
                 {"name": "../outside.mp4"},
             )
             self.assertIsNone(escaped)
+
+    def test_qb_task_removal_never_deletes_media_files(self):
+        class Response:
+            def read(self):
+                return b"Ok."
+
+        class Opener:
+            def __init__(self):
+                self.request = None
+
+            def open(self, request, timeout):
+                self.request = request
+                return Response()
+
+        opener = Opener()
+        replace_chinese.remove_qb_torrent_record(opener, "abc123")
+        values = urllib.parse.parse_qs(opener.request.data.decode())
+        self.assertEqual(values["hashes"], ["abc123"])
+        self.assertEqual(values["deleteFiles"], ["false"])
 
     def test_qb_tasks_protect_only_healthy_media_directories(self):
         with tempfile.TemporaryDirectory() as root:

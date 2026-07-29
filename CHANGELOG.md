@@ -73,7 +73,7 @@
 
 ### Fixed
 
-- Fixed Chinese replacement cleanup deleting a qB-open main video while leaving qB at a false 100%. Chinese merges now select and persist the exact qB file index/path/size, validate the completed video with `ffprobe`, standardize it as `{ID}-C.mp4`, protect every healthy qB-owned media directory, and never use file timestamps or a stale `.av_garden_chinese` marker alone to decide which main video can be removed.
+- Fixed Chinese replacement cleanup deleting a qB-open main video while leaving qB at a false 100%. Chinese merges now select and persist the exact qB file index/path/size, validate the completed video with `ffprobe`, standardize it as `{ID}-C.mp4`, protect every healthy qB-owned media directory, never use file timestamps or a stale `.av_garden_chinese` marker alone to decide which main video can be removed, and remove the completed qB task with `deleteFiles=false` so qB cannot recursively delete the media directory.
 - Fixed online search and queue addition selecting different torrents by persisting and reusing the server-verified source result. Exact matching rejects longer similar codes, and original selection no longer follows seed count or file size.
 - Fixed freshly added tasks disappearing after Worker popped `download_queue.txt`: Worker now writes `current_download.txt` before starting source resolution, Queue API keeps a short registration grace period, and qB duplicate/status checks cover all categories.
 - Prevented blocked Weekly entries from repeatedly consuming image, magnet, and translation requests, and removed the old release-date/downloaded merge eviction so entries that have not been watched are not discarded by age.

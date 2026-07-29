@@ -116,6 +116,20 @@ def qb_torrent_files(opener, torrent_hash):
     return json.loads(response.read().decode())
 
 
+def remove_qb_torrent_record(opener, torrent_hash):
+    """Remove qB state without allowing qB to recursively delete a media directory."""
+    import urllib.request
+
+    data = urllib.parse.urlencode({
+        "hashes": torrent_hash,
+        "deleteFiles": "false",
+    }).encode()
+    opener.open(
+        urllib.request.Request(f"{QB_URL}/api/v2/torrents/delete", data=data),
+        timeout=10,
+    ).read()
+
+
 def resolve_qb_file_path(torrent, selected_file):
     """Resolve a qB file-list entry without guessing from file timestamps."""
     save_path = os.path.realpath(str(torrent.get("save_path") or SAVE_PATH))
@@ -538,12 +552,9 @@ def merge_completed_chinese():
             )
 
             try:
-                opener.open(urllib.request.Request(
-                    f"{QB_URL}/api/v2/torrents/delete",
-                    data=f"hashes={hash_str}&deleteFiles=true".encode()
-                ), timeout=10)
+                remove_qb_torrent_record(opener, hash_str)
             except Exception as e:
-                log(f"  qB cleanup failed for {avid}: {e}; provenance retained")
+                log(f"  qB record removal failed for {avid}: {e}; provenance retained")
                 continue
 
             del pending[hash_str]

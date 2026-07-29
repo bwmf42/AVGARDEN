@@ -56,7 +56,7 @@
 - 真实 `.env`、`cfg/configs.json`、`db/`、`logs/`、媒体目录、Cookie、Token、API key、webhook 不应提交。
 - 公开部署应从 `.env.example` 和 `cfg/configs.json.example` 复制配置。
 - qBittorrent 默认保存目录必须和 `AV_GARDEN_DATA_DIR` 指向同一份存储。
-- 中文字幕合并必须以 qB 文件列表中的精确文件编号、路径和大小为准，并持久记录来源；禁止按文件新旧或仅凭 `.av_garden_chinese` 标记删除正片。进行中、校验中或做种中的 qB 任务所占目录不得执行媒体清理。
+- 中文字幕合并必须以 qB 文件列表中的精确文件编号、路径和大小为准，并持久记录来源；禁止按文件新旧或仅凭 `.av_garden_chinese` 标记删除正片。进行中、校验中或做种中的 qB 任务所占目录不得执行媒体清理；合并后只能用 `deleteFiles=false` 移除 qB 任务记录，禁止让 qB 递归删除作品目录。
 - 容器内路径建议保持：
   - `/data`：视频库
   - `/db`：运行状态和 SQLite
