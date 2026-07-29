@@ -25,6 +25,7 @@
 
 ### Changed
 
+- Reduced NAS deployment work by comparing staged and deployed source before building: Worker-only and Server-only changes now build/recreate only their affected Compose service, documentation-only syncs skip container restarts, unknown runtime paths safely rebuild both services, and an explicit service override remains available. Worker runtime source is copied into one Docker layer, while remote build output is buffered to a temporary NAS log to prevent long BuildKit output from stalling the deployment channel.
 - Unified qB torrent selection across Worker and Chinese replacement downloads: every A/GARDEN entry point now strictly enables only the single largest MP4 above 100 MiB and disables every other file, including additional parts and bundled ads. qB v5 `stop/start` and `stoppedDL`/`stoppedUP` states plus legacy `pause/resume` states are supported.
 - Chinese replacements now pause lower-priority same-title tasks, persist an explicit `forum-103` source tag, and only treat source-verified pending tasks as Chinese. After the Chinese video completes and passes validation, superseded qB records and only their exact listed files are removed; qB is never allowed to recursively delete the shared media directory.
 - Manual download selection now follows one deterministic chain: exact Chinese `forum-103` result from 98堂; otherwise the largest exact Chinese Sukebei torrent; otherwise the earliest-uploaded exact original Sukebei torrent; otherwise online stream. JavBus, Nyaa, and MissAV are no longer magnet candidates in this path.

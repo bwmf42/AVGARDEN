@@ -13,7 +13,7 @@
 
 | 操作 | 命令 |
 |------|------|
-| 部署 | `AVGARDEN_PASS=… bash deploy.sh`（或 `ssh zspace` rsync + compose） |
+| 部署 | `AVGARDEN_PASS=… bash deploy.sh`（自动只构建受影响服务；可用 `AVGARDEN_DEPLOY_SERVICES=server\|worker\|all` 强制指定） |
 | 状态 | `curl -s http://192.168.5.14:31471/api/videos` |
 | Worker 日志 | `ssh zspace 'sudo docker logs avgarden-worker --tail 40'` |
 | 周更新 | `docker exec avgarden-worker … weekly_updater.py` |
@@ -155,6 +155,8 @@ curl -sS http://127.0.0.1:31471/api/queue-status
 
 ## 部署后镜像清理
 
+- `deploy.sh` 会先对比临时目录和现役源码，Python/Worker 输入只构建 `worker`，Go/前端输入只构建 `server`，Compose 或未知运行时文件才重建两者；纯文档变化不重启容器。
+- Docker 构建输出写入 NAS `/tmp` 临时日志，成功时只打印末尾摘要并删除日志，失败时保留日志并输出末尾内容；不要恢复持续传输完整 BuildKit 输出的做法。
 - 新容器必须先确认处于 `Up`，且版本、队列等关键接口健康，再清理被替换的旧镜像。
 - 清理前核对所有容器实际引用的 image ID，只删除未被引用的旧 `avgarden-server` / `avgarden-worker` 镜像。
 - 不使用 `docker image prune -a` 等宽泛清理命令，不删除当前镜像、其它项目镜像或仍被容器引用的共享镜像；清理后再次检查容器和接口。
