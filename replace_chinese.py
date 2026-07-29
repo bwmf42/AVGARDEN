@@ -6,15 +6,16 @@
 - 一次性回补 CHINESE_FORUM_BACKFILL=1：按库 NFO 最早作品日停列表，再定向进帖
 不再使用 sukebei 搜中文字幕。
 """
-import json, os, re, time, random, shutil, subprocess, sys, urllib.parse
+import base64, json, os, re, time, random, shutil, subprocess, sys, urllib.parse, urllib.request
 from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.log_writer import write as log_write, cleanup as log_cleanup
 from main_video import (
-    MAIN_VIDEO_MIN_SIZE,
     collect_main_video_candidates,
     find_main_video,
 )
+from qb_file_selection import select_strict_largest_video, strict_priority_plan
+from qb_task_guard import matching_qb_tasks
 from video_id import normalize_local_video_id
 from weekly_store import update_json as update_weekly_json
 
@@ -89,23 +90,8 @@ def format_size(size):
 
 
 def select_qb_main_file(files):
-    """Select the exact main MP4 from qB's torrent file list."""
-    candidates = []
-    for item in files if isinstance(files, list) else []:
-        name = str(item.get("name") or "")
-        size = int(item.get("size") or 0)
-        index = item.get("index")
-        if index is None or not name.lower().endswith(".mp4") or size < MAIN_VIDEO_MIN_SIZE:
-            continue
-        candidates.append({
-            "index": int(index),
-            "name": name,
-            "size": size,
-            "progress": float(item.get("progress") or 0),
-        })
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: (item["size"], item["name"]))
+    """Compatibility wrapper for the shared strict torrent selector."""
+    return select_strict_largest_video(files)
 
 
 def qb_torrent_files(opener, torrent_hash):
@@ -114,6 +100,64 @@ def qb_torrent_files(opener, torrent_hash):
     endpoint = f"{QB_URL}/api/v2/torrents/files?hash={urllib.parse.quote(torrent_hash)}"
     response = opener.open(urllib.request.Request(endpoint), timeout=10)
     return json.loads(response.read().decode())
+
+
+def qb_post(opener, endpoint, values):
+    import urllib.request
+
+    data = urllib.parse.urlencode(values).encode()
+    response = opener.open(
+        urllib.request.Request(f"{QB_URL}{endpoint}", data=data),
+        timeout=10,
+    )
+    body = response.read().decode().strip()
+    if body == "Fails.":
+        raise RuntimeError(f"qB request failed: {endpoint}")
+    return body
+
+
+def qb_set_running(opener, torrent_hashes, running):
+    """Support qB v5 start/stop and older resume/pause endpoints."""
+    endpoints = ("start", "resume") if running else ("stop", "pause")
+    last_error = None
+    for action in endpoints:
+        try:
+            qb_post(opener, f"/api/v2/torrents/{action}", {"hashes": torrent_hashes})
+            return
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"qB could not {'start' if running else 'stop'} torrent(s): {last_error}")
+
+
+def apply_strict_file_selection(opener, avid, torrent_hash):
+    """Strictly enable only the largest MP4 in a torrent."""
+    files = qb_torrent_files(opener, torrent_hash)
+    plan = strict_priority_plan(files)
+    if not plan:
+        return None
+
+    selected = plan["selected"]
+    disabled = plan["disabled"]
+    qb_set_running(opener, torrent_hash, False)
+    try:
+        if disabled:
+            qb_post(opener, "/api/v2/torrents/filePrio", {
+                "hash": torrent_hash,
+                "id": "|".join(str(index) for index in disabled),
+                "priority": "0",
+            })
+        qb_post(opener, "/api/v2/torrents/filePrio", {
+            "hash": torrent_hash,
+            "id": str(selected["index"]),
+            "priority": "1",
+        })
+    finally:
+        qb_set_running(opener, torrent_hash, True)
+    log(
+        f"  {avid}: strict file selection {selected['name']} "
+        f"({format_size(selected['size'])}), disabled={len(disabled)}"
+    )
+    return selected
 
 
 def remove_qb_torrent_record(opener, torrent_hash):
@@ -128,6 +172,41 @@ def remove_qb_torrent_record(opener, torrent_hash):
         urllib.request.Request(f"{QB_URL}/api/v2/torrents/delete", data=data),
         timeout=10,
     ).read()
+
+
+def delete_exact_torrent_files(torrent, files, keep_paths=None, save_path=None):
+    """Delete only paths explicitly listed by qB, never a whole media directory."""
+    root = os.path.realpath(save_path or SAVE_PATH)
+    keep = {os.path.realpath(path) for path in (keep_paths or ()) if path}
+    deleted = []
+    failed = []
+    parents = set()
+    for item in files if isinstance(files, list) else []:
+        path = resolve_qb_file_path(torrent, item)
+        if not path:
+            continue
+        real = os.path.realpath(path)
+        try:
+            if os.path.commonpath((root, real)) != root or real in keep or os.path.islink(path):
+                continue
+        except ValueError:
+            continue
+        try:
+            os.remove(path)
+            deleted.append(os.path.relpath(real, root))
+            parents.add(os.path.dirname(real))
+        except OSError as exc:
+            failed.append(f"{os.path.relpath(real, root)}: {exc}")
+
+    for parent in sorted(parents, key=lambda value: len(value.split(os.sep)), reverse=True):
+        current = parent
+        while current != root:
+            try:
+                os.rmdir(current)
+            except OSError:
+                break
+            current = os.path.dirname(current)
+    return deleted, failed
 
 
 def resolve_qb_file_path(torrent, selected_file):
@@ -292,6 +371,19 @@ def update_weekly_magnet(avid, magnet):
     except Exception as e:
         log(f"  Update weekly magnet error: {e}")
 
+def torrent_is_known_chinese(torrent, pending=None, avid=""):
+    torrent_hash = str(torrent.get("hash") or "")
+    info = (pending or {}).get(torrent_hash)
+    if isinstance(info, dict) and info.get("source") == "forum-103":
+        return True
+    tags = {tag.strip().lower() for tag in str(torrent.get("tags") or "").split(",")}
+    if "plwt_chinese" in tags:
+        return True
+    probe = " ".join(str(torrent.get(field) or "") for field in ("name", "save_path", "content_path"))
+    avid = avid or clean_avid(probe)
+    return bool(avid and has_cn_marker_for_avid(probe, avid))
+
+
 def qb_has_cn_avid(avid):
     """检查 qB 里是否已有该番号的种子（只跳过已有中文字幕版的）"""
     import urllib.request, http.cookiejar
@@ -302,21 +394,16 @@ def qb_has_cn_avid(avid):
         opener.open(urllib.request.Request(f"{QB_URL}/api/v2/auth/login", data=login_data), timeout=5)
         resp = opener.open(urllib.request.Request(f"{QB_URL}/api/v2/torrents/info"), timeout=10)
         torrents = json.loads(resp.read().decode())
-        for t in torrents:
-            name = t.get("name", "")
-            sp = t.get("save_path", "")
-            content_path = t.get("content_path", "")
-            probe = " ".join([name, sp, content_path])
-            if text_has_avid(probe, avid):
-                # 已有中文字幕版 → 跳过；普通版 → 可以替换
-                if has_cn_marker_for_avid(probe, avid):
-                    return True
+        pending = load_pending()
+        for torrent in matching_qb_tasks(torrents, avid, include_broken=True):
+            if torrent_is_known_chinese(torrent, pending, avid):
+                return True
         return False
     except:
         return False
 
-def qb_add_magnet(magnet):
-    """加磁链到 qB，返回 torrent hash 或 None"""
+def qb_add_magnet(avid, magnet, metadata_timeout=120):
+    """Add a Chinese magnet and apply strict selection as soon as metadata arrives."""
     import urllib.request, http.cookiejar
     try:
         opener = qb_login()
@@ -327,20 +414,112 @@ def qb_add_magnet(magnet):
             before = {t["hash"] for t in json.loads(resp0.read().decode())}
         except:
             pass
-        add_data = f"urls={urllib.parse.quote(magnet)}&category=AV_GARDEN".encode()
+        add_data = urllib.parse.urlencode({
+            "urls": magnet,
+            "category": "AV_GARDEN",
+            "tags": f"{avid},plwt_chinese",
+            "autoTMM": "false",
+        }).encode()
         resp = opener.open(urllib.request.Request(f"{QB_URL}/api/v2/torrents/add", data=add_data), timeout=10)
         if resp.read().decode().strip() != "Ok.":
-            return None
-        time.sleep(2)
-        # 找到新增的 torrent hash
-        resp2 = opener.open(urllib.request.Request(f"{QB_URL}/api/v2/torrents/info"), timeout=10)
-        for t in json.loads(resp2.read().decode()):
-            if t["hash"] not in before:
-                return t["hash"]
-        return None
+            return None, None
+
+        expected_hash = magnet_info_hash(magnet)
+        deadline = time.time() + metadata_timeout
+        torrent_hash = None
+        while time.time() < deadline:
+            resp2 = opener.open(urllib.request.Request(f"{QB_URL}/api/v2/torrents/info"), timeout=10)
+            torrents = json.loads(resp2.read().decode())
+            for torrent in torrents:
+                current_hash = str(torrent.get("hash") or "").lower()
+                if (
+                    (expected_hash and current_hash == expected_hash)
+                    or torrent.get("magnet_uri") == magnet
+                    or (
+                        current_hash not in before
+                        and matching_qb_tasks([torrent], avid, include_broken=True)
+                    )
+                ):
+                    torrent_hash = torrent.get("hash")
+                    break
+            if torrent_hash:
+                try:
+                    selected = apply_strict_file_selection(opener, avid, torrent_hash)
+                except Exception as exc:
+                    log(f"  {avid}: strict selection retry: {exc}")
+                    selected = None
+                if selected:
+                    return torrent_hash, selected
+            time.sleep(2)
+        return torrent_hash, None
     except Exception as e:
         log(f"  qB add error: {e}")
-        return None
+        return None, None
+
+
+def magnet_info_hash(magnet):
+    for value in urllib.parse.parse_qs(urllib.parse.urlsplit(magnet).query).get("xt", []):
+        if not value.lower().startswith("urn:btih:"):
+            continue
+        raw = value.rsplit(":", 1)[-1].strip()
+        if re.fullmatch(r"[0-9a-fA-F]{40}", raw):
+            return raw.lower()
+        if re.fullmatch(r"[A-Z2-7]{32}", raw.upper()):
+            try:
+                return base64.b32decode(raw.upper()).hex()
+            except ValueError:
+                return ""
+    return ""
+
+
+def pause_superseded_tasks(opener, torrents, avid, pending=None):
+    """Pause lower-priority same-title tasks while a Chinese task is added."""
+    paused = []
+    for torrent in matching_qb_tasks(torrents, avid):
+        if torrent_is_known_chinese(torrent, pending, avid):
+            continue
+        torrent_hash = str(torrent.get("hash") or "")
+        if not torrent_hash:
+            continue
+        qb_set_running(opener, torrent_hash, False)
+        paused.append(torrent_hash)
+    return paused
+
+
+def resume_qb_tasks(opener, hashes):
+    if hashes:
+        qb_set_running(opener, "|".join(hashes), True)
+
+
+def remove_superseded_tasks(opener, torrents, avid, current_hash, pending, keep_paths=None):
+    """Remove same-title qB tasks and their exact files after Chinese validation."""
+    removed = []
+    failures = []
+    for torrent in matching_qb_tasks(torrents, avid, include_broken=True):
+        torrent_hash = str(torrent.get("hash") or "")
+        if not torrent_hash or torrent_hash == current_hash:
+            continue
+        try:
+            files = qb_torrent_files(opener, torrent_hash)
+            qb_set_running(opener, torrent_hash, False)
+            deleted, delete_failures = delete_exact_torrent_files(
+                torrent,
+                files,
+                keep_paths=keep_paths,
+            )
+            if delete_failures:
+                failures.extend(f"{torrent_hash[:12]} {item}" for item in delete_failures)
+                continue
+            remove_qb_torrent_record(opener, torrent_hash)
+            pending.pop(torrent_hash, None)
+            removed.append(torrent_hash)
+            log(
+                f"  {avid}: removed superseded torrent {torrent_hash[:12]} "
+                f"and {len(deleted)} exact file(s)"
+            )
+        except Exception as exc:
+            failures.append(f"{torrent_hash[:12]}: {exc}")
+    return removed, failures
 
 def log(msg):
     print(f"[ReplaceCN] {msg}", flush=True)
@@ -472,6 +651,8 @@ def merge_completed_chinese():
 
     merged = 0
     for hash_str, pending_info in list(pending.items()):
+        if hash_str not in pending:
+            continue
         if isinstance(pending_info, dict):
             avid = pending_info.get("avid", "")
             target_dirname = pending_info.get("target_dir", avid)
@@ -489,13 +670,9 @@ def merge_completed_chinese():
             del pending[hash_str]
             save_pending(pending)
             continue
-
-        state = t_info.get("state", "")
-        # completed states in qB
-        if state not in ("uploading", "stalledUP", "pausedUP", "queuedUP", "checkingUP"):
+        if not torrent_is_known_chinese(t_info, pending, avid):
+            log(f"  Skip unverified Chinese pending task for {avid}: {hash_str[:12]}")
             continue
-
-        log(f"  Merging {avid}: torrent={t_info.get('name','')}")
 
         try:
             files = qb_torrent_files(opener, hash_str)
@@ -503,6 +680,23 @@ def merge_completed_chinese():
             if not selected:
                 log(f"  No main MP4 in qB file list for {avid}; keep torrent and pending record")
                 continue
+            selection_applied = bool(
+                isinstance(pending_info, dict) and pending_info.get("strictSelectionApplied")
+            )
+            if not selection_applied:
+                selected = apply_strict_file_selection(opener, avid, hash_str) or selected
+                if not isinstance(pending_info, dict):
+                    pending_info = {"avid": avid, "target_dir": target_dirname}
+                pending_info["strictSelectionApplied"] = True
+                pending_info["strictSelectionAt"] = datetime.now().astimezone().isoformat()
+                pending[hash_str] = pending_info
+                save_pending(pending)
+
+            state = t_info.get("state", "")
+            if state not in ("uploading", "stalledUP", "pausedUP", "stoppedUP", "queuedUP", "checkingUP"):
+                continue
+
+            log(f"  Merging {avid}: torrent={t_info.get('name','')}")
             if selected["progress"] < 0.999:
                 log(f"  qB selected file is incomplete for {avid}: {selected['progress'] * 100:.1f}%")
                 continue
@@ -517,15 +711,16 @@ def merge_completed_chinese():
             pending[hash_str] = pending_info
             save_pending(pending)
 
-            src = resolve_qb_file_path(t_info, selected)
-            if not src or not validate_video_file(src):
-                log(f"  qB reports complete but exact source file is missing/invalid for {avid}; no cleanup")
-                continue
-
             target_dir = os.path.join(SAVE_PATH, target_dirname)
             os.makedirs(target_dir, exist_ok=True)
             dst = os.path.join(target_dir, f"{avid}-C.mp4")
-            if os.path.exists(dst) and os.path.realpath(dst) != os.path.realpath(src):
+            src = resolve_qb_file_path(t_info, selected)
+            if os.path.exists(dst) and validate_video_file(dst) and os.path.getsize(dst) == selected["size"]:
+                pass
+            elif not src or not validate_video_file(src):
+                log(f"  qB reports complete but exact source file is missing/invalid for {avid}; no cleanup")
+                continue
+            elif os.path.exists(dst) and os.path.realpath(dst) != os.path.realpath(src):
                 if not validate_video_file(dst) or os.path.getsize(dst) != selected["size"]:
                     log(f"  Refusing to overwrite existing {dst}; keep torrent for review")
                     continue
@@ -542,7 +737,23 @@ def merge_completed_chinese():
             with open(marker_path, "w", encoding="utf-8") as handle:
                 handle.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-            protected_dirs = qb_protected_media_dirs(torrents, exclude_hashes={hash_str})
+            removed_hashes, removal_failures = remove_superseded_tasks(
+                opener,
+                torrents,
+                avid,
+                hash_str,
+                pending,
+                keep_paths=[dst],
+            )
+            if removal_failures:
+                log(f"  {avid}: superseded cleanup pending: {'; '.join(removal_failures[:4])}")
+                save_pending(pending)
+                continue
+
+            protected_dirs = qb_protected_media_dirs(
+                torrents,
+                exclude_hashes={hash_str, *removed_hashes},
+            )
             cleanup_original(
                 avid,
                 target_dirname,
@@ -553,6 +764,15 @@ def merge_completed_chinese():
 
             try:
                 remove_qb_torrent_record(opener, hash_str)
+                deleted, delete_failures = delete_exact_torrent_files(
+                    t_info,
+                    files,
+                    keep_paths=[dst],
+                )
+                if delete_failures:
+                    log(f"  {avid}: Chinese torrent junk cleanup incomplete: {'; '.join(delete_failures[:4])}")
+                elif deleted:
+                    log(f"  {avid}: removed {len(deleted)} unselected Chinese torrent file(s)")
             except Exception as e:
                 log(f"  qB record removal failed for {avid}: {e}; provenance retained")
                 continue
@@ -977,7 +1197,21 @@ def main():
             existing_qb += 1
             log(f"  Skip {avid}: already in qB")
             continue
-        torrent_hash = qb_add_magnet(magnet)
+        paused_hashes = []
+        try:
+            opener = qb_login()
+            response = opener.open(
+                urllib.request.Request(f"{QB_URL}/api/v2/torrents/info"),
+                timeout=10,
+            )
+            torrents = json.loads(response.read().decode())
+            paused_hashes = pause_superseded_tasks(opener, torrents, avid, load_pending())
+        except Exception as exc:
+            log(f"  {avid}: could not pause superseded task(s): {exc}")
+            add_failed += 1
+            continue
+
+        torrent_hash, selected = qb_add_magnet(avid, magnet)
         if torrent_hash:
             log(f"  {avid}: added Chinese magnet to qB ({torrent_hash[:12]})")
             update_weekly_magnet(avid, magnet)
@@ -987,10 +1221,17 @@ def main():
                 "target_dir": target_dirname,
                 "source": "forum-103",
                 "added_at": datetime.now().astimezone().isoformat(),
+                "superseded_hashes": paused_hashes,
+                "strictSelectionApplied": bool(selected),
+                "strictSelectionAt": datetime.now().astimezone().isoformat() if selected else "",
             }
             save_pending(pending)
             added += 1
         else:
+            try:
+                resume_qb_tasks(opener, paused_hashes)
+            except Exception as exc:
+                log(f"  {avid}: failed to resume original task(s): {exc}")
             add_failed += 1
             log(f"  {avid}: failed to add to qB")
         time.sleep(random.uniform(2, 5))

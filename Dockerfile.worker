@@ -16,6 +16,7 @@ COPY cfg/ /app/cfg/
 COPY metadata.py /app/
 COPY worker.py /app/
 COPY main_video.py /app/
+COPY qb_file_selection.py /app/
 COPY qb_task_guard.py /app/
 COPY queue_api.py /app/
 COPY launcher.py /app/

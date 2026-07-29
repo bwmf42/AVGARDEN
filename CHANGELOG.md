@@ -25,6 +25,8 @@
 
 ### Changed
 
+- Unified qB torrent selection across Worker and Chinese replacement downloads: every A/GARDEN entry point now strictly enables only the single largest MP4 above 100 MiB and disables every other file, including additional parts and bundled ads. qB v5 `stop/start` and `stoppedDL`/`stoppedUP` states plus legacy `pause/resume` states are supported.
+- Chinese replacements now pause lower-priority same-title tasks, persist an explicit `forum-103` source tag, and only treat source-verified pending tasks as Chinese. After the Chinese video completes and passes validation, superseded qB records and only their exact listed files are removed; qB is never allowed to recursively delete the shared media directory.
 - Manual download selection now follows one deterministic chain: exact Chinese `forum-103` result from 98堂; otherwise the largest exact Chinese Sukebei torrent; otherwise the earliest-uploaded exact original Sukebei torrent; otherwise online stream. JavBus, Nyaa, and MissAV are no longer magnet candidates in this path.
 - 98堂 exact searches are serialized across processes with a 31-second minimum interval and one query per code, avoiding the site's search-rate limit. Sukebei candidates now carry parsed title, size, upload time, and exact/Chinese flags.
 - Made Server and Worker share a locked, atomic watched-state format with an internal manual/blocked reason while preserving the existing `/api/weekly-watched` response. The server is authoritative after browser migration, expired IDs absent from Weekly cannot be restored, online abnormal-search cache retention is 30 days, and routine maintenance records retain 30 days with at least the newest three copies.

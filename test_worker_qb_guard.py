@@ -3,7 +3,7 @@ import os
 import tempfile
 from unittest import mock
 
-from qb_task_guard import has_matching_qb_task
+from qb_task_guard import has_matching_qb_task, matching_qb_tasks
 
 try:
     import worker
@@ -50,6 +50,20 @@ class WorkerQBGuardTest(unittest.TestCase):
             "content_path": "/data/ROE-505-C",
         }]
         self.assertFalse(has_matching_qb_task(torrents, "ROE-505"))
+
+    def test_source_suffix_matches_the_base_video_id(self):
+        torrents = [{
+            "hash": "cn",
+            "state": "downloading",
+            "tags": "",
+            "name": "MNGS-071-U",
+            "content_path": "/data/MNGS-071-U",
+        }]
+        self.assertEqual(matching_qb_tasks(torrents, "MNGS-071"), torrents)
+
+    def test_stopped_qb_v5_task_still_blocks_a_duplicate(self):
+        torrents = [{"state": "stoppedDL", "tags": "MNGS-071", "name": "MNGS-071"}]
+        self.assertTrue(has_matching_qb_task(torrents, "MNGS-071"))
 
     @unittest.skipUnless(worker is not None, "requires the Worker container runtime")
     def test_worker_queries_all_qb_categories(self):

@@ -84,6 +84,21 @@ class QueueAPITest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload, [])
 
+    def test_qb_v5_stopped_download_is_reported_as_queued(self):
+        torrents = [{
+            "state": "stoppedDL",
+            "tags": "MNGS-071",
+            "name": "MNGS-071",
+            "completed": 10,
+            "dlspeed": 0,
+            "progress": 0.5,
+        }]
+        with patch.object(queue_api, "qb_api", return_value=torrents):
+            status, payload = self.request("/api/queue/")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload[0]["code"], "MNGS-071")
+        self.assertEqual(payload[0]["status"], "queued")
+
     def test_recent_registration_stays_visible_after_worker_pops_queue(self):
         write_json(self.state_path, [{
             "code": "SSIS-951",

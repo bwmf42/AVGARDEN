@@ -5,18 +5,15 @@ from video_id import local_video_id_aliases, normalize_video_id
 
 ACTIVE_QB_STATES = frozenset({
     "downloading", "stalledDL", "forcedDL", "metaDL", "queuedDL",
-    "checkingDL", "allocating", "moving", "checkingResumeData",
+    "pausedDL", "stoppedDL", "checkingDL", "allocating", "moving", "checkingResumeData",
 })
 DONE_QB_STATES = frozenset({
-    "queuedUP", "uploading", "stalledUP", "pausedUP", "forcedUP",
+    "queuedUP", "uploading", "stalledUP", "pausedUP", "stoppedUP", "forcedUP",
 })
 
 
-def has_matching_qb_task(torrents, video_id, completed_validator=None):
-    """Return whether an active or disk-backed completed qB task matches."""
-    if not isinstance(torrents, list):
-        return False
-
+def torrent_matches_video_id(torrent, video_id):
+    """Match a torrent to a canonical video ID, including source suffixes."""
     target = normalize_video_id(video_id) or str(video_id or "").upper().strip()
     target_aliases = set(local_video_id_aliases(target))
     if not target_aliases:
@@ -32,24 +29,39 @@ def has_matching_qb_task(torrents, video_id, completed_validator=None):
         for alias in target_aliases
     ]
 
+    torrent_aliases = set()
+    for tag in str(torrent.get("tags") or "").split(","):
+        torrent_aliases.update(local_video_id_aliases(tag.strip()))
+    if target_aliases.intersection(torrent_aliases):
+        return True
+    for field in ("name", "content_path", "save_path"):
+        value = str(torrent.get(field) or "").upper()
+        torrent_aliases = set(local_video_id_aliases(value))
+        if target_aliases.intersection(torrent_aliases) or any(
+            boundary.search(value) for boundary in boundaries
+        ):
+            return True
+    return False
+
+
+def matching_qb_tasks(torrents, video_id, include_broken=False):
+    if not isinstance(torrents, list):
+        return []
+    matches = []
     for torrent in torrents:
         state = str(torrent.get("state", ""))
-        if state not in ACTIVE_QB_STATES and state not in DONE_QB_STATES:
+        if not include_broken and state not in ACTIVE_QB_STATES and state not in DONE_QB_STATES:
             continue
-        torrent_aliases = set()
-        for tag in str(torrent.get("tags") or "").split(","):
-            torrent_aliases.update(local_video_id_aliases(tag.strip()))
-        matched = bool(target_aliases.intersection(torrent_aliases))
-        for field in ("name", "content_path", "save_path"):
-            value = str(torrent.get(field) or "").upper()
-            torrent_aliases = set(local_video_id_aliases(value))
-            if target_aliases.intersection(torrent_aliases) or any(
-                boundary.search(value) for boundary in boundaries
-            ):
-                matched = True
-                break
-        if not matched:
-            continue
+        if torrent_matches_video_id(torrent, video_id):
+            matches.append(torrent)
+    return matches
+
+
+def has_matching_qb_task(torrents, video_id, completed_validator=None):
+    """Return whether an active or disk-backed completed qB task matches."""
+    target = normalize_video_id(video_id) or str(video_id or "").upper().strip()
+    for torrent in matching_qb_tasks(torrents, target):
+        state = str(torrent.get("state", ""))
         if state in ACTIVE_QB_STATES:
             return True
         if completed_validator is not None and completed_validator(target, torrent):

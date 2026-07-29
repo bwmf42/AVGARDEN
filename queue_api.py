@@ -91,10 +91,10 @@ def clean_avid(name):
 # qB states that mean "still our job" (must include queuedDL — waiting for a slot)
 _QB_ACTIVE_DL = frozenset({
     "downloading", "stalledDL", "metaDL", "forcedDL", "queuedDL",
-    "checkingDL", "allocating", "moving", "checkingResumeData",
+    "pausedDL", "stoppedDL", "checkingDL", "allocating", "moving", "checkingResumeData",
 })
 _QB_DONE_UP = frozenset({
-    "queuedUP", "uploading", "stalledUP", "pausedUP", "forcedUP",
+    "queuedUP", "uploading", "stalledUP", "pausedUP", "stoppedUP", "forcedUP",
 })
 
 
@@ -124,7 +124,7 @@ def qb_status_from_state(torrent_state):
     if torrent_state in _QB_DONE_UP:
         return "done"
     if torrent_state in _QB_ACTIVE_DL:
-        if torrent_state == "queuedDL":
+        if torrent_state in ("queuedDL", "pausedDL", "stoppedDL"):
             return "queued"
         return "downloading"
     return ""

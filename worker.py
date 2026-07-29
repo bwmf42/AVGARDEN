@@ -20,6 +20,7 @@ sys.path.insert(0, project_root)
 from src.log_writer import write as log_write
 from main_video import find_main_video
 from process_control import clear_cancel_request, is_cancel_requested, terminate_active_process
+from qb_file_selection import strict_priority_plan
 from qb_task_guard import has_matching_qb_task
 from queue_store import append_unique, pop_first, read_json, update_json, write_queue
 from video_id import local_video_id_aliases, normalize_video_id, safe_video_dir
@@ -49,8 +50,6 @@ failed_queue_path = os.path.join(queue_dir, "failed_queue.txt")
 failed_queue_json_path = os.path.join(queue_dir, "failed_queue.json")
 retry_file = os.path.join(os.path.dirname(queue_path) if os.path.dirname(queue_path) else "/db", "retry_counts.json")
 MAX_RETRIES = 3
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".m2ts", ".mov", ".flv")
-MIN_VIDEO_FILE_SIZE = 10 * 1024 * 1024
 MAGNET_COMPLETED = "completed"
 MAGNET_PENDING = "pending"
 MAGNET_FAILED = "failed"
@@ -377,6 +376,16 @@ def qbittorrent_post(endpoint, params):
     return qbittorrent_api("POST", endpoint, urllib.parse.urlencode(params))
 
 
+def qbittorrent_set_running(torrent_hash, running):
+    """Support qB v5 start/stop and older resume/pause endpoints."""
+    endpoints = ("start", "resume") if running else ("stop", "pause")
+    for action in endpoints:
+        result = qbittorrent_post(f"/api/v2/torrents/{action}", {"hashes": torrent_hash})
+        if result is True:
+            return True
+    return False
+
+
 def cancel_qb_tasks(avid, delete_files=False):
     torrents = qbittorrent_api("GET", "/api/v2/torrents/info?category=AV_GARDEN")
     if not isinstance(torrents, list):
@@ -404,7 +413,7 @@ def cancel_qb_tasks(avid, delete_files=False):
 
 
 def apply_largest_video_only(avid, torrent_hash):
-    """只保留种子里最大的一个视频文件下载。"""
+    """严格只保留种子里最大的一个 MP4，其他文件全部禁用。"""
     if not torrent_hash:
         return False
 
@@ -415,36 +424,22 @@ def apply_largest_video_only(avid, torrent_hash):
         logger.info(f"[Magnet] {avid} file list not ready, waiting...")
         return False
 
-    candidates = []
-    for item in files:
-        name = str(item.get("name", ""))
-        ext = os.path.splitext(name)[1].lower()
-        size = int(item.get("size") or 0)
-        index = item.get("index")
-        if index is None:
-            continue
-        if ext in VIDEO_EXTENSIONS and size > MIN_VIDEO_FILE_SIZE:
-            candidates.append((size, int(index), name))
-
-    if not candidates:
+    plan = strict_priority_plan(files)
+    if not plan:
         logger.warning(f"[Magnet] {avid} no video file found in torrent, keep original file priorities")
         return True
-
-    candidates.sort(reverse=True)
-    selected_size, selected_index, selected_name = candidates[0]
-    skip_ids = []
-    for item in files:
-        index = item.get("index")
-        if index is None or int(index) == selected_index:
-            continue
-        skip_ids.append(str(index))
+    selected = plan["selected"]
+    selected_index = selected["index"]
+    skip_ids = [str(index) for index in plan["disabled"]]
 
     logger.info(
-        f"[Magnet] {avid} selected largest video: {selected_name} "
-        f"({selected_size/1024/1024:.1f} MB), disabling {len(skip_ids)} other files"
+        f"[Magnet] {avid} selected strict largest video: {selected['name']} "
+        f"({selected['size']/1024/1024:.1f} MB), disabling {len(skip_ids)} other files"
     )
 
-    qbittorrent_post("/api/v2/torrents/pause", {"hashes": torrent_hash})
+    if not qbittorrent_set_running(torrent_hash, False):
+        logger.warning(f"[Magnet] {avid} failed to stop torrent before strict file selection")
+        return False
     try:
         if skip_ids:
             result = qbittorrent_post(
@@ -463,7 +458,8 @@ def apply_largest_video_only(avid, torrent_hash):
             logger.warning(f"[Magnet] {avid} failed to keep selected video priority, will retry")
             return False
     finally:
-        qbittorrent_post("/api/v2/torrents/resume", {"hashes": torrent_hash})
+        if not qbittorrent_set_running(torrent_hash, True):
+            logger.error(f"[Magnet] {avid} failed to restart torrent after strict file selection")
 
     return True
 
@@ -627,7 +623,7 @@ def try_magnet_download(avid, save_dir, magnet=None):
             file_selection_done = apply_largest_video_only(avid, torrent_hash)
 
         # 检查是否完成
-        if state in ("queuedUP", "uploading", "stalledUP", "pausedUP"):
+        if state in ("queuedUP", "uploading", "stalledUP", "pausedUP", "stoppedUP"):
             logger.info(f"[Magnet] {avid} qBittorrent state: {state}, checking file...")
             content_path = target.get("content_path", "")
             output_path = find_and_rename_output(save_dir, avid, content_path)

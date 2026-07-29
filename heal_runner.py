@@ -49,10 +49,10 @@ DS_MODEL = {
     "deepseek-reasoner": "deepseek-v4-pro",
 }.get(_DS_RAW, _DS_RAW)
 
-_QB_DONE = frozenset({"queuedUP", "uploading", "stalledUP", "pausedUP", "forcedUP"})
+_QB_DONE = frozenset({"queuedUP", "uploading", "stalledUP", "pausedUP", "stoppedUP", "forcedUP"})
 _QB_ACTIVE = frozenset({
     "downloading", "stalledDL", "metaDL", "forcedDL", "queuedDL",
-    "checkingDL", "allocating", "moving", "checkingResumeData",
+    "pausedDL", "stoppedDL", "checkingDL", "allocating", "moving", "checkingResumeData",
 })
 
 
