@@ -10,10 +10,10 @@ import heal_runner as h
 class TestHealRunner(unittest.TestCase):
     def test_count_titlezh_gaps(self):
         items = [
-            {"title": "a", "titleZh": ""},
+            {"title": "source title", "titleZh": ""},
             {"title": "b", "titleZh": "中文"},
             {"title": "", "titleZh": ""},
-            {"title": "c"},
+            {"title": "another title"},
             {
                 "id": "SAN-478Z",
                 "title": "SAN-478Z とても長い日本語の作品タイトルで翻訳結果に十分な本文が必要です",

@@ -15,7 +15,7 @@ def is_broken_title_zh(item: dict) -> bool:
     title = str(item.get("title") or "").strip()
     if not zh or not title:
         return False
-    return not actress_util.item_has_valid_title_zh(item)
+    return actress_util.item_needs_title_zh(item)
 
 
 def main():

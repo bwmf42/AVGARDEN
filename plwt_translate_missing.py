@@ -25,7 +25,7 @@ def main():
         missing_before = sum(
             1
             for i in eligible
-            if not actress_util.item_has_valid_title_zh(i) and str(i.get("title") or "").strip()
+            if actress_util.item_needs_title_zh(i)
         )
         log(f"Missing titleZh before: {missing_before}")
         stripped = strip_actresses_from_title_zh(eligible)
@@ -40,7 +40,7 @@ def main():
         missing_after = sum(
             1
             for i in eligible
-            if not actress_util.item_has_valid_title_zh(i) and str(i.get("title") or "").strip()
+            if actress_util.item_needs_title_zh(i)
         )
         log(
             f"Done ok={ok} fail={fail} stripped={stripped} "

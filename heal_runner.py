@@ -119,7 +119,7 @@ def count_titlezh_gaps(items: Optional[list] = None) -> int:
         if blocking is not None and blocking.match_reason(i, rules):
             continue
         valid = (
-            actress_util.item_has_valid_title_zh(i)
+            not actress_util.item_needs_title_zh(i)
             if actress_util is not None
             else bool(str(i.get("titleZh") or "").strip())
         )

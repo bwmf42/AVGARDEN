@@ -131,7 +131,7 @@ def missing_fields(item):
         missing.append("fanarts")
     if not item.get("magnet"):
         missing.append("magnet")
-    if not actress_util.item_has_valid_title_zh(item):
+    if actress_util.item_needs_title_zh(item):
         missing.append("titleZh")
     if not has_local_cover(item):
         missing.append("cover")
@@ -154,7 +154,7 @@ def normalize_existing_actresses(items):
 
 
 def translate_title(item):
-    if actress_util.item_has_valid_title_zh(item) or not item.get("title") or not DS_API_KEY:
+    if not actress_util.item_needs_title_zh(item) or not DS_API_KEY:
         return False
 
     actress_util.ensure_actresses(item)

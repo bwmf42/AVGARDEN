@@ -114,6 +114,16 @@ class TestActresses(unittest.TestCase):
             )
         )
 
+    def test_title_translation_requires_real_source_body(self):
+        self.assertFalse(a.item_has_translatable_title({"id": "NLD-032", "title": "NLD-032"}))
+        self.assertFalse(a.item_has_translatable_title({"id": "DEBZ-015", "title": "DEBZ-015 なお", "actresses": ["なお"]}))
+        self.assertFalse(a.item_has_translatable_title({"id": "SIMM-907", "title": "SIMM-907 あや"}))
+        self.assertTrue(
+            a.item_has_translatable_title(
+                {"id": "GVH-861", "title": "GVH-861 禁断介護 西元めいさ", "actresses": ["西元めいさ"]}
+            )
+        )
+
     def test_fold_and_snap_blocked(self):
         import os
         import tempfile

@@ -500,6 +500,28 @@ def item_has_valid_title_zh(item: dict) -> bool:
     )
 
 
+def item_has_translatable_title(item: dict) -> bool:
+    """Whether the source contains title body beyond a code or short name."""
+    if not isinstance(item, dict):
+        return False
+    source = str(item.get("title") or item.get("titleJp") or "").strip()
+    if not source:
+        return False
+    body = strip_code_prefix(source)
+    acts = clean_actresses(item.get("actresses") or [])
+    for name in sorted(acts, key=len, reverse=True):
+        body = re.sub(
+            rf"(?:[\s　、,·・/／]*{re.escape(name)})+\s*$",
+            "",
+            body,
+        ).rstrip(" ：:—–-、,/／")
+    return _effective_title_length(body) >= 4
+
+
+def item_needs_title_zh(item: dict) -> bool:
+    return item_has_translatable_title(item) and not item_has_valid_title_zh(item)
+
+
 def finalize_title_zh(item: dict) -> bool:
     """Strip actress names and Chinese em-dash name tails from titleZh.
 

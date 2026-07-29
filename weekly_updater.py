@@ -234,7 +234,7 @@ def batch_translate(items, passes=None, checkpoint_path=None):
     for pass_i in range(1, passes + 1):
         to_translate = [
             i for i in eligible
-            if not actress_util.item_has_valid_title_zh(i) and str(i.get("title") or "").strip()
+            if actress_util.item_needs_title_zh(i)
         ]
         if not to_translate:
             if pass_i == 1:
@@ -386,7 +386,7 @@ def _main_locked():
     atomic_write_json(WEEKLY_JSON, merged)
     still = sum(
         1 for i in merged
-        if not actress_util.item_has_valid_title_zh(i) and str(i.get("title") or "").strip()
+        if actress_util.item_needs_title_zh(i)
     )
     log(f"=== Done: {len(merged)} items (+{len(new_items)} new) titleZh_missing={still} ===")
     # 供 heal 探针展示上次刮削结果（不触发自动重刮）
