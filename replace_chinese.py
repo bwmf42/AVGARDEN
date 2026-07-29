@@ -6,11 +6,15 @@
 - 一次性回补 CHINESE_FORUM_BACKFILL=1：按库 NFO 最早作品日停列表，再定向进帖
 不再使用 sukebei 搜中文字幕。
 """
-import json, os, re, time, random, sys, urllib.parse
+import json, os, re, time, random, shutil, subprocess, sys, urllib.parse
 from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.log_writer import write as log_write, cleanup as log_cleanup
-from main_video import collect_main_video_candidates, choose_main_video_candidate
+from main_video import (
+    MAIN_VIDEO_MIN_SIZE,
+    collect_main_video_candidates,
+    find_main_video,
+)
 from video_id import normalize_local_video_id
 from weekly_store import update_json as update_weekly_json
 
@@ -21,6 +25,7 @@ QB_URL = os.environ.get("QBITTORRENT_URL", "http://127.0.0.1:8080")
 QB_USER = os.environ.get("QBITTORRENT_USERNAME", "admin")
 QB_PASS = os.environ.get("QBITTORRENT_PASSWORD", "adminadmin")
 PENDING_FILE = os.environ.get("CHINESE_PENDING_FILE", "/db/chinese_pending.json")
+MEDIA_PROVENANCE_FILE = ".av_garden_media.json"
 BACKFILL = os.environ.get("CHINESE_FORUM_BACKFILL", "").strip().lower() in ("1", "true", "yes", "on")
 DAILY_PAGES = int(os.environ.get("CHINESE_FORUM_DAILY_PAGES", "2"))
 BACKFILL_MAX_PAGES = int(os.environ.get("CHINESE_FORUM_MAX_PAGES", "0"))  # 0=只靠日期
@@ -83,16 +88,157 @@ def format_size(size):
         size /= 1024
 
 
-def select_main_mp4(full_path, avid):
-    candidates = collect_main_video_candidates(full_path)
+def select_qb_main_file(files):
+    """Select the exact main MP4 from qB's torrent file list."""
+    candidates = []
+    for item in files if isinstance(files, list) else []:
+        name = str(item.get("name") or "")
+        size = int(item.get("size") or 0)
+        index = item.get("index")
+        if index is None or not name.lower().endswith(".mp4") or size < MAIN_VIDEO_MIN_SIZE:
+            continue
+        candidates.append({
+            "index": int(index),
+            "name": name,
+            "size": size,
+            "progress": float(item.get("progress") or 0),
+        })
     if not candidates:
-        return None, []
-    selected = choose_main_video_candidate(candidates)
-    for item in candidates:
-        item["name"] = os.path.basename(item["path"])
-        item["rel"] = os.path.relpath(item["path"], full_path) if os.path.isdir(full_path) else item["name"]
-    skipped = [item for item in candidates if item["path"] != selected["path"]]
-    return selected, skipped
+        return None
+    return max(candidates, key=lambda item: (item["size"], item["name"]))
+
+
+def qb_torrent_files(opener, torrent_hash):
+    import urllib.request
+
+    endpoint = f"{QB_URL}/api/v2/torrents/files?hash={urllib.parse.quote(torrent_hash)}"
+    response = opener.open(urllib.request.Request(endpoint), timeout=10)
+    return json.loads(response.read().decode())
+
+
+def resolve_qb_file_path(torrent, selected_file):
+    """Resolve a qB file-list entry without guessing from file timestamps."""
+    save_path = os.path.realpath(str(torrent.get("save_path") or SAVE_PATH))
+    relative = str(selected_file.get("name") or "").lstrip("/\\")
+    if os.path.normpath(relative) == os.pardir or os.path.normpath(relative).startswith(os.pardir + os.sep):
+        return None
+    candidate = os.path.realpath(os.path.join(save_path, relative))
+    try:
+        if os.path.commonpath((save_path, candidate)) == save_path and os.path.isfile(candidate):
+            return candidate
+    except ValueError:
+        return None
+
+    content_path = os.path.realpath(str(torrent.get("content_path") or ""))
+    if os.path.isfile(content_path):
+        return content_path if os.path.basename(content_path) == os.path.basename(relative) else None
+    fallback = os.path.realpath(os.path.join(content_path, os.path.basename(relative)))
+    try:
+        if content_path and os.path.commonpath((content_path, fallback)) == content_path and os.path.isfile(fallback):
+            return fallback
+    except ValueError:
+        pass
+    return None
+
+
+def validate_video_file(path):
+    if find_main_video(path) != path:
+        return False
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        log("  ffprobe unavailable; refusing destructive Chinese merge cleanup")
+        return False
+    result = subprocess.run(
+        [
+            ffprobe,
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_type",
+            "-of", "default=nw=1:nk=1",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return result.returncode == 0 and "video" in (result.stdout or "").lower()
+
+
+def _atomic_write_json(path, payload):
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    temp_path = f"{path}.tmp-{os.getpid()}-{time.time_ns()}"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def write_media_provenance(target_dir, avid, torrent_hash, selected_file, destination):
+    relative = os.path.relpath(destination, target_dir)
+    payload = {
+        "version": 1,
+        "updatedAt": datetime.now().astimezone().isoformat(),
+        "chineseMain": {
+            "videoId": avid,
+            "path": relative,
+            "size": os.path.getsize(destination),
+            "source": "forum-103",
+            "torrentHash": torrent_hash,
+            "torrentFileIndex": selected_file["index"],
+            "torrentFilePath": selected_file["name"],
+        },
+    }
+    _atomic_write_json(os.path.join(target_dir, MEDIA_PROVENANCE_FILE), payload)
+
+
+def recorded_chinese_main(dpath):
+    path = os.path.join(dpath, MEDIA_PROVENANCE_FILE)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        relative = str(payload.get("chineseMain", {}).get("path") or "")
+        if not relative or os.path.isabs(relative):
+            return None
+        target = os.path.realpath(os.path.join(dpath, relative))
+        if os.path.commonpath((os.path.realpath(dpath), target)) != os.path.realpath(dpath):
+            return None
+        return target if find_main_video(target) == target else None
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def qb_protected_media_dirs(torrents, save_path=None, exclude_hashes=None):
+    """Return media directories currently owned by any healthy qB task."""
+    save_path = os.path.realpath(save_path or SAVE_PATH)
+    excluded = {str(value) for value in (exclude_hashes or ())}
+    protected = set()
+    for torrent in torrents if isinstance(torrents, list) else []:
+        if str(torrent.get("hash") or "") in excluded:
+            continue
+        if str(torrent.get("state") or "") in ("missingFiles", "error", "unknown"):
+            continue
+        content_path = str(torrent.get("content_path") or "")
+        if not content_path:
+            content_path = os.path.join(str(torrent.get("save_path") or save_path), str(torrent.get("name") or ""))
+        real = os.path.realpath(content_path)
+        try:
+            relative = os.path.relpath(real, save_path)
+        except ValueError:
+            continue
+        if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+            continue
+        first = relative.split(os.sep, 1)[0]
+        if first and first not in (".", "__weekly__", "__online__", "thumb"):
+            protected.add(os.path.realpath(os.path.join(save_path, first)))
+    return protected
 
 def qb_login():
     import urllib.request, http.cookiejar
@@ -112,8 +258,7 @@ def load_pending():
     return {}
 
 def save_pending(pending):
-    with open(PENDING_FILE, "w") as f:
-        json.dump(pending, f, indent=2)
+    _atomic_write_json(PENDING_FILE, pending)
 
 def update_weekly_magnet(avid, magnet):
     """更新 weekly.json 里该番号的 magnet 字段"""
@@ -191,11 +336,14 @@ def dir_has_cn_video(dpath, dirname, mp4_files, avid=None):
     avid = avid or clean_avid(dirname)
     if has_cn_marker_for_avid(dirname, avid):
         return True
-    if os.path.exists(os.path.join(dpath, ".av_garden_chinese")):
+    if recorded_chinese_main(dpath):
         return True
     for filename in mp4_files:
         if has_cn_marker_for_avid(filename, avid):
             return True
+    # Legacy markers remain compatible only while a real main video exists.
+    if os.path.exists(os.path.join(dpath, ".av_garden_chinese")) and collect_main_video_candidates(dpath):
+        return True
     for filename in os.listdir(dpath):
         if filename.lower().endswith(".nfo"):
             try:
@@ -255,12 +403,10 @@ def scan_library(save_path=None):
         dpath = os.path.join(save_path, d)
         if not os.path.isdir(dpath):
             continue
-        try:
-            mp4_files = [f for f in os.listdir(dpath) if f.lower().endswith(".mp4") and not f.startswith("._")]
-        except OSError:
+        candidates = collect_main_video_candidates(dpath)
+        if not candidates:
             continue
-        if not mp4_files:
-            continue
+        mp4_files = [os.path.relpath(item["path"], dpath) for item in candidates]
 
         total_with_video += 1
         search_avid = clean_avid(d)
@@ -298,7 +444,7 @@ def scan_library(save_path=None):
 
 def merge_completed_chinese():
     """检查已下载完成的中文字幕版，合并到原文件夹"""
-    import urllib.request, http.cookiejar, shutil
+    import urllib.request
     pending = load_pending()
     if not pending:
         return
@@ -335,67 +481,70 @@ def merge_completed_chinese():
         if state not in ("uploading", "stalledUP", "pausedUP", "queuedUP", "checkingUP"):
             continue
 
-        # 完成！合并
-        save_path = t_info.get("save_path", "")
-        content_path = t_info.get("content_path", "")
-        full_path = os.path.join(save_path, content_path) if content_path else save_path
-
-        log(f"  Merging {avid}: torrent={t_info.get('name','')} from {full_path}")
+        log(f"  Merging {avid}: torrent={t_info.get('name','')}")
 
         try:
-            # 只移动中文字幕种子中的主视频，广告/花絮留在临时目录随 qB 删除。
-            moved_files = []
-            selected, skipped = select_main_mp4(full_path, avid)
-            if selected:
-                target_dir = os.path.join(SAVE_PATH, target_dirname)
-                os.makedirs(target_dir, exist_ok=True)
-                src = selected["path"]
-                dst = os.path.join(target_dir, selected["name"])
-                # 目标已存在同名文件时加后缀，避免覆盖失败后双份残留
-                if os.path.exists(dst) and os.path.realpath(dst) != os.path.realpath(src):
-                    base, ext = os.path.splitext(selected["name"])
-                    dst = os.path.join(target_dir, f"{base}.zh{ext}")
-                log(f"  Selected Chinese video: {selected['rel']} ({format_size(selected['size'])})")
-                shutil.move(src, dst)
-                moved_files.append(selected["name"])
-                log(f"  Moved {selected['name']} -> {dst}")
-                if skipped:
-                    preview = ", ".join(
-                        f"{item['rel']} ({format_size(item['size'])})"
-                        for item in sorted(skipped, key=lambda x: x["size"], reverse=True)[:5]
-                    )
-                    suffix = " ..." if len(skipped) > 5 else ""
-                    log(f"  Skipped extra video(s): {preview}{suffix}")
-                # 合并后再清：保留刚迁入的中文正片，删无中文原片 + 广告片（递归）
-                cleanup_original(avid, target_dirname, keep_paths=[dst], force=True)
-            else:
-                log(f"  No mp4 found for {avid}, skip merge")
+            files = qb_torrent_files(opener, hash_str)
+            selected = select_qb_main_file(files)
+            if not selected:
+                log(f"  No main MP4 in qB file list for {avid}; keep torrent and pending record")
+                continue
+            if selected["progress"] < 0.999:
+                log(f"  qB selected file is incomplete for {avid}: {selected['progress'] * 100:.1f}%")
                 continue
 
-            if moved_files:
-                marker_path = os.path.join(target_dir, ".av_garden_chinese")
-                with open(marker_path, "w") as f:
-                    f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            if not isinstance(pending_info, dict):
+                pending_info = {"avid": avid, "target_dir": target_dirname}
+            pending_info["selected_file"] = {
+                "index": selected["index"],
+                "name": selected["name"],
+                "size": selected["size"],
+            }
+            pending[hash_str] = pending_info
+            save_pending(pending)
 
-            # 删掉 torrent 和临时文件夹/文件
+            src = resolve_qb_file_path(t_info, selected)
+            if not src or not validate_video_file(src):
+                log(f"  qB reports complete but exact source file is missing/invalid for {avid}; no cleanup")
+                continue
+
+            target_dir = os.path.join(SAVE_PATH, target_dirname)
+            os.makedirs(target_dir, exist_ok=True)
+            dst = os.path.join(target_dir, f"{avid}-C.mp4")
+            if os.path.exists(dst) and os.path.realpath(dst) != os.path.realpath(src):
+                if not validate_video_file(dst) or os.path.getsize(dst) != selected["size"]:
+                    log(f"  Refusing to overwrite existing {dst}; keep torrent for review")
+                    continue
+            elif os.path.realpath(src) != os.path.realpath(dst):
+                shutil.move(src, dst)
+                log(f"  Moved exact qB file {selected['name']} -> {dst}")
+
+            if not validate_video_file(dst):
+                log(f"  Validation failed after moving {avid}; keep torrent and skip cleanup")
+                continue
+
+            write_media_provenance(target_dir, avid, hash_str, selected, dst)
+            marker_path = os.path.join(target_dir, ".av_garden_chinese")
+            with open(marker_path, "w", encoding="utf-8") as handle:
+                handle.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+            protected_dirs = qb_protected_media_dirs(torrents, exclude_hashes={hash_str})
+            cleanup_original(
+                avid,
+                target_dirname,
+                keep_paths=[dst],
+                force=True,
+                protected_dirs=protected_dirs,
+            )
+
             try:
                 opener.open(urllib.request.Request(
                     f"{QB_URL}/api/v2/torrents/delete",
                     data=f"hashes={hash_str}&deleteFiles=true".encode()
                 ), timeout=10)
-            except:
-                pass
-            # 删空文件夹
-            if os.path.isdir(full_path):
-                try:
-                    shutil.rmtree(full_path)
-                except:
-                    pass
-            elif os.path.isfile(full_path):
-                try:
-                    os.remove(full_path)
-                except:
-                    pass
+            except Exception as e:
+                log(f"  qB cleanup failed for {avid}: {e}; provenance retained")
+                continue
 
             del pending[hash_str]
             save_pending(pending)
@@ -406,15 +555,17 @@ def merge_completed_chinese():
 
     if merged:
         log(f"  Merged {merged} Chinese torrent(s)")
-    # 合并批结束后再扫一遍：清历史残留（夹内已有中文却仍留无中文/广告）
+    # 历史目录只在 qB 状态可确认时清理；活跃/做种目录全部保护。
     try:
-        sweep_leftover_non_chinese()
+        response = opener.open(urllib.request.Request(f"{QB_URL}/api/v2/torrents/info"), timeout=10)
+        current_torrents = json.loads(response.read().decode())
+        sweep_leftover_non_chinese(protected_dirs=qb_protected_media_dirs(current_torrents))
     except Exception as e:
-        log(f"  Sweep leftover error: {e}")
+        log(f"  Sweep skipped because qB protection could not be verified: {e}")
 
 _VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov", ".m4v", ".wmv", ".ts")
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
-_KEEP_DOTFILES = {".av_garden_chinese", ".nassav_chinese"}
+_KEEP_DOTFILES = {".av_garden_chinese", ".nassav_chinese", MEDIA_PROVENANCE_FILE}
 
 # 允许保留的元数据图（Jellyfin / 本项目刮削命名）
 _ALLOWED_IMAGE_NAME = re.compile(
@@ -487,7 +638,7 @@ def iter_videos(dpath):
             yield abs_path, rel
 
 
-def should_keep_file(abs_path, rel, avid, keep_video_paths):
+def should_keep_file(abs_path, rel, avid, keep_video_paths, delete_untracked_videos=True):
     """合并后白名单：中文正片 + NFO + poster/fanart 封面预览 + 标记文件。"""
     name = os.path.basename(abs_path)
     # macOS 垃圾
@@ -512,7 +663,7 @@ def should_keep_file(abs_path, rel, avid, keep_video_paths):
             return True
         if has_cn_marker_for_avid(name, avid) or has_cn_marker_for_avid(rel, avid):
             return True
-        return False
+        return not delete_untracked_videos
 
     # NFO
     if is_allowed_nfo(name):
@@ -526,7 +677,14 @@ def should_keep_file(abs_path, rel, avid, keep_video_paths):
     return False
 
 
-def cleanup_original(avid, target_dirname=None, keep_paths=None, force=False):
+def cleanup_original(
+    avid,
+    target_dirname=None,
+    keep_paths=None,
+    force=False,
+    protected_dirs=None,
+    delete_untracked_videos=True,
+):
     """合并后整理目录：只留中文视频、NFO、封面/预览图。
 
     keep_paths: 刚合并进来的中文正片绝对路径，即使文件名无 -C 也保留。
@@ -535,6 +693,10 @@ def cleanup_original(avid, target_dirname=None, keep_paths=None, force=False):
     target_dirname = target_dirname or avid
     dpath = os.path.join(SAVE_PATH, target_dirname)
     if not os.path.isdir(dpath):
+        return []
+    protected = {os.path.realpath(path) for path in (protected_dirs or ())}
+    if os.path.realpath(dpath) in protected:
+        log(f"  Skip cleanup for qB-owned directory: {target_dirname}")
         return []
 
     keep_videos = set()
@@ -547,7 +709,13 @@ def cleanup_original(avid, target_dirname=None, keep_paths=None, force=False):
 
     deleted = []
     for abs_path, rel in list(iter_all_files(dpath)):
-        if should_keep_file(abs_path, rel, avid, keep_videos):
+        if should_keep_file(
+            abs_path,
+            rel,
+            avid,
+            keep_videos,
+            delete_untracked_videos=delete_untracked_videos,
+        ):
             continue
         try:
             os.remove(abs_path)
@@ -575,9 +743,13 @@ def cleanup_original(avid, target_dirname=None, keep_paths=None, force=False):
     return deleted
 
 
-def sweep_leftover_non_chinese(save_path=None):
-    """扫描库：已有中文正片（或 .av_garden_chinese）的目录，整理成「仅媒体集」。"""
+def sweep_leftover_non_chinese(save_path=None, protected_dirs=None):
+    """Clean verified Chinese media sets without inferring identity from mtime."""
     save_path = save_path or SAVE_PATH
+    if protected_dirs is None:
+        log("  Sweep skipped: qB protection was not supplied")
+        return 0
+    protected = {os.path.realpath(path) for path in (protected_dirs or ())}
     swept = 0
     deleted_total = 0
     try:
@@ -592,9 +764,13 @@ def sweep_leftover_non_chinese(save_path=None):
         dpath = os.path.join(save_path, d)
         if not os.path.isdir(dpath):
             continue
+        if os.path.realpath(dpath) in protected:
+            log(f"  Sweep skip qB-owned directory: {d}")
+            continue
         avid = clean_avid(d)
         videos = list(iter_videos(dpath))
         has_marker_file = os.path.exists(os.path.join(dpath, ".av_garden_chinese"))
+        recorded = recorded_chinese_main(dpath)
         cn_videos = []
         for abs_path, rel in videos:
             name = os.path.basename(abs_path)
@@ -603,12 +779,29 @@ def sweep_leftover_non_chinese(save_path=None):
             if has_cn_marker_for_avid(name, avid) or has_cn_marker_for_avid(rel, avid):
                 cn_videos.append(abs_path)
 
-        # 仅当确认已有中文时整理（避免误删尚未换中文的目录）
-        if not has_marker_file and not cn_videos:
+        candidates = collect_main_video_candidates(dpath)
+        if not recorded and not cn_videos and not (has_marker_file and candidates):
             continue
 
-        keep = {os.path.realpath(p) for p in cn_videos}
-        deleted = cleanup_original(avid, d, keep_paths=keep, force=True)
+        if recorded:
+            keep = {os.path.realpath(recorded)}
+            delete_untracked = True
+        elif cn_videos:
+            keep = {os.path.realpath(path) for path in cn_videos}
+            delete_untracked = True
+        else:
+            # A legacy marker proves intent, not which file was Chinese. Keep all
+            # valid main videos and only remove known promo/non-media junk.
+            keep = {os.path.realpath(item["path"]) for item in candidates}
+            delete_untracked = False
+        deleted = cleanup_original(
+            avid,
+            d,
+            keep_paths=keep,
+            force=True,
+            protected_dirs=protected,
+            delete_untracked_videos=delete_untracked,
+        )
         if deleted:
             swept += 1
             deleted_total += len(deleted)
@@ -778,7 +971,12 @@ def main():
             log(f"  {avid}: added Chinese magnet to qB ({torrent_hash[:12]})")
             update_weekly_magnet(avid, magnet)
             pending = load_pending()
-            pending[torrent_hash] = {"avid": avid, "target_dir": target_dirname}
+            pending[torrent_hash] = {
+                "avid": avid,
+                "target_dir": target_dirname,
+                "source": "forum-103",
+                "added_at": datetime.now().astimezone().isoformat(),
+            }
             save_pending(pending)
             added += 1
         else:
