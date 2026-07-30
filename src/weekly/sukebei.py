@@ -41,22 +41,28 @@ def search_cili(avid):
             url = f"{CILI_URL}{urllib.parse.quote(q)}"
             r = requests.get(url, proxies=_proxies(), headers=HEADERS,
                            impersonate="chrome110", timeout=20)
-            if r.status_code != 200:
-                continue
-            # cilisousuo 磁链格式: href="/magnet/xxxx" → 点进去的页面有 magnet:?xt=...
-            shortlinks = re.findall(r'href="(/magnet/[^"]+)"', r.text)
-            if not shortlinks:
-                continue
-            # 取第一个短链接，进去拿完整磁链
             try:
-                detail_url = f"https://cilisousuo.co{shortlinks[0]}"
-                rd = requests.get(detail_url, proxies=_proxies(), headers=HEADERS,
-                                impersonate="chrome110", timeout=15)
-                m = re.search(r'(magnet:\?xt=[^"\'&\s]+[^"\'\s]*)', rd.text)
-                if m:
-                    return m.group(1)
-            except:
-                pass
+                if r.status_code != 200:
+                    continue
+                # cilisousuo 磁链格式: href="/magnet/xxxx" → 点进去的页面有 magnet:?xt=...
+                shortlinks = re.findall(r'href="(/magnet/[^"]+)"', r.text)
+                if not shortlinks:
+                    continue
+                # 取第一个短链接,进去拿完整磁链
+                try:
+                    detail_url = f"https://cilisousuo.co{shortlinks[0]}"
+                    rd = requests.get(detail_url, proxies=_proxies(), headers=HEADERS,
+                                    impersonate="chrome110", timeout=15)
+                    try:
+                        m = re.search(r'(magnet:\?xt=[^"\'&\s]+[^"\'\s]*)', rd.text)
+                        if m:
+                            return m.group(1)
+                    finally:
+                        rd.close()
+                except:
+                    pass
+            finally:
+                r.close()
         except:
             pass
     return ""
@@ -78,11 +84,14 @@ def search_missav_magnet(avid):
                     impersonate="chrome110",
                     timeout=20,
                 )
-                if r.status_code != 200:
-                    continue
-                best = _pick_missav_magnet(avid, r.text)
-                if best:
-                    return best
+                try:
+                    if r.status_code != 200:
+                        continue
+                    best = _pick_missav_magnet(avid, r.text)
+                    if best:
+                        return best
+                finally:
+                    r.close()
             except:
                 pass
     return ""
@@ -154,20 +163,23 @@ def _search_nyaa(avid, queries, require_cn=False):
                 url = f"{base_url}{urllib.parse.quote(q)}"
                 r = requests.get(url, proxies=_proxies(), headers=HEADERS,
                                impersonate="chrome110", timeout=20)
-                if r.status_code != 200:
-                    continue
-                candidates = _parse_nyaa_candidates(avid, r.text)
-                if require_cn:
-                    candidates = [c for c in candidates if c["is_cn"]]
-                if candidates:
-                    candidates.sort(key=_nyaa_candidate_score, reverse=True)
-                    best = candidates[0]
-                    logger.info(
-                        "[Sukebei] selected %s view=%s trusted=%s seeds=%s size=%.1fGiB title=%s",
-                        avid, best["view_id"], best["trusted"], best["seeds"],
-                        best["size_gib"], best["title"][:120],
-                    )
-                    return best["magnet"]
+                try:
+                    if r.status_code != 200:
+                        continue
+                    candidates = _parse_nyaa_candidates(avid, r.text)
+                    if require_cn:
+                        candidates = [c for c in candidates if c["is_cn"]]
+                    if candidates:
+                        candidates.sort(key=_nyaa_candidate_score, reverse=True)
+                        best = candidates[0]
+                        logger.info(
+                            "[Sukebei] selected %s view=%s trusted=%s seeds=%s size=%.1fGiB title=%s",
+                            avid, best["view_id"], best["trusted"], best["seeds"],
+                            best["size_gib"], best["title"][:120],
+                        )
+                        return best["magnet"]
+                finally:
+                    r.close()
             except:
                 pass
     return ""
@@ -303,22 +315,25 @@ def search_preferred(avid):
             impersonate="chrome110",
             timeout=20,
         )
-        if response.status_code != 200:
-            logger.info("[Sukebei] search %s returned HTTP %s", code, response.status_code)
-            return None
-        candidate = select_preferred_candidate(_parse_nyaa_candidates(code, response.text))
-        if not candidate:
-            logger.info("[Sukebei] no exact candidate for %s", code)
-            return None
-        logger.info(
-            "[Sukebei] selected %s mode=%s size=%.1fGiB date=%s title=%s",
-            code,
-            "largest-chinese" if candidate.get("is_cn") else "earliest-original",
-            candidate.get("size_gib") or 0,
-            candidate.get("published_at") or "unknown",
-            candidate.get("title", "")[:120],
-        )
-        return candidate
+        try:
+            if response.status_code != 200:
+                logger.info("[Sukebei] search %s returned HTTP %s", code, response.status_code)
+                return None
+            candidate = select_preferred_candidate(_parse_nyaa_candidates(code, response.text))
+            if not candidate:
+                logger.info("[Sukebei] no exact candidate for %s", code)
+                return None
+            logger.info(
+                "[Sukebei] selected %s mode=%s size=%.1fGiB date=%s title=%s",
+                code,
+                "largest-chinese" if candidate.get("is_cn") else "earliest-original",
+                candidate.get("size_gib") or 0,
+                candidate.get("published_at") or "unknown",
+                candidate.get("title", "")[:120],
+            )
+            return candidate
+        finally:
+            response.close()
     except Exception as exc:
         logger.info("[Sukebei] lookup failed for %s: %s", code, exc)
         return None

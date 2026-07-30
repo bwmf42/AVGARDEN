@@ -224,9 +224,12 @@ def fetch_page(code):
                 impersonate="chrome110",
                 timeout=20,
             )
-            if r.status_code < 400 and r.text and len(r.text) > 2000:
-                return r.text
-            last_err = f"status {r.status_code} len={len(r.text or '')}"
+            try:
+                if r.status_code < 400 and r.text and len(r.text) > 2000:
+                    return r.text
+                last_err = f"status {r.status_code} len={len(r.text or '')}"
+            finally:
+                r.close()
         except Exception as e:
             last_err = e
             continue

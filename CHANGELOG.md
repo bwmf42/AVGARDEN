@@ -6,6 +6,23 @@
 
 ## Unreleased
 
+### Fixed
+
+- Fixed concurrent write race condition in `queue_state.json`: added file-level locking (`fcntl.flock`) across Queue API, Worker, and Launcher to prevent state corruption when multiple processes modify the queue simultaneously.
+- Fixed path traversal vulnerability in Python file operations: now use `os.path.realpath()` to resolve symlinks before validation, matching Go's `filepath.EvalSymlinks` security posture.
+- Fixed qBittorrent file deletion safety: added pre-deletion checks to verify target paths are within `SAVE_PATH`, task status allows deletion (not seeding/checking), and file references are logged for audit trails.
+- Fixed resource leak in HTTP responses: now explicitly close all `urllib.request` response objects to prevent file descriptor exhaustion under high-frequency qBittorrent API calls.
+- Fixed worker magnet timeout handling: reduced metadata timeout from 120s to 60s, no-speed stall detection from 30min to 10min, and return torrent hash during `MAGNET_PENDING` for retry cleanup.
+- Fixed memory leak in speed cache: added LRU eviction (max 10,000 entries) to `_speed_cache` in `queue_api.py`, which previously grew unbounded with one entry per video ID.
+- Fixed queue state sync detection: added reverse-orphan detection in `heal_runner.py` to find qBittorrent tasks with `AV_GARDEN` category but missing from `queue_state.json`, and auto-register them during heal runs.
+- Fixed 98堂 search rate-limit handling: when forum search detects "30秒" throttle message, mark rate-limited state and extend next search slot interval to 60s to avoid consecutive limit hits.
+- Fixed verbose logging: made `queue_api.py` history list details conditional on `DEBUG=1` environment variable; default mode now logs only item count, not full code arrays.
+
+### Changed
+
+- Changed `deploy.sh` password handling: use `sshpass -e` (reads `SSHPASS` env var) instead of `-p` CLI argument to avoid exposing password in process lists.
+- Changed Docker build output: deployment now buffers build logs to temporary NAS file, printing only summary on success and tail on failure, avoiding long BuildKit output transmission.
+
 ### Added
 
 - Added one shared manual-download source resolver for online search, queue additions, and Worker consumption. It caches the verified result under `/db` so search-to-download never repeats the 98堂/Sukebei lookup, while abandoned one-time searches still clean up their source cache.

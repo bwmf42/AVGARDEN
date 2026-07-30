@@ -260,8 +260,12 @@ def notify_feishu_all_failed(avid):
     try:
         data = json.dumps({"msg_type": "text", "content": {"text": msg}}).encode()
         req = urllib.request.Request(webhook, data=data, headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=5)
-        logger.info(f"[Feishu] Sent all-failed notification for {avid}")
+        resp = urllib.request.urlopen(req, timeout=5)
+        try:
+            resp.read()
+            logger.info(f"[Feishu] Sent all-failed notification for {avid}")
+        finally:
+            resp.close()
     except Exception as e:
         logger.error(f"[Feishu] Failed to send notification: {e}")
 
@@ -321,8 +325,12 @@ def notify_feishu_magnet_timeout(avid, magnet):
     try:
         data = json.dumps({"msg_type": "text", "content": {"text": msg}}).encode()
         req = urllib.request.Request(webhook, data=data, headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=5)
-        logger.info(f"[Feishu] Sent timeout notification for {avid}")
+        resp = urllib.request.urlopen(req, timeout=5)
+        try:
+            resp.read()
+            logger.info(f"[Feishu] Sent timeout notification for {avid}")
+        finally:
+            resp.close()
     except Exception as e:
         logger.error(f"[Feishu] Failed to send notification: {e}")
 
@@ -340,9 +348,12 @@ def qbittorrent_api(method, endpoint, data=None):
     login_data = f"username={urllib.parse.quote(qb_username)}&password={urllib.parse.quote(qb_password)}".encode()
     try:
         resp = opener.open(urllib.request.Request(login_url, data=login_data), timeout=10)
-        if resp.status != 200:
-            logger.error(f"[QBittorrent] Login failed: {resp.status}")
-            return None
+        try:
+            if resp.status != 200:
+                logger.error(f"[QBittorrent] Login failed: {resp.status}")
+                return None
+        finally:
+            resp.close()
     except Exception as e:
         logger.error(f"[QBittorrent] Login error: {e}")
         return None
@@ -356,16 +367,19 @@ def qbittorrent_api(method, endpoint, data=None):
             headers = {"Content-Type": "application/x-www-form-urlencoded"} if data else {}
             req = urllib.request.Request(full_url, data=data.encode() if data else b"", headers=headers, method="POST")
         resp = opener.open(req, timeout=30)
-        body = resp.read().decode()
-        # qB API 部分端点返回纯文本 "Ok." / "Fails."
-        body_text = body.strip()
-        if body_text == "Ok.":
-            return True
-        if body_text == "Fails.":
-            return None
-        if not body_text and method != "GET":
-            return True
-        return json.loads(body)
+        try:
+            body = resp.read().decode()
+            # qB API 部分端点返回纯文本 "Ok." / "Fails."
+            body_text = body.strip()
+            if body_text == "Ok.":
+                return True
+            if body_text == "Fails.":
+                return None
+            if not body_text and method != "GET":
+                return True
+            return json.loads(body)
+        finally:
+            resp.close()
     except Exception as e:
         logger.error(f"[QBittorrent] API error {endpoint}: {e}")
         return None
@@ -387,6 +401,7 @@ def qbittorrent_set_running(torrent_hash, running):
 
 
 def cancel_qb_tasks(avid, delete_files=False):
+    """Cancel qBittorrent tasks for a video ID with safety checks."""
     torrents = qbittorrent_api("GET", "/api/v2/torrents/info?category=AV_GARDEN")
     if not isinstance(torrents, list):
         return False
@@ -403,13 +418,55 @@ def cancel_qb_tasks(avid, delete_files=False):
         if avid in tags or avid in candidates:
             torrent_hash = str(torrent.get("hash", "")).strip()
             if torrent_hash:
+                # Safety check before allowing file deletion
+                if delete_files:
+                    state = str(torrent.get("state", ""))
+                    content_path = str(torrent.get("content_path", ""))
+
+                    # Refuse deletion if torrent is active or seeding
+                    if state in ("downloading", "stalledDL", "metaDL", "checkingDL", "checkingResumeData", "uploading", "stalledUP", "queuedUP", "checkingUP", "forcedUP"):
+                        logger.warning(f"[Worker] Refuse to delete files for active/seeding torrent {avid} (state={state})")
+                        continue
+
+                    # Verify content_path is within save_path
+                    if content_path:
+                        try:
+                            real_save = os.path.realpath(save_path)
+                            real_content = os.path.realpath(content_path)
+                            if os.path.commonpath([real_save, real_content]) != real_save:
+                                logger.warning(f"[Worker] Refuse to delete files outside save_path: {content_path}")
+                                delete_files = False
+                        except (ValueError, OSError) as e:
+                            logger.warning(f"[Worker] Path validation failed for {content_path}: {e}")
+                            delete_files = False
+
+                    # Check if content_path is used by other torrents
+                    if content_path and delete_files:
+                        for other in torrents:
+                            if other.get("hash") == torrent_hash:
+                                continue
+                            other_path = str(other.get("content_path", ""))
+                            if other_path and os.path.realpath(other_path) == os.path.realpath(content_path):
+                                logger.warning(f"[Worker] Refuse to delete {content_path}: shared by torrent {other.get('hash', 'unknown')[:12]}")
+                                delete_files = False
+                                break
+
                 hashes.append(torrent_hash)
     if not hashes:
         return False
-    return bool(qbittorrent_post(
+
+    # Audit log before deletion
+    if delete_files:
+        logger.warning(f"[Worker] AUDIT: Deleting files for {avid}, hashes={','.join(h[:12] for h in hashes)}")
+
+    result = bool(qbittorrent_post(
         "/api/v2/torrents/delete",
         {"hashes": "|".join(hashes), "deleteFiles": "true" if delete_files else "false"},
     ))
+    if delete_files and result:
+        logger.info(f"[Worker] Deleted qB task(s) for {avid} with files (hashes={len(hashes)})")
+        log_write("Cleanup", f"{avid} qB任务及文件已删除 (hashes={len(hashes)})")
+    return result
 
 
 def apply_largest_video_only(avid, torrent_hash):
@@ -491,26 +548,27 @@ _last_magnet_reason = ""
 def try_magnet_download(avid, save_dir, magnet=None):
     """
     尝试通过 qBittorrent 磁链下载。
-    返回 MAGNET_COMPLETED / MAGNET_PENDING / MAGNET_FAILED。
+    返回 (status, torrent_hash)，其中 status 为 MAGNET_COMPLETED / MAGNET_PENDING / MAGNET_FAILED。
     使用 weekly.json 中 sukebei 搜到的磁链（中文字幕版）
 
     策略：
-    - 最多等 120 秒获取元数据（metadata）
+    - 最多等 60 秒获取元数据（metadata）
     - 获取到元数据后继续下载，最长 2 小时
-    - 已进入 qB 但未完成时返回 pending，不当作下载成功
+    - 无速度超时从 30 分钟缩短到 10 分钟
+    - 已进入 qB 但未完成时返回 pending 和 hash，供外部清理
     """
     global _last_magnet_reason
     _last_magnet_reason = ""
     if is_cancel_requested(avid):
         cancel_qb_tasks(avid)
         _last_magnet_reason = "已取消"
-        return MAGNET_CANCELLED
+        return (MAGNET_CANCELLED, None)
     if magnet is None:
         magnet = get_magnet_from_weekly(avid)
     if not magnet:
         logger.info(f"[Magnet] {avid} no magnet available, skip")
         _last_magnet_reason = "无可用磁链"
-        return MAGNET_FAILED
+        return (MAGNET_FAILED, None)
 
     # 不预先创建 save_dir，等下载完再建，避免和 qB 目录冲突
 
@@ -537,10 +595,10 @@ def try_magnet_download(avid, save_dir, magnet=None):
             if has_active_qb_task(avid):
                 logger.info(f"[Magnet] {avid} already has active qB task, keep monitoring via Queue API")
                 _last_magnet_reason = "qB 已有任务"
-                return MAGNET_PENDING
+                return (MAGNET_PENDING, None)
             logger.warning(f"[Magnet] {avid} failed to add magnet to qBittorrent, fallback to stream")
             _last_magnet_reason = "无法加入 qB"
-            return MAGNET_FAILED
+            return (MAGNET_FAILED, None)
 
     logger.info(f"[Magnet] {avid} added to qBittorrent, waiting for metadata...")
 
@@ -560,7 +618,7 @@ def try_magnet_download(avid, save_dir, magnet=None):
             else:
                 cancel_qb_tasks(avid)
             _last_magnet_reason = "已取消"
-            return MAGNET_CANCELLED
+            return (MAGNET_CANCELLED, torrent_hash)
         elapsed = time.time() - start
 
         # 查询所有 torrent 状态
@@ -600,9 +658,12 @@ def try_magnet_download(avid, save_dir, magnet=None):
 
         if target is None:
             # 还没出现在列表里，等 metadata
-            if elapsed > 120:
-                logger.warning(f"[Magnet] {avid} not found in qBittorrent after 120s, giving up")
+            if elapsed > 60:
+                logger.warning(f"[Magnet] {avid} not found in qBittorrent after 60s, giving up")
                 pending_reason = "元数据超时（qB 中未出现）"
+                # Return hash if available for cleanup
+                if torrent_hash:
+                    cancel_qb_tasks(avid, delete_files=False)
                 break
             time.sleep(5)
             continue
@@ -632,7 +693,7 @@ def try_magnet_download(avid, save_dir, magnet=None):
                 logger.info(f"[Magnet] {avid} download success ({elapsed:.0f}s, {total_size/1024/1024:.1f} MB)")
                 if torrent_hash:
                     qbittorrent_api("POST", "/api/v2/torrents/delete?hashes=" + torrent_hash + "&deleteFiles=false")
-                return MAGNET_COMPLETED
+                return (MAGNET_COMPLETED, torrent_hash)
 
         # 进度日志
         if metadata_received:
@@ -650,9 +711,9 @@ def try_magnet_download(avid, save_dir, magnet=None):
             break
 
         # ---- 超时判断 ----
-        # 1. 元数据超时 (state 停在了 metaDL)
-        if not metadata_received and elapsed > 120:
-            logger.warning(f"[Magnet] {avid} no metadata after 120s, giving up")
+        # 1. 元数据超时 (state 停在了 metaDL) - 从 120s 缩短到 60s
+        if not metadata_received and elapsed > 60:
+            logger.warning(f"[Magnet] {avid} no metadata after 60s, giving up")
             pending_reason = "元数据超时"
             break
 
@@ -663,10 +724,10 @@ def try_magnet_download(avid, save_dir, magnet=None):
                 pending_reason = "无种子 5 分钟 (availability=0)"
                 break
 
-            # 3. 有种子但极慢: 速度 < 10KB/s 且无进度持续 30min (360 * 5s)
-            if dlspeed < 10 * 1024 and stale_count > 360:
-                logger.warning(f"[Magnet] {avid} stalled <10KB/s for 30min, giving up")
-                pending_reason = "速度过慢（30 分钟几乎无进度）"
+            # 3. 有种子但极慢: 速度 < 10KB/s 且无进度持续 10min - 从 30min 缩短到 10min
+            if dlspeed < 10 * 1024 and stale_count > 120:  # 120 * 5s = 10min
+                logger.warning(f"[Magnet] {avid} stalled <10KB/s for 10min, giving up")
+                pending_reason = "速度过慢（10 分钟几乎无进度）"
                 break
 
         # 4. 总超时 2 小时
@@ -685,7 +746,7 @@ def try_magnet_download(avid, save_dir, magnet=None):
         notify_feishu_magnet_timeout(avid, magnet)
 
     _last_magnet_reason = pending_reason
-    return MAGNET_PENDING
+    return (MAGNET_PENDING, torrent_hash)
 
 
 def download_video(avid):
@@ -741,7 +802,7 @@ def download_video(avid):
         if retries >= MAX_RETRIES and magnet:
             logger.info(f"[Worker] {avid} 已失败 {retries} 次，但找到磁链，尝试 qB")
         if magnet:
-            magnet_status = try_magnet_download(avid, save_dir, magnet)
+            magnet_status, torrent_hash = try_magnet_download(avid, save_dir, magnet)
             if magnet_status == MAGNET_CANCELLED:
                 logger.info(f"[Worker] {avid} 下载已取消")
                 log_write("Worker", f"{avid} 失败: 已取消")
@@ -757,6 +818,8 @@ def download_video(avid):
             if magnet_status == MAGNET_PENDING:
                 # 磁链已加 qB（还在下载中），不 fallback 到在线流
                 logger.info(f"[Worker] {avid} 磁链下载中(qB)，尚未完成 ({_last_magnet_reason})")
+                if torrent_hash:
+                    logger.info(f"[Worker] {avid} qB hash: {torrent_hash}, 可通过 heal_runner 清理")
                 log_write(
                     "Worker",
                     f"{avid} 已交 qB 后台继续下载"

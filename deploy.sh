@@ -100,6 +100,8 @@ NAS_SSH_HOST="${AVGARDEN_SSH_HOST:-}"
 NAS_DIR="/tmp/zfsv3/sata11/13049108160/data/docker/AVGARDEN"
 NAS_STAGE="/tmp/avgarden-deploy-${NAS_USER}"
 DEPLOY_ID="$(date +%Y%m%d-%H%M%S)-$$"
+
+# Export password for sshpass -e (environment variable is safer than command line)
 export SSHPASS="$NAS_PASS"
 
 if [ -n "$NAS_SSH_HOST" ]; then

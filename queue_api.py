@@ -48,6 +48,7 @@ main_video_cache_root = ""
 main_video_cache_time = 0.0
 main_video_cache = {}
 MAIN_VIDEO_CACHE_TTL_SECONDS = int(os.environ.get("MAIN_VIDEO_CACHE_TTL_SECONDS", "30"))
+DEBUG = os.environ.get("DEBUG", "0") == "1"
 QUEUE_REGISTRATION_GRACE_SECONDS = int(os.environ.get("QUEUE_REGISTRATION_GRACE_SECONDS", "120"))
 
 
@@ -146,6 +147,7 @@ def codes_in_qb(torrents):
 
 _speed_cache = {}
 _speed_cache_lock = threading.Lock()
+_SPEED_CACHE_MAX_SIZE = 10000  # 最多缓存 10000 个番号的速度记录
 
 # qBittorrent 配置
 QB_URL = os.environ.get("QBITTORRENT_URL", "http://127.0.0.1:8080")
@@ -182,17 +184,23 @@ def qb_request(endpoint, data=None):
         login_url = f"{QB_URL}/api/v2/auth/login"
         login_data = f"username={urllib.parse.quote(QB_USERNAME)}&password={urllib.parse.quote(QB_PASSWORD)}".encode()
         resp = opener.open(urllib.request.Request(login_url, data=login_data), timeout=5)
-        if resp.status != 200:
-            return None
-        request_data = urllib.parse.urlencode(data).encode() if data is not None else None
-        request = urllib.request.Request(f"{QB_URL}{endpoint}", data=request_data)
-        resp = opener.open(request, timeout=10)
-        body = resp.read().decode().strip()
-        if not body or body == "Ok.":
-            return True
-        if body == "Fails.":
-            return None
-        return json.loads(body)
+        try:
+            if resp.status != 200:
+                return None
+            request_data = urllib.parse.urlencode(data).encode() if data is not None else None
+            request = urllib.request.Request(f"{QB_URL}{endpoint}", data=request_data)
+            resp2 = opener.open(request, timeout=10)
+            try:
+                body = resp2.read().decode().strip()
+                if not body or body == "Ok.":
+                    return True
+                if body == "Fails.":
+                    return None
+                return json.loads(body)
+            finally:
+                resp2.close()
+        finally:
+            resp.close()
     except Exception as e:
         log(f"qB API error: {e}")
         return None
@@ -203,6 +211,7 @@ def qb_api(endpoint):
 
 
 def qb_remove_code(code, delete_files=False):
+    """Remove qBittorrent tasks for a code with safety checks."""
     torrents = qb_api("/api/v2/torrents/info")
     if not isinstance(torrents, list):
         return False
@@ -221,13 +230,55 @@ def qb_remove_code(code, delete_files=False):
         if code in tags or code in candidates:
             torrent_hash = str(torrent.get("hash", "")).strip()
             if torrent_hash:
+                # Safety check before allowing file deletion
+                if delete_files:
+                    state = str(torrent.get("state", ""))
+                    content_path = str(torrent.get("content_path", ""))
+                    save_path_env = os.environ.get("SAVE_PATH", "/data")
+
+                    # Refuse deletion if torrent is active or seeding
+                    if state in ("downloading", "stalledDL", "metaDL", "checkingDL", "checkingResumeData", "uploading", "stalledUP", "queuedUP", "checkingUP", "forcedUP"):
+                        log(f"Refuse to delete files for active/seeding torrent {code} (state={state})")
+                        continue
+
+                    # Verify content_path is within SAVE_PATH
+                    if content_path:
+                        try:
+                            real_save = os.path.realpath(save_path_env)
+                            real_content = os.path.realpath(content_path)
+                            if os.path.commonpath([real_save, real_content]) != real_save:
+                                log(f"Refuse to delete files outside SAVE_PATH: {content_path}")
+                                delete_files = False
+                        except (ValueError, OSError) as e:
+                            log(f"Path validation failed for {content_path}: {e}")
+                            delete_files = False
+
+                    # Check if content_path is used by other torrents
+                    if content_path and delete_files:
+                        for other in torrents:
+                            if other.get("hash") == torrent_hash:
+                                continue
+                            other_path = str(other.get("content_path", ""))
+                            if other_path and os.path.realpath(other_path) == os.path.realpath(content_path):
+                                log(f"Refuse to delete {content_path}: shared by torrent {other.get('hash', 'unknown')[:12]}")
+                                delete_files = False
+                                break
+
                 hashes.append(torrent_hash)
     if not hashes:
         return False
+
+    # Audit log before deletion
+    if delete_files:
+        log(f"AUDIT: Deleting files for {code}, hashes={','.join(h[:12] for h in hashes)}")
+
     result = qb_request(
         "/api/v2/torrents/delete",
         {"hashes": "|".join(hashes), "deleteFiles": "true" if delete_files else "false"},
     )
+    if delete_files and result is True:
+        log(f"Deleted qB task(s) for {code} with files (hashes={len(hashes)})")
+        log_write("Cleanup", f"{code} qB任务及文件已删除 (hashes={len(hashes)})")
     return result is True
 
 
@@ -263,11 +314,17 @@ def get_qb_progress(save_dir, torrents=None):
     return None
 
 def load_state():
+    """Load queue state with file lock protection."""
     value = read_json(STATE_PATH, [])
     return value if isinstance(value, list) else []
 
 def save_state(items):
+    """Save queue state with file lock protection."""
     write_json(STATE_PATH, items)
+
+def update_state(updater):
+    """Update queue state atomically with file lock protection."""
+    return update_json(STATE_PATH, [], updater)
 
 def load_history():
     history = read_json(HISTORY_PATH, [])
@@ -679,6 +736,12 @@ def get_download_info(code):
             if elapsed > 0 and current >= prev_bytes:
                 speed = (current - prev_bytes) / elapsed
         _speed_cache[code] = (current, now)
+        # LRU 淘汰：超过上限时删除最旧的 20%
+        if len(_speed_cache) > _SPEED_CACHE_MAX_SIZE:
+            sorted_items = sorted(_speed_cache.items(), key=lambda x: x[1][1])
+            to_remove = int(_SPEED_CACHE_MAX_SIZE * 0.2)
+            for old_code, _ in sorted_items[:to_remove]:
+                del _speed_cache[old_code]
 
     progress_pct = 0
     if current_sec and current_sec > 0:
@@ -710,21 +773,29 @@ def online_file_url(code, filename):
 
 
 def online_code_dir(code):
-    return os.path.join(ONLINE_DIR, code.upper())
+    """Return safe path for online code directory with realpath resolution."""
+    normalized = code.upper()
+    if not normalized or normalized in (".", "..") or "/" in normalized or "\\" in normalized:
+        raise ValueError("invalid online code")
+    root = os.path.realpath(ONLINE_DIR)
+    target = os.path.realpath(os.path.join(ONLINE_DIR, normalized))
+    if os.path.commonpath([root, target]) != root:
+        raise ValueError("online path escapes base directory")
+    return target
 
 
 def cleanup_online_detail(code):
     code = normalize_online_code(code)
     if not code:
         return False
-    target = online_code_dir(code)
-    root = os.path.abspath(ONLINE_DIR)
-    abs_target = os.path.abspath(target)
-    if not abs_target.startswith(root + os.sep):
+    try:
+        target = online_code_dir(code)
+    except ValueError as e:
+        log(f"Invalid online code path {code}: {e}")
         return False
     removed = False
-    if os.path.isdir(abs_target):
-        shutil.rmtree(abs_target)
+    if os.path.isdir(target):
+        shutil.rmtree(target)
         log(f"Cleaned online temp detail: {code}")
         removed = True
     if not _has_registered_job(code):
@@ -791,7 +862,11 @@ def download_online_cover(code, image_url):
         return ""
     code = code.upper()
     filename = f"{code}-cover.jpg"
-    local_dir = online_code_dir(code)
+    try:
+        local_dir = online_code_dir(code)
+    except ValueError as e:
+        log(f"Invalid online code path {code}: {e}")
+        return image_url
     local_path = os.path.join(local_dir, filename)
     if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
         return online_file_url(code, filename)
@@ -809,11 +884,14 @@ def download_online_cover(code, image_url):
             impersonate="chrome110",
             timeout=15,
         )
-        if resp.status_code >= 400 or not resp.content:
-            return image_url
-        with open(local_path, "wb") as f:
-            f.write(resp.content)
-        return online_file_url(code, filename)
+        try:
+            if resp.status_code >= 400 or not resp.content:
+                return image_url
+            with open(local_path, "wb") as f:
+                f.write(resp.content)
+            return online_file_url(code, filename)
+        finally:
+            resp.close()
     except Exception as e:
         log(f"Online cover download failed for {code}: {e}")
         return image_url
@@ -1208,7 +1286,10 @@ class QueueHandler(BaseHTTPRequestHandler):
         
         # Merge history into result (persistent done items)
         history = load_history()
-        log(f"History: {len(history)} items: {[h['code'] for h in history]}")
+        if DEBUG:
+            log(f"History: {len(history)} items: {[h['code'] for h in history]}")
+        else:
+            log(f"History: {len(history)} items")
         for h in history:
             if h["code"] not in result:
                 result[h["code"]] = {
@@ -1271,30 +1352,38 @@ class QueueHandler(BaseHTTPRequestHandler):
                 t_code = code_from_qb_torrent(t)
                 if t_code and (t_code == cleaned or clean_avid(t_code) == cleaned):
                     # Ensure registration file still shows "已加入"
-                    state = load_state()
-                    if code not in [s["code"] for s in state]:
-                        state.append({"code": code, "status": "queued", "added_at": time.time()})
-                        save_state(state)
+                    def ensure_in_state(state):
+                        if code not in [s["code"] for s in state]:
+                            state.append({"code": code, "status": "queued", "added_at": time.time()})
+                        return state
+                    update_state(ensure_in_state)
                     self._json({"status": "already in qBittorrent", "code": code})
                     return
 
         append_unique(QUEUE_PATH, code)
 
         # Registration file is UI source of truth (write-through on add)
-        state = load_state()
+        def add_or_update_code(state):
+            existing = next((s for s in state if s.get("code") == code), None)
+            if existing is None:
+                state.append({"code": code, "status": "queued", "added_at": time.time()})
+                log_write("Queue", f"{code} 已加入下载列表")
+            else:
+                existing["status"] = "queued"
+                if not existing.get("added_at"):
+                    existing["added_at"] = time.time()
+            return state
+
+        state = update_state(add_or_update_code)
         existing = next((s for s in state if s.get("code") == code), None)
-        if existing is None:
-            state.append({"code": code, "status": "queued", "added_at": time.time()})
-            save_state(state)
-            log_write("Queue", f"{code} 已加入下载列表")
-            self._json({"status": "added", "code": code})
-        else:
-            existing["status"] = "queued"
-            if not existing.get("added_at"):
-                existing["added_at"] = time.time()
-            save_state(state)
+        if existing and existing.get("status") == "queued" and existing.get("added_at"):
             # 重复入队静默（前台不刷）
-            self._json({"status": "already in queue", "code": code})
+            if any(s.get("code") == code and s.get("status") == "queued" for s in state[:-1] if s.get("code") == code):
+                self._json({"status": "already in queue", "code": code})
+            else:
+                self._json({"status": "added", "code": code})
+        else:
+            self._json({"status": "added", "code": code})
 
     @queue_route_locked
     def do_DELETE(self):
@@ -1320,10 +1409,11 @@ class QueueHandler(BaseHTTPRequestHandler):
         delete_files = "delete_files=1" in (parsed.query or "")
         request_cancel(code)
         qb_removed = qb_remove_code(code, delete_files=delete_files)
-        
-        state = [s for s in load_state() if s["code"] != code]
-        save_state(state)
-        
+
+        def remove_code_from_state(state):
+            return [s for s in state if s["code"] != code]
+        update_state(remove_code_from_state)
+
         remove_code(QUEUE_PATH, code)
         
         if read_current_download() == code:
@@ -1444,12 +1534,16 @@ def startup_recovery():
     if recovered:
         for code in append_many_unique(QUEUE_PATH, [item.upper() for item in recovered]):
             log(f"  Re-queued: {code}")
-        
-        # Add to state
-        for code in recovered:
-            if code not in [s["code"] for s in state]:
-                state.append({"code": code.upper(), "status": "queued", "added_at": time.time()})
-        save_state(state)
+
+        # Add to state atomically
+        def add_recovered_codes(state):
+            state_codes = {s["code"] for s in state}
+            for code in recovered:
+                if code not in state_codes:
+                    state.append({"code": code.upper(), "status": "queued", "added_at": time.time()})
+                    state_codes.add(code)
+            return state
+        update_state(add_recovered_codes)
     
     # 4. 清理 current_download.txt（等 worker 重新拾取）
     if current and not is_locked:

@@ -97,43 +97,46 @@ def get_recent_javbus(max_pages=1):
                 timeout=15,
                 allow_redirects=False,
             )
-            if "Age Verification" in r.text[:500]:
-                break
+            try:
+                if "Age Verification" in r.text[:500]:
+                    break
 
-            cards = re.findall(
-                r'<a class="movie-box" href="https?://[^"]*?/([A-Z0-9]+-\d+)"[^>]*>'
-                r'(.*?)</a>',
-                r.text,
-                re.DOTALL,
-            )
-            for avid, body in cards:
-                freshness = _card_freshness(body, markers)
-                if not freshness and not scan_all_cards:
-                    continue
-                if not freshness:
-                    freshness = "page-scan"
-                title_m = re.search(r'<img[^>]*title="([^"]*)"', body)
-                title = title_m.group(1).strip() if title_m else avid
-                cover_m = re.search(r'<img[^>]*src="([^"]*)"', body)
-                cover = cover_m.group(1) if cover_m else ""
-                if cover and not cover.startswith("http"):
-                    cover = (
-                        f"https://{DOMAIN}{cover}"
-                        if cover.startswith("/")
-                        else f"https://{DOMAIN}/{cover}"
-                    )
-                date_m = re.search(r'<date>(\d{4}-\d{2}-\d{2})</date>', body)
-                items.append({
-                    "id": avid.upper(),
-                    "title": title,
-                    "cover": cover,
-                    "releaseDate": date_m.group(1) if date_m else "",
-                    "freshness": freshness,
-                    "source": "javbus",
-                })
-            if not cards:
-                break
-            time.sleep(random.uniform(5, 10) if page > 1 else 0)
+                cards = re.findall(
+                    r'<a class="movie-box" href="https?://[^"]*?/([A-Z0-9]+-\d+)"[^>]*>'
+                    r'(.*?)</a>',
+                    r.text,
+                    re.DOTALL,
+                )
+                for avid, body in cards:
+                    freshness = _card_freshness(body, markers)
+                    if not freshness and not scan_all_cards:
+                        continue
+                    if not freshness:
+                        freshness = "page-scan"
+                    title_m = re.search(r'<img[^>]*title="([^"]*)"', body)
+                    title = title_m.group(1).strip() if title_m else avid
+                    cover_m = re.search(r'<img[^>]*src="([^"]*)"', body)
+                    cover = cover_m.group(1) if cover_m else ""
+                    if cover and not cover.startswith("http"):
+                        cover = (
+                            f"https://{DOMAIN}{cover}"
+                            if cover.startswith("/")
+                            else f"https://{DOMAIN}/{cover}"
+                        )
+                    date_m = re.search(r'<date>(\d{4}-\d{2}-\d{2})</date>', body)
+                    items.append({
+                        "id": avid.upper(),
+                        "title": title,
+                        "cover": cover,
+                        "releaseDate": date_m.group(1) if date_m else "",
+                        "freshness": freshness,
+                        "source": "javbus",
+                    })
+                if not cards:
+                    break
+                time.sleep(random.uniform(5, 10) if page > 1 else 0)
+            finally:
+                r.close()
         except Exception as e:
             print(f"[Sources] JavBus page {page}: {e}")
             break

@@ -99,6 +99,12 @@ def cleanup_expired_sources(path=None, now=None):
 
 
 @contextmanager
+def _mark_plwt_rate_limited(path=None):
+    """Mark that search was rate-limited, extending next interval to 60s."""
+    path = path or PLWT_RATE_PATH
+    update_json(path, {}, lambda s: {**s, "rate_limited": True})
+
+
 def _plwt_search_slot(path=None):
     path = path or PLWT_RATE_PATH
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -106,10 +112,12 @@ def _plwt_search_slot(path=None):
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         state = read_json(path, {})
         last_search = float(state.get("last_search") or 0) if isinstance(state, dict) else 0
-        delay = PLWT_SEARCH_INTERVAL_SECONDS - (_now() - last_search)
+        rate_limited = bool(state.get("rate_limited")) if isinstance(state, dict) else False
+        interval = 60.0 if rate_limited else PLWT_SEARCH_INTERVAL_SECONDS
+        delay = interval - (_now() - last_search)
         if delay > 0:
             time.sleep(delay)
-        update_json(path, {}, lambda _: {"last_search": _now()})
+        update_json(path, {}, lambda _: {"last_search": _now(), "rate_limited": False})
         try:
             yield
         finally:
@@ -133,6 +141,8 @@ def resolve_download_source(raw_code, proxy=None, cache_path=None, force=False):
     forum_item = None
     with _plwt_search_slot():
         forum_item = chinese_forum.search_exact_chinese(code)
+    if forum_item and forum_item.get("_rate_limited") and not forum_item.get("magnet"):
+        _mark_plwt_rate_limited()
     if forum_item and forum_item.get("magnet"):
         return save_cached_source(code, {
             "kind": "magnet",

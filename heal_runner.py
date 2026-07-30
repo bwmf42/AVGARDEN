@@ -64,23 +64,56 @@ def _env_true(name: str, default: str = "1") -> bool:
     return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _state_file_lock(path: str):
+    """File lock context manager for STATE_PATH specifically."""
+    from contextlib import contextmanager
+    lock_path = path + ".lock"
+
+    @contextmanager
+    def _lock():
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(lock_path, "a+", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    return _lock()
+
+
 def load_json(path: str, default: Any) -> Any:
+    """Load JSON with file lock for STATE_PATH."""
     try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+        if path == STATE_PATH:
+            with _state_file_lock(path):
+                if os.path.exists(path):
+                    with open(path, "r", encoding="utf-8") as f:
+                        return json.load(f)
+        else:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
     except Exception as e:
         log(f"load {path}: {e}")
     return default
 
 
 def save_json(path: str, data: Any) -> None:
+    """Save JSON with file lock for STATE_PATH."""
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+
+        def _write():
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+
+        if path == STATE_PATH:
+            with _state_file_lock(path):
+                _write()
+        else:
+            _write()
     except Exception as e:
         log(f"save {path}: {e}")
 
@@ -337,12 +370,14 @@ def diagnose() -> Dict[str, Any]:
 
     orphan_queued = []
     done_but_queued = []
+    state_codes = set()
     for it in state_items:
         if not isinstance(it, dict):
             continue
         code = str(it.get("code") or "").upper()
         if not code:
             continue
+        state_codes.add(code)
         st = str(it.get("status") or "")
         if st != "queued":
             continue
@@ -351,6 +386,13 @@ def diagnose() -> Dict[str, Any]:
         elif code not in queue_codes and code not in qb_codes_active and code not in qb_codes_done:
             # not in text queue and not active in qB
             orphan_queued.append(code)
+
+    # 反向孤儿：qB 中活跃但 queue_state 没记录
+    qb_orphan = []
+    all_qb_codes = qb_codes_active | qb_codes_done
+    for code in all_qb_codes:
+        if code not in state_codes:
+            qb_orphan.append(code)
 
     d = {
         "titlezh_gaps": gaps,
@@ -363,6 +405,7 @@ def diagnose() -> Dict[str, Any]:
         "missing_files": missing_files,
         "orphan_queued": orphan_queued,
         "done_but_queued": done_but_queued,
+        "qb_orphan": qb_orphan,
         "weekly_items": len(items) if isinstance(items, list) else 0,
     }
     if HEAL_PROBE:
@@ -427,7 +470,8 @@ def heal_queue_sync(state: dict, diag: dict) -> bool:
         return False
     orphan = list(diag.get("orphan_queued") or [])
     done = list(diag.get("done_but_queued") or [])
-    if not orphan and not done:
+    qb_orphan = list(diag.get("qb_orphan") or [])
+    if not orphan and not done and not qb_orphan:
         return False
     items = load_json(STATE_PATH, [])
     if not isinstance(items, list):
@@ -437,6 +481,7 @@ def heal_queue_sync(state: dict, diag: dict) -> bool:
     new_items = []
     removed = 0
     marked = 0
+    added = 0
     for it in items:
         if not isinstance(it, dict):
             continue
@@ -450,10 +495,20 @@ def heal_queue_sync(state: dict, diag: dict) -> bool:
             it["_post_done"] = True
             marked += 1
         new_items.append(it)
-    if removed or marked:
+    # 补登记 qB 反向孤儿（qB 有但 queue_state 没有）
+    for code in qb_orphan:
+        new_items.append({
+            "code": code,
+            "status": "processing",
+            "source": "unknown",
+            "added_at": int(time.time()),
+            "_heal_recovered": True
+        })
+        added += 1
+    if removed or marked or added:
         save_json(STATE_PATH, new_items)
         mark_cooldown(state, "queue_sync")
-        report(f"队列对齐: 清 orphan={removed} 同步完成={marked}")
+        report(f"队列对齐: 清 orphan={removed} 同步完成={marked} 补登记={added}")
         return True
     return False
 
@@ -512,6 +567,7 @@ def run_once(do_heal: bool = True) -> dict:
         f"qb={diag.get('qb_ok')} missingFiles={diag.get('missing_files')} "
         f"orphan={len(diag.get('orphan_queued') or [])} "
         f"done_queued={len(diag.get('done_but_queued') or [])} "
+        f"qb_orphan={len(diag.get('qb_orphan') or [])} "
         f"plwt={diag.get('plwt_ok')} ds={diag.get('deepseek_ok')} "
         f"scrape_h={diag.get('scrape_hours')}"
     )

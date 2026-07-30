@@ -319,13 +319,16 @@ def _fetch_digital_metadata(cid, code="", page=""):
             impersonate="chrome110",
             timeout=20,
         )
-        if response.status_code >= 400:
-            _note_request(False)
-            return None
-        meta = parse_digital_metadata(response.json(), code, page, cid)
-        _cache_digital(key, meta)
-        _note_request(bool(meta))
-        return meta
+        try:
+            if response.status_code >= 400:
+                _note_request(False)
+                return None
+            meta = parse_digital_metadata(response.json(), code, page, cid)
+            _cache_digital(key, meta)
+            _note_request(bool(meta))
+            return meta
+        finally:
+            response.close()
     except Exception:
         _note_request(False)
         return None
@@ -377,25 +380,28 @@ def fetch_digital_metadata_candidates(code, cids, page=""):
             impersonate="chrome110",
             timeout=20,
         )
-        if response.status_code >= 400:
-            _note_request(False)
-            return None
-        payload = response.json()
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, dict):
-            _note_request(False)
-            return None
-        first = None
-        for index, cid in enumerate(pending):
-            content = data.get(f"c{index}")
-            meta = parse_digital_metadata(
-                {"data": {"ppvContent": content}}, code, page, cid
-            )
-            _cache_digital((cid, code), meta)
-            if first is None and meta:
-                first = meta
-        _note_request(bool(first))
-        return first
+        try:
+            if response.status_code >= 400:
+                _note_request(False)
+                return None
+            payload = response.json()
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, dict):
+                _note_request(False)
+                return None
+            first = None
+            for index, cid in enumerate(pending):
+                content = data.get(f"c{index}")
+                meta = parse_digital_metadata(
+                    {"data": {"ppvContent": content}}, code, page, cid
+                )
+                _cache_digital((cid, code), meta)
+                if first is None and meta:
+                    first = meta
+            _note_request(bool(first))
+            return first
+        finally:
+            response.close()
     except Exception:
         _note_request(False)
         return None
@@ -574,18 +580,21 @@ def search_all_products(code, with_status=False):
             allow_redirects=True,
             timeout=15,
         )
-        if response.status_code >= 400:
-            _note_request(False)
-            return ([], False) if with_status else []
-        if "お住まいの地域から" in response.text:
-            _note_request(False)
-            return ([], False) if with_status else []
-        products = parse_all_search_products(response.text, code, str(response.url))
-        if products:
-            summary = ",".join(f"{item['kind']}:{item['cid']}" for item in products)
-            print(f"[DMM] {code}: all-category search={summary}")
-        _note_request(True)
-        return (products, True) if with_status else products
+        try:
+            if response.status_code >= 400:
+                _note_request(False)
+                return ([], False) if with_status else []
+            if "お住まいの地域から" in response.text:
+                _note_request(False)
+                return ([], False) if with_status else []
+            products = parse_all_search_products(response.text, code, str(response.url))
+            if products:
+                summary = ",".join(f"{item['kind']}:{item['cid']}" for item in products)
+                print(f"[DMM] {code}: all-category search={summary}")
+            _note_request(True)
+            return (products, True) if with_status else products
+        finally:
+            response.close()
     except Exception:
         _note_request(False)
         return ([], False) if with_status else []
@@ -613,11 +622,14 @@ def _fetch_detail_html(url, timeout=20):
             allow_redirects=True,
             timeout=timeout,
         )
-        if response.status_code >= 400 or not response.text:
-            _note_request(False)
-            return None
-        _note_request(True)
-        return response.text
+        try:
+            if response.status_code >= 400 or not response.text:
+                _note_request(False)
+                return None
+            _note_request(True)
+            return response.text
+        finally:
+            response.close()
     except Exception:
         _note_request(False)
         return None
@@ -684,10 +696,13 @@ def _fetch_bytes(url, timeout=10):
             impersonate="chrome110",
             timeout=timeout,
         )
-        if r.status_code < 400 and r.content:
-            _note_request(True)
-            return r.content
-        _note_request(False)
+        try:
+            if r.status_code < 400 and r.content:
+                _note_request(True)
+                return r.content
+            _note_request(False)
+        finally:
+            r.close()
     except Exception:
         _note_request(False)
         return None

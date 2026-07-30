@@ -107,9 +107,12 @@ def _fetch_image_content(url, referer, timeout=15):
         try:
             r = requests.get(candidate, proxies=proxies, headers=h,
                             impersonate="chrome110", timeout=timeout)
-            if r.status_code < 400 and r.content:
-                return r.content
-            last_error = f"status {r.status_code}"
+            try:
+                if r.status_code < 400 and r.content:
+                    return r.content
+                last_error = f"status {r.status_code}"
+            finally:
+                r.close()
         except Exception as e:
             last_error = e
     raise RuntimeError(last_error or "image download failed")
@@ -154,9 +157,12 @@ def fetch_page(avid):
                         proxies=_proxies(), headers=h,
                         impersonate="chrome110", timeout=15,
                         allow_redirects=False)
-        if "Age Verification" in r.text[:500] or "<title>404" in r.text:
-            return None
-        return r.text
+        try:
+            if "Age Verification" in r.text[:500] or "<title>404" in r.text:
+                return None
+            return r.text
+        finally:
+            r.close()
     except Exception as e:
         print(f"[JavBus] Fetch {avid}: {e}")
         return None
@@ -226,9 +232,12 @@ def search_magnet(avid, page_html=""):
         h["Referer"] = f"https://{DOMAIN}/{avid}"
         r = requests.get(url, proxies=_proxies(), headers=h,
                         impersonate="chrome110", timeout=20)
-        if r.status_code != 200:
-            return ""
-        return _pick_javbus_magnet(avid, r.text)
+        try:
+            if r.status_code != 200:
+                return ""
+            return _pick_javbus_magnet(avid, r.text)
+        finally:
+            r.close()
     except Exception as e:
         print(f"[JavBus] Magnet {avid}: {e}")
         return ""

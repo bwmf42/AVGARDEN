@@ -566,7 +566,9 @@ class ForumClient:
             return []
         if "30 秒" in html and "搜索" in html and "间隔" in html:
             _log(f"search rate limited: {code}")
+            self._rate_limited = True
             return []
+        self._rate_limited = False
         return parse_search_html(html, code, base=self.base, fid=self.fid)
 
     def fetch_thread_html(self, forum_url: str) -> Optional[str]:
@@ -635,6 +637,7 @@ def search_exact_chinese(avid: str, client: Optional[ForumClient] = None) -> Opt
     if own_client and not client.ensure_safe():
         return None
     results = client.search_exact(code)
+    rate_limited = getattr(client, "_rate_limited", False)
     for index, item in enumerate(results[:3]):
         magnet = (item.get("magnet") or "").strip()
         if not magnet:
@@ -642,9 +645,12 @@ def search_exact_chinese(avid: str, client: Optional[ForumClient] = None) -> Opt
         if magnet:
             result = dict(item)
             result["magnet"] = magnet
+            result["_rate_limited"] = rate_limited
             return result
         if index + 1 < min(3, len(results)):
             time.sleep(random.uniform(THREAD_DELAY_MIN, THREAD_DELAY_MAX))
+    if rate_limited:
+        return {"_rate_limited": True}
     return None
 
 

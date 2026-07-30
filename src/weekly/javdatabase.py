@@ -226,14 +226,17 @@ def fetch_page(code: str, timeout: int = 15) -> str | None:
             timeout=timeout,
             allow_redirects=True,
         )
-        if r.status_code == 404:
-            return None
-        if r.status_code >= 400 or not r.text:
-            return None
-        # real 404 template
-        if re.search(r"<title>\s*Page Not Found", r.text, re.I):
-            return None
-        return r.text
+        try:
+            if r.status_code == 404:
+                return None
+            if r.status_code >= 400 or not r.text:
+                return None
+            # real 404 template
+            if re.search(r"<title>\s*Page Not Found", r.text, re.I):
+                return None
+            return r.text
+        finally:
+            r.close()
     except Exception as e:
         print(f"[javdatabase] fetch {code}: {e}")
         return None
