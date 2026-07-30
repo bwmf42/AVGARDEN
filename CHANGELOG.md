@@ -17,6 +17,7 @@
 - Fixed queue state sync detection: added reverse-orphan detection in `heal_runner.py` to find qBittorrent tasks with `AV_GARDEN` category but missing from `queue_state.json`, and auto-register them during heal runs.
 - Fixed 98堂 search rate-limit handling: when forum search detects "30秒" throttle message, mark rate-limited state and extend next search slot interval to 60s to avoid consecutive limit hits.
 - Fixed verbose logging: made `queue_api.py` history list details conditional on `DEBUG=1` environment variable; default mode now logs only item count, not full code arrays.
+- Fixed Chinese subtitle merge cleanup: now remove the torrent download directory (e.g., `MNGS-071-U`) after merging to target directory (e.g., `MNGS-071`), preventing duplicate folder remnants with metadata but no video files.
 
 ### Changed
 

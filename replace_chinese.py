@@ -773,6 +773,19 @@ def merge_completed_chinese():
                     log(f"  {avid}: Chinese torrent junk cleanup incomplete: {'; '.join(delete_failures[:4])}")
                 elif deleted:
                     log(f"  {avid}: removed {len(deleted)} unselected Chinese torrent file(s)")
+
+                # 删除种子下载目录（如果不是目标目录且不被保护）
+                content_path = str(t_info.get("content_path") or "")
+                if content_path:
+                    torrent_dir = os.path.dirname(os.path.realpath(content_path)) if os.path.isfile(content_path) else os.path.realpath(content_path)
+                    target_dir_real = os.path.realpath(target_dir)
+                    if torrent_dir != target_dir_real and torrent_dir not in protected_dirs:
+                        try:
+                            if os.path.isdir(torrent_dir) and os.path.commonpath([SAVE_PATH, torrent_dir]) == os.path.realpath(SAVE_PATH):
+                                shutil.rmtree(torrent_dir)
+                                log(f"  {avid}: removed Chinese torrent directory {os.path.basename(torrent_dir)}")
+                        except Exception as exc:
+                            log(f"  {avid}: failed to remove torrent directory {os.path.basename(torrent_dir)}: {exc}")
             except Exception as e:
                 log(f"  qB record removal failed for {avid}: {e}; provenance retained")
                 continue
