@@ -402,6 +402,100 @@ def qb_has_cn_avid(avid):
     except:
         return False
 
+
+def avid_exists_in_system(avid):
+    """检查番号是否已在系统中（队列 + qB 任何版本）。
+
+    返回: (exists: bool, location: str|None, reason: str)
+    """
+    avid_upper = avid.upper()
+
+    # 1. 检查队列
+    queue_path = "/db/queue_state.json"
+    try:
+        if os.path.exists(queue_path):
+            with open(queue_path) as f:
+                queue = json.load(f)
+                for item in queue:
+                    item_code = (item.get("code") or "").upper()
+                    if item_code == avid_upper:
+                        status = item.get("status", "unknown")
+                        return True, "queue", f"status={status}"
+    except Exception as exc:
+        log(f"  Warning: could not check queue for {avid}: {exc}")
+
+    # 2. 检查 qBittorrent（任何版本，不限中文）
+    try:
+        opener = qb_login()
+        resp = opener.open(urllib.request.Request(f"{QB_URL}/api/v2/torrents/info"), timeout=10)
+        torrents = json.loads(resp.read().decode())
+        for torrent in matching_qb_tasks(torrents, avid, include_broken=True):
+            torrent_hash = torrent.get("hash", "")[:12]
+            state = torrent.get("state", "unknown")
+            return True, "qbittorrent", f"hash={torrent_hash} state={state}"
+    except Exception as exc:
+        log(f"  Warning: could not check qBittorrent for {avid}: {exc}")
+
+    return False, None, ""
+
+
+def update_weekly_magnet_if_unwatched(avid, magnet):
+    """如果番号在 Weekly 未看列表中，更新磁链为中文版（不添加下载）。
+
+    返回: (updated: bool, reason: str)
+    """
+    weekly_path = os.path.join(SAVE_PATH, "__weekly__", "weekly.json")
+    if not os.path.exists(weekly_path):
+        return False, "weekly.json not found"
+
+    watched_path = os.path.join(SAVE_PATH, "__weekly__", "watched.json")
+    watched_ids = set()
+    try:
+        if os.path.exists(watched_path):
+            with open(watched_path) as f:
+                watched = json.load(f)
+                watched_ids = {item.get("id", "").upper() for item in watched}
+    except Exception as exc:
+        log(f"  Warning: could not load watched.json: {exc}")
+
+    avid_upper = avid.upper()
+
+    try:
+        with open(weekly_path) as f:
+            weekly = json.load(f)
+
+        updated = False
+        for item in weekly:
+            item_id = (item.get("id") or "").upper()
+            if item_id == avid_upper:
+                # 检查是否已看
+                if item_id in watched_ids:
+                    return False, "already watched"
+
+                # 更新磁链
+                old_magnet = item.get("magnet", "")
+                if old_magnet == magnet:
+                    return False, "magnet unchanged"
+
+                item["magnet"] = magnet
+                item["isChinese"] = True
+                item["chineseUpdatedAt"] = datetime.now().astimezone().isoformat()
+                updated = True
+
+                log(f"  Updated weekly magnet for {avid} (unwatched)")
+                break
+
+        if updated:
+            with open(weekly_path, "w") as f:
+                json.dump(weekly, f, ensure_ascii=False, indent=2)
+            return True, "updated"
+        else:
+            return False, "not in weekly"
+
+    except Exception as exc:
+        log(f"  Warning: could not update weekly for {avid}: {exc}")
+        return False, f"error: {exc}"
+
 def qb_add_magnet(avid, magnet, metadata_timeout=120):
     """Add a Chinese magnet and apply strict selection as soon as metadata arrives."""
     import urllib.request, http.cookiejar
@@ -1194,6 +1288,7 @@ def main():
     existing_qb = 0
     add_failed = 0
     no_magnet = 0
+    weekly_updated = 0
     for item in unique_hits:
         avid = item["id"].upper()
         target_dirname = missing[avid]["target_dir"]
@@ -1208,7 +1303,19 @@ def main():
             continue
         if qb_has_cn_avid(avid):
             existing_qb += 1
-            log(f"  Skip {avid}: already in qB")
+            log(f"  Skip {avid}: already has Chinese version in qB")
+            continue
+
+        # 新增：检查是否已在系统中（队列 + qB 任何版本）
+        exists, location, reason = avid_exists_in_system(avid)
+        if exists:
+            log(f"  Skip {avid}: already in {location} ({reason})")
+            # 尝试更新 Weekly 未看磁链（不添加下载）
+            updated, update_reason = update_weekly_magnet_if_unwatched(avid, magnet)
+            if updated:
+                weekly_updated += 1
+                log(f"    → Updated weekly magnet for {avid}")
+            existing_qb += 1
             continue
         paused_hashes = []
         try:
@@ -1251,7 +1358,8 @@ def main():
 
     log(
         f"=== Done mode={mode}: list={len(list_items)} hits={len(unique_hits)} "
-        f"added={added} qb_skip={existing_qb} no_magnet={no_magnet} fail={add_failed} ==="
+        f"added={added} qb_skip={existing_qb} weekly_updated={weekly_updated} "
+        f"no_magnet={no_magnet} fail={add_failed} ==="
     )
 
     # 6. 可选 weekly 补字段（回补时默认跳过以省时间，可用 env 打开）
@@ -1262,7 +1370,8 @@ def main():
     try:
         summary = (
             f"mode={mode} 缺中文{len(missing)} 论坛列表{len(list_items)} 命中{len(unique_hits)} "
-            f"新增任务{added} qB已有{existing_qb} 无磁链{no_magnet} 失败{add_failed} "
+            f"新增任务{added} qB已有{existing_qb} Weekly更新{weekly_updated} "
+            f"无磁链{no_magnet} 失败{add_failed} "
             f"earliest={earliest.isoformat() if earliest else '-'} 补刮{refilled}"
         )
         log_write("ReplaceCN", summary)
