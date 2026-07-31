@@ -152,7 +152,15 @@ inject_build_info() {
     return 0
   fi
   local cid
+  # Prefer compose project service id; fall back to fixed container_name
+  # (Hermes may resolve a different compose project name than the host deploy).
   cid="$(dc ps -q server 2>/dev/null || true)"
+  if [ -z "$cid" ]; then
+    cid="$(d ps -q --filter name=^avgarden-server$ 2>/dev/null || true)"
+  fi
+  if [ -z "$cid" ]; then
+    cid="$(d ps -q --filter name=avgarden-server 2>/dev/null | head -1 || true)"
+  fi
   if [ -z "$cid" ]; then
     echo "skip BUILD_INFO inject: server not running"
     return 0
