@@ -29,6 +29,7 @@
 
 - Added Mac↔NAS version identity checks: `tools/build_identity.sh` fingerprints deploy-relevant sources (`tree_hash` + git_sha), `./check_version.sh` compares local identity to live `/api/version`, and `deploy.sh` writes `BUILD_INFO.json` then `docker cp`s it into the running server so drift is visible before the next edit/sync.
 - Added NAS-local `deploy_local.sh` and Hermes skill `skills/avgarden-deploy` for Feishu/outside deploy without Mac rsync or sshpass (`server`/`worker`/`all`, optional `AVGARDEN_HOT=1` worker hot patch, identity inject).
+- Split version identity into `tree_hash_server` / `tree_hash_worker` (plus combined `tree_hash`); `check_version.sh` reports per-side MATCH/MISMATCH; `git_dirty` only considers fingerprint paths; `/api/version` passes through all BUILD_INFO fields.
 - Added one shared manual-download source resolver for online search, queue additions, and Worker consumption. It caches the verified result under `/db` so search-to-download never repeats the 98堂/Sukebei lookup, while abandoned one-time searches still clean up their source cache.
 - Added guarded daily Weekly retention at 04:30: unviewed entries stay indefinitely, watched entries and their Weekly artwork expire after 30 days, and every run writes and revalidates an exact manifest plus compressed JSON backups.
 - Added metadata-first blocking in the Weekly updater. Items matching blocked actresses, genres, keywords, or the existing age filter are recorded as watched, kept metadata-only for 30 days, and never request artwork, magnets, or title translation.

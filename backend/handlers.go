@@ -2400,15 +2400,23 @@ func versionHandler(w http.ResponseWriter, r *http.Request) {
 		"build_time":     buildTime,
 		"server_time":    time.Now().Format(time.RFC3339),
 	}
-	// Optional fields baked at deploy time (tools/build_identity.sh -> BUILD_INFO.json)
-	for _, key := range []string{"tree_hash", "git_sha", "git_dirty", "built_at", "built_on"} {
-		if v, ok := info[key]; ok {
-			payload[key] = v
+	// Pass through BUILD_INFO.json (tree_hash / tree_hash_server / tree_hash_worker / git_* / …)
+	// so new identity fields work after docker-cp without another handler change.
+	for k, v := range info {
+		if k == "version" {
+			continue
 		}
+		payload[k] = v
 	}
 	// Env overrides (compose/CI)
 	if v := strings.TrimSpace(os.Getenv("BUILD_TREE_HASH")); v != "" {
 		payload["tree_hash"] = v
+	}
+	if v := strings.TrimSpace(os.Getenv("BUILD_TREE_HASH_SERVER")); v != "" {
+		payload["tree_hash_server"] = v
+	}
+	if v := strings.TrimSpace(os.Getenv("BUILD_TREE_HASH_WORKER")); v != "" {
+		payload["tree_hash_worker"] = v
 	}
 	if v := strings.TrimSpace(os.Getenv("BUILD_GIT_SHA")); v != "" {
 		payload["git_sha"] = v

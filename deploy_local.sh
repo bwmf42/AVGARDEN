@@ -294,6 +294,8 @@ except Exception as e:
   print("version parse fail", e); raise SystemExit(0)
 print("version:", d.get("version"))
 print("tree_hash:", d.get("tree_hash") or "(none)")
+print("tree_hash_server:", d.get("tree_hash_server") or "(none)")
+print("tree_hash_worker:", d.get("tree_hash_worker") or "(none)")
 print("git_sha:", d.get("git_sha") or "(none)")
 print("frontend:", d.get("frontend_js"))
 ' 2>/dev/null || printf '%s\n' "$VER_JSON"

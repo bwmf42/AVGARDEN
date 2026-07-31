@@ -161,13 +161,18 @@ curl -sS http://127.0.0.1:31471/api/queue-status
 部署前/回家后先核对本地源码是否与正在跑的 NAS 构建一致，避免“以为改了其实线上还是旧的”：
 
 ```bash
-./check_version.sh              # 比 local tree_hash vs http://192.168.5.14:31471/api/version
+./check_version.sh              # local vs http://192.168.5.14:31471/api/version（分 server/worker）
 ./check_version.sh --nas-tree   # 额外 ssh zspace 指纹 NAS 现役源码目录
 ```
 
-- 身份由 `tools/build_identity.sh` 计算：`VERSION` + 部署相关源文件内容哈希（`tree_hash`）+ 可选 git_sha。
-- `deploy.sh` / `deploy_local.sh` 每次会写 `BUILD_INFO.json` 并 `docker cp` 进运行中的 server；`/api/version` 返回 `tree_hash` / `git_sha`（`loadBuildInfo` 每次请求读文件）。
-- 退出码：`0` 对齐、`1` 不对齐或本地 dirty、`2` API 不可达。
+- 身份由 `tools/build_identity.sh` 计算：
+  - `tree_hash_server` — Go/Vue/Dockerfile.server/VERSION
+  - `tree_hash_worker` — Python/src/requirements/Dockerfile.worker
+  - `tree_hash` — 两侧组合（兼容旧逻辑）
+  - `git_dirty` — **仅**当未提交改动落在指纹路径内时为 true
+- `deploy.sh` / `deploy_local.sh` 写 `BUILD_INFO.json` 并 `docker cp` 进 server；`/api/version` 透传 BUILD_INFO 字段。
+- `check_version` 结果：`MATCH` / `SERVER_MISMATCH` / `WORKER_MISMATCH` / `BOTH_MISMATCH` / `UNKNOWN`。
+- 退出码：`0` 两侧对齐、`1` 不对齐或部分对齐或 identity dirty、`2` API 不可达。
 
 ## 飞书 / Hermes 部署（NAS 本地）
 

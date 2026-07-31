@@ -210,12 +210,17 @@ case "${AVGARDEN_DEPLOY_SERVICES:-auto}" in
     auto)
         ;;
     server)
+        # 强制只动 server，忽略其它路径分类
+        reset_deploy_plan
         mark_server_build
         ;;
     worker)
+        # 强制只动 worker
+        reset_deploy_plan
         mark_worker_build
         ;;
     all)
+        reset_deploy_plan
         mark_all_build
         ;;
     *)
@@ -224,18 +229,56 @@ case "${AVGARDEN_DEPLOY_SERVICES:-auto}" in
         ;;
 esac
 
+# HOT 模式：Python 热补丁（docker cp + restart），跳过镜像构建。
+# 适用：只改 worker.py / queue_api.py / src/*.py 等，且 requirements 未变。
+# 用法：AVGARDEN_HOT=1 bash deploy.sh
+# 或：  AVGARDEN_DEPLOY_MODE=hot bash deploy.sh
+DEPLOY_HOT=0
+case "${AVGARDEN_DEPLOY_MODE:-}${AVGARDEN_HOT:-}" in
+    hot*|1|true|yes|on) DEPLOY_HOT=1 ;;
+esac
+# 依赖变化或 Dockerfile 变化时禁止 hot（必须完整构建）
+if [ "$DEPLOY_HOT" = "1" ]; then
+    if echo "$REMOTE_DIFF" | grep -E '\|requirements\.txt$|\|Dockerfile\.worker|\|Dockerfile\.server|\|docker-compose\.yml' >/dev/null 2>&1; then
+        echo "HOT 禁用：检测到 requirements/Dockerfile/compose 变更，回退完整构建"
+        DEPLOY_HOT=0
+    fi
+fi
+
 echo "检测到 ${CHANGED_COUNT} 个同步变化"
 print_deploy_plan
+if [ "$DEPLOY_HOT" = "1" ]; then
+    echo "mode=hot (skip docker build; docker cp python into running containers)"
+fi
 if [ "${#UNKNOWN_PATHS[@]}" -gt 0 ]; then
     echo "未识别路径按最安全策略重建两个服务"
 fi
 
 BUILD_SERVICES=()
 RECREATE_SERVICES=()
-[ "$BUILD_SERVER" = "1" ] && BUILD_SERVICES+=(server)
-[ "$BUILD_WORKER" = "1" ] && BUILD_SERVICES+=(worker)
-[ "$RECREATE_SERVER" = "1" ] && RECREATE_SERVICES+=(server)
-[ "$RECREATE_WORKER" = "1" ] && RECREATE_SERVICES+=(worker)
+if [ "$DEPLOY_HOT" = "1" ]; then
+    # hot: 不 build；worker 有 py 变更则标记 hot-restart；server 前端/go 变更仍需完整 build
+    if [ "$BUILD_SERVER" = "1" ]; then
+        echo "HOT 注意：含 server/frontend/go 变更，server 仍完整构建"
+        BUILD_SERVICES+=(server)
+        RECREATE_SERVICES+=(server)
+    fi
+    # worker 不进 BUILD_SERVICES
+    HOT_WORKER=0
+    if [ "$BUILD_WORKER" = "1" ] || [ "$RECREATE_WORKER" = "1" ]; then
+        HOT_WORKER=1
+    fi
+    # 若 auto 路径下只有 py 变更，classify 已 mark_worker
+    if [ "$HOT_WORKER" != "1" ] && echo "$REMOTE_DIFF" | grep -E '\|\.py$|\|src/' >/dev/null 2>&1; then
+        HOT_WORKER=1
+    fi
+else
+    [ "$BUILD_SERVER" = "1" ] && BUILD_SERVICES+=(server)
+    [ "$BUILD_WORKER" = "1" ] && BUILD_SERVICES+=(worker)
+    [ "$RECREATE_SERVER" = "1" ] && RECREATE_SERVICES+=(server)
+    [ "$RECREATE_WORKER" = "1" ] && RECREATE_SERVICES+=(worker)
+    HOT_WORKER=0
+fi
 
 OLD_IMAGE_IDS=""
 if [ "${#BUILD_SERVICES[@]}" -gt 0 ]; then
@@ -273,6 +316,52 @@ if [ "${#BUILD_SERVICES[@]}" -gt 0 ]; then
         fi"
 else
     echo "镜像输入未变化，跳过构建"
+fi
+
+echo ""
+echo "=== 4b. HOT worker 热补丁（docker cp） ==="
+if [ "$DEPLOY_HOT" = "1" ] && [ "${HOT_WORKER:-0}" = "1" ]; then
+    remote_ssh "
+        set -e
+        cid=\$(echo '$NAS_PASS' | sudo -S -p '' docker compose -f '$NAS_DIR/docker-compose.yml' ps -q worker)
+        if [ -z \"\$cid\" ]; then
+            echo 'worker 容器不存在，回退完整 recreate' >&2
+            echo '$NAS_PASS' | sudo -S -p '' docker compose -f '$NAS_DIR/docker-compose.yml' up -d --no-deps --build worker
+            exit 0
+        fi
+        # 把 NAS 现役目录里的 Python 源码拷进容器 /app（跳过镜像重建）
+        for rel in \
+            worker.py queue_api.py queue_store.py launcher.py heal_runner.py \
+            download_source.py \
+            requirements.txt \
+            src/p115_offline.py src/log_writer.py \
+            tools/maintenance/link_115_aiwei_into_data_root.py \
+            ; do
+            if [ -f '$NAS_DIR/'\"\$rel\" ]; then
+                # ensure parent dir inside container for nested paths
+                dir=\$(dirname \"\$rel\")
+                if [ \"\$dir\" != . ]; then
+                    echo '$NAS_PASS' | sudo -S -p '' docker exec \"\$cid\" mkdir -p \"/app/\$dir\"
+                fi
+                echo '$NAS_PASS' | sudo -S -p '' docker cp '$NAS_DIR/'\"\$rel\" \"\$cid:/app/\$rel\"
+                echo \"  cp \$rel\"
+            fi
+        done
+        # 整棵 src/ 保险同步（仅 .py）
+        if [ -d '$NAS_DIR/src' ]; then
+            echo '$NAS_PASS' | sudo -S -p '' docker cp '$NAS_DIR/src/.' \"\$cid:/app/src/\"
+            echo '  cp src/.'
+        fi
+        if [ -d '$NAS_DIR/tools/maintenance' ]; then
+            echo '$NAS_PASS' | sudo -S -p '' docker exec \"\$cid\" mkdir -p /app/tools/maintenance
+            echo '$NAS_PASS' | sudo -S -p '' docker cp '$NAS_DIR/tools/maintenance/.' \"\$cid:/app/tools/maintenance/\"
+            echo '  cp tools/maintenance/.'
+        fi
+        echo '$NAS_PASS' | sudo -S -p '' docker restart \"\$cid\"
+        echo 'worker restarted (hot)'
+    "
+else
+    echo "跳过 HOT worker"
 fi
 
 echo ""
@@ -317,8 +406,9 @@ done
 if [ "$READY" != "1" ]; then
     echo "警告: 部署后 API 仍未就绪，前端加入队列可能短暂失败（会自动重试）"
 else
+    # Show identity so operators can confirm Mac vs NAS without a separate tool.
     if VER_JSON="$(curl -fsS --max-time 5 "http://${NAS_IP}:31471/api/version" 2>/dev/null)"; then
-        printf '%s' "$VER_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print("version:", d.get("version")); print("tree_hash:", d.get("tree_hash") or "(none)"); print("git_sha:", d.get("git_sha") or "(none)")' 2>/dev/null || true
+        printf '%s' "$VER_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print("version:", d.get("version")); print("tree_hash:", d.get("tree_hash") or "(none)"); print("tree_hash_server:", d.get("tree_hash_server") or "(none)"); print("tree_hash_worker:", d.get("tree_hash_worker") or "(none)"); print("git_sha:", d.get("git_sha") or "(none)")' 2>/dev/null || true
     fi
 fi
 
