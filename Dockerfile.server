@@ -37,6 +37,11 @@ WORKDIR /app
 COPY --from=vue-builder /build/frontend/dist /app/frontend/dist
 COPY --from=go-builder /build/av-garden-server /app/av-garden-server
 COPY VERSION /app/VERSION
+# Identity is refreshed on every deploy via docker cp (see deploy.sh step 5b).
+# Stub keeps /api/version happy before the first post-deploy inject.
+RUN printf '%s\n' \
+    '{"version":"dev","git_sha":"unknown","git_dirty":false,"tree_hash":"","built_at":"","built_on":"image"}' \
+    > /app/BUILD_INFO.json
 RUN mkdir -p /db /cfg /data
 
 EXPOSE 31471

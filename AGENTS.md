@@ -154,6 +154,19 @@ curl -sS http://127.0.0.1:31471/api/version
 curl -sS http://127.0.0.1:31471/api/queue-status
 ```
 
+## 版本对齐（Mac vs NAS）
+
+部署前/回家后先核对本地源码是否与正在跑的 NAS 构建一致，避免“以为改了其实线上还是旧的”：
+
+```bash
+./check_version.sh              # 比 local tree_hash vs http://192.168.5.14:31471/api/version
+./check_version.sh --nas-tree   # 额外 ssh zspace 指纹 NAS 现役源码目录
+```
+
+- 身份由 `tools/build_identity.sh` 计算：`VERSION` + 部署相关源文件内容哈希（`tree_hash`）+ 可选 git_sha。
+- `deploy.sh` 每次会写 `BUILD_INFO.json` 并 `docker cp` 进运行中的 server；`/api/version` 返回 `tree_hash` / `git_sha`（`loadBuildInfo` 每次请求读文件）。
+- 退出码：`0` 对齐、`1` 不对齐或本地 dirty、`2` API 不可达。
+
 ## 部署后镜像清理
 
 - `deploy.sh` 会先对比临时目录和现役源码，Python/Worker 输入只构建 `worker`，Go/前端输入只构建 `server`，Compose 或未知运行时文件才重建两者；纯文档变化不重启容器。

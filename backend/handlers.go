@@ -2386,15 +2386,36 @@ func versionHandler(w http.ResponseWriter, r *http.Request) {
 		buildTime = info.ModTime().Format(time.RFC3339)
 	}
 
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"version":        appVersion(),
+	info := loadBuildInfo()
+	version := appVersion()
+	if v, ok := info["version"].(string); ok && strings.TrimSpace(v) != "" {
+		version = strings.TrimSpace(v)
+	}
+
+	payload := map[string]interface{}{
+		"version":        version,
 		"frontend_index": indexPath,
 		"frontend_js":    jsAsset,
 		"frontend_css":   cssAsset,
 		"build_time":     buildTime,
 		"server_time":    time.Now().Format(time.RFC3339),
-	})
+	}
+	// Optional fields baked at deploy time (tools/build_identity.sh -> BUILD_INFO.json)
+	for _, key := range []string{"tree_hash", "git_sha", "git_dirty", "built_at", "built_on"} {
+		if v, ok := info[key]; ok {
+			payload[key] = v
+		}
+	}
+	// Env overrides (compose/CI)
+	if v := strings.TrimSpace(os.Getenv("BUILD_TREE_HASH")); v != "" {
+		payload["tree_hash"] = v
+	}
+	if v := strings.TrimSpace(os.Getenv("BUILD_GIT_SHA")); v != "" {
+		payload["git_sha"] = v
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(payload)
 }
 
 func appVersion() string {
@@ -2410,6 +2431,22 @@ func appVersion() string {
 		}
 	}
 	return "dev"
+}
+
+// loadBuildInfo reads optional BUILD_INFO.json written by tools/build_identity.sh at deploy.
+func loadBuildInfo() map[string]interface{} {
+	out := map[string]interface{}{}
+	for _, path := range []string{"/app/BUILD_INFO.json", "BUILD_INFO.json", "../BUILD_INFO.json"} {
+		data, err := ioutil.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var parsed map[string]interface{}
+		if json.Unmarshal(data, &parsed) == nil && len(parsed) > 0 {
+			return parsed
+		}
+	}
+	return out
 }
 
 func weeklyScrapeHandler(w http.ResponseWriter, r *http.Request) {

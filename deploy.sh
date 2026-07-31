@@ -51,7 +51,9 @@ classify_changed_path() {
             RECREATE_SERVER=1
             RECREATE_WORKER=1
             ;;
-        deploy.sh|docker-compose.example.yml|.env.example|.gitignore|AGENTS.md|CLAUDE.md|CHANGELOG.md|README.md|INSTALL.md|LICENSE|NOTICE|docs|docs/*|.github|.github/*|tools|tools/*)
+        deploy.sh|docker-compose.example.yml|.env.example|.gitignore|AGENTS.md|CLAUDE.md|CHANGELOG.md|README.md|INSTALL.md|LICENSE|NOTICE|docs|docs/*|.github|.github/*|tools|tools/*|check_version.sh|BUILD_INFO.json)
+            # BUILD_INFO is regenerated every deploy; identity is docker-cp'd into
+            # the running server without forcing an image rebuild.
             ;;
         *.py)
             if [[ "$path" == */* ]]; then
@@ -121,6 +123,27 @@ remote_ssh() {
         ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=120 "$SSH_TARGET" "$@"
     fi
 }
+
+echo "=== 0. 写入构建身份 BUILD_INFO.json ==="
+IDENTITY_SCRIPT="$LOCAL_DIR/tools/build_identity.sh"
+if [ ! -x "$IDENTITY_SCRIPT" ]; then
+    chmod +x "$IDENTITY_SCRIPT" 2>/dev/null || true
+fi
+if [ -x "$IDENTITY_SCRIPT" ] || [ -f "$IDENTITY_SCRIPT" ]; then
+    bash "$IDENTITY_SCRIPT" --write
+else
+    # Fallback stub so Dockerfile.server COPY never fails
+    printf '%s\n' \
+      '{' \
+      '  "version": "'"$(tr -d '[:space:]' < "$LOCAL_DIR/VERSION" 2>/dev/null || echo dev)"'",' \
+      '  "git_sha": "unknown",' \
+      '  "git_dirty": false,' \
+      '  "tree_hash": "",' \
+      '  "built_at": "'"$(date -u +"%Y-%m-%dT%H:%M:%SZ")"'",' \
+      '  "built_on": "'"$(hostname -s 2>/dev/null || echo unknown)"'"' \
+      '}' > "$LOCAL_DIR/BUILD_INFO.json"
+    echo "wrote stub $LOCAL_DIR/BUILD_INFO.json (identity script missing)"
+fi
 
 echo "=== 1. 同步源码 -> NAS 临时目录 ==="
 remote_ssh "rm -rf '$NAS_STAGE' && mkdir -p '$NAS_STAGE'"
@@ -263,6 +286,23 @@ else
 fi
 
 echo ""
+echo "=== 5b. 热更新 BUILD_INFO 到运行中 server（无需重建镜像） ==="
+remote_ssh "
+    set -e
+    if [ ! -f '$NAS_DIR/BUILD_INFO.json' ]; then
+        echo 'skip: BUILD_INFO.json missing on NAS'
+        exit 0
+    fi
+    cid=\$(echo '$NAS_PASS' | sudo -S -p '' docker compose -f '$NAS_DIR/docker-compose.yml' ps -q server 2>/dev/null || true)
+    if [ -z \"\$cid\" ]; then
+        echo 'skip: server container not running yet'
+        exit 0
+    fi
+    echo '$NAS_PASS' | sudo -S -p '' docker cp '$NAS_DIR/BUILD_INFO.json' \"\$cid:/app/BUILD_INFO.json\"
+    echo 'BUILD_INFO.json -> server:/app/BUILD_INFO.json'
+"
+
+echo ""
 echo "=== 6. 等待 API 就绪 ==="
 READY=0
 READY_STARTED=$SECONDS
@@ -276,6 +316,10 @@ for _i in $(seq 1 40); do
 done
 if [ "$READY" != "1" ]; then
     echo "警告: 部署后 API 仍未就绪，前端加入队列可能短暂失败（会自动重试）"
+else
+    if VER_JSON="$(curl -fsS --max-time 5 "http://${NAS_IP}:31471/api/version" 2>/dev/null)"; then
+        printf '%s' "$VER_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print("version:", d.get("version")); print("tree_hash:", d.get("tree_hash") or "(none)"); print("git_sha:", d.get("git_sha") or "(none)")' 2>/dev/null || true
+    fi
 fi
 
 SERVICES_UP=0
