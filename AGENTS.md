@@ -13,7 +13,9 @@
 
 | 操作 | 命令 |
 |------|------|
-| 部署 | `AVGARDEN_PASS=… bash deploy.sh`（自动只构建受影响服务；可用 `AVGARDEN_DEPLOY_SERVICES=server\|worker\|all` 强制指定） |
+| 在家 Mac 部署 | `AVGARDEN_PASS=… bash deploy.sh`（rsync→NAS；可 `AVGARDEN_DEPLOY_SERVICES=server\|worker\|all`） |
+| 外面飞书 / NAS 本地部署 | `bash deploy_local.sh`（`server`/`worker`/`all`；`AVGARDEN_HOT=1` 热补 worker；**不要**跑 Mac `deploy.sh`） |
+| 版本对齐 | `./check_version.sh`（Mac vs 运行中 `/api/version`） |
 | 状态 | `curl -s http://192.168.5.14:31471/api/videos` |
 | Worker 日志 | `ssh zspace 'sudo docker logs avgarden-worker --tail 40'` |
 | 周更新 | `docker exec avgarden-worker … weekly_updater.py` |
@@ -164,8 +166,15 @@ curl -sS http://127.0.0.1:31471/api/queue-status
 ```
 
 - 身份由 `tools/build_identity.sh` 计算：`VERSION` + 部署相关源文件内容哈希（`tree_hash`）+ 可选 git_sha。
-- `deploy.sh` 每次会写 `BUILD_INFO.json` 并 `docker cp` 进运行中的 server；`/api/version` 返回 `tree_hash` / `git_sha`（`loadBuildInfo` 每次请求读文件）。
+- `deploy.sh` / `deploy_local.sh` 每次会写 `BUILD_INFO.json` 并 `docker cp` 进运行中的 server；`/api/version` 返回 `tree_hash` / `git_sha`（`loadBuildInfo` 每次请求读文件）。
 - 退出码：`0` 对齐、`1` 不对齐或本地 dirty、`2` API 不可达。
+
+## 飞书 / Hermes 部署（NAS 本地）
+
+- 脚本：[`deploy_local.sh`](deploy_local.sh)；技能：[`skills/avgarden-deploy/SKILL.md`](skills/avgarden-deploy/SKILL.md)
+- Hermes 内路径：`/opt/data/projects/AVGARDEN`（bind-mount 到 NAS 现役树）
+- **禁止**在 Hermes 里跑 Mac 的 `deploy.sh`（依赖 rsync/sshpass）
+- Hermes `hermes-agent` 需要挂载：`AVGARDEN` 目录 + `/var/run/docker.sock`（见 skill 文末）
 
 ## 部署后镜像清理
 
