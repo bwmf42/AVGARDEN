@@ -115,6 +115,69 @@ def append_unique(path, item):
         return True
 
 
+def normalize_download_target(target, default="qb"):
+    value = str(target or default).strip().lower()
+    if value in ("115", "p115"):
+        return "115"
+    if value in ("qb", "qbit", "qbittorrent", ""):
+        return "qb"
+    return None
+
+
+def set_download_target(path, code, target):
+    """Store per-code download target (qb|115) in download_targets.json."""
+    code = str(code or "").strip()
+    target = normalize_download_target(target)
+    if not code or not target:
+        return False
+
+    def updater(data):
+        if not isinstance(data, dict):
+            data = {}
+        # Drop case-variant keys for the same code
+        upper = code.upper()
+        for key in list(data.keys()):
+            if str(key).upper() == upper:
+                del data[key]
+        data[code] = target
+        return data
+
+    update_json(path, {}, updater)
+    return True
+
+
+def get_download_target(path, code, default="qb"):
+    code = str(code or "").strip()
+    if not code:
+        return default
+    data = read_json(path, {})
+    if not isinstance(data, dict):
+        return default
+    upper = code.upper()
+    for key, value in data.items():
+        if str(key).upper() == upper:
+            normalized = normalize_download_target(value, default=default)
+            return normalized or default
+    return default
+
+
+def clear_download_target(path, code):
+    code = str(code or "").strip()
+    if not code:
+        return
+
+    def updater(data):
+        if not isinstance(data, dict):
+            return {}
+        upper = code.upper()
+        for key in list(data.keys()):
+            if str(key).upper() == upper:
+                del data[key]
+        return data
+
+    update_json(path, {}, updater)
+
+
 def append_many_unique(path, values):
     added = []
     with _locked(path):

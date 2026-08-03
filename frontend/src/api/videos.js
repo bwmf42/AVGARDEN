@@ -28,7 +28,7 @@ export default {
         }
     },
 
-    async addVideo(id) {
+    async addVideo(id, options = {}) {
         // Align with backend normalizeUserVideoID: allow FC2 / 300MIUM / etc.
         const raw = (id || '').trim()
         if (!raw) {
@@ -45,9 +45,11 @@ export default {
             return
         }
 
+        const target = options.target === '115' ? '115' : 'qb'
         this.isAdding = true
         try {
             const response = await axios.get(`${API_BASE}/api/addvideo/${encodeURIComponent(raw)}`, {
+                params: { target },
                 headers: {
                     Authorization: `Bearer ${API_KEY}`,
                 },

@@ -1,3 +1,4 @@
 curl_cffi==0.10.0
 pillow==11.1.0
 loguru==0.7.3
+p115client==0.0.9.6.5.1

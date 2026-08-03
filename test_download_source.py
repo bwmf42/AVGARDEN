@@ -114,6 +114,20 @@ class DownloadSourceResolverTest(unittest.TestCase):
         self.assertTrue(os.path.exists(rate_path))
         self.assertTrue(os.path.exists(rate_path + ".slot.lock"))
 
+    def test_plwt_search_slot_is_context_manager(self):
+        """Regression: @contextmanager must decorate _plwt_search_slot (not only rate_limited).
+
+        Missing decorator → TypeError: 'generator' object does not support the context manager protocol
+        and every magnet resolve (qB/115) fails with feishu 所有源均失败.
+        """
+        rate_path = os.path.join(self.temp_dir.name, "plwt-cm.json")
+        slot = download_source._plwt_search_slot(rate_path)
+        self.assertTrue(hasattr(slot, "__enter__"), "must be context manager, not bare generator")
+        self.assertTrue(hasattr(slot, "__exit__"))
+        with mock.patch.object(download_source, "PLWT_SEARCH_INTERVAL_SECONDS", 0):
+            with slot:
+                pass
+
     def test_sukebei_result_is_cached_for_worker_reuse(self):
         candidate = {
             "magnet": "magnet:?xt=urn:btih:sukebei",

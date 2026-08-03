@@ -1,11 +1,12 @@
 FROM golang:alpine AS m3u8-builder
 ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /build
-RUN apk add --no-cache git && git clone https://github.com/Greyh4t/m3u8-Downloader-Go.git src && cd src && git checkout tags/v1.5.2 && go build -o /build/m3u8-Downloader-Go
+# pin v1.5.2 → commit SHA (tag may move; SHA is immutable)
+RUN apk add --no-cache git && git clone https://github.com/Greyh4t/m3u8-Downloader-Go.git src && cd src && git checkout 0eb98140cd2faee3a55542e4912e52fe0d236ab2 && go build -o /build/m3u8-Downloader-Go
 
 FROM alpine:3.21
 WORKDIR /app
-RUN apk add --no-cache python3 py3-pip ffmpeg tzdata && rm -rf /var/cache/apk/*
+RUN apk add --no-cache python3 py3-pip ffmpeg tzdata wget && rm -rf /var/cache/apk/*
 COPY --from=m3u8-builder /build/m3u8-Downloader-Go /app/tools/m3u8-Downloader-Go
 RUN chmod +x /app/tools/m3u8-Downloader-Go
 RUN python3 -m venv /app/venv

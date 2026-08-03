@@ -2,11 +2,22 @@ import sqlite3
 from typing import List
 from .comm import *
 
+def _connect(db_path: str) -> sqlite3.Connection:
+    """Open SQLite with WAL + busy_timeout (P0-2 concurrent safety)."""
+    conn = sqlite3.connect(db_path, timeout=30)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.Error as e:
+        logger.warning(f"sqlite pragma: {e}")
+    return conn
+
+
 def initialize_db(db_path: str, table_name: str):
     logger.debug(f"db_path: {db_path}, table_name: {table_name}")
 
     """初始化数据库，创建表"""
-    conn = sqlite3.connect(db_path)
+    conn = _connect(db_path)
     cursor = conn.cursor()
     
     # 创建表（如果不存在）
@@ -39,7 +50,7 @@ def initialize_db(db_path: str, table_name: str):
 
 def batch_insert_bvids(bvid_list: list[str], db_path: str, table_name: str):
     """批量插入BVID，自动忽略已存在的"""
-    conn = sqlite3.connect(db_path)
+    conn = _connect(db_path)
     cursor = conn.cursor()
     
     try:
@@ -59,7 +70,7 @@ def batch_insert_bvids(bvid_list: list[str], db_path: str, table_name: str):
 def find_in_db(bvid: str, db_path: str, table_name: str) -> bool:
     try:
         # 连接到 SQLite 数据库
-        conn = sqlite3.connect(db_path)
+        conn = _connect(db_path)
         cursor = conn.cursor()
         # 执行查询
         query = f"SELECT 1 FROM {table_name} WHERE bvid = ? LIMIT 1"

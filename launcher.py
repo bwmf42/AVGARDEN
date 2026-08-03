@@ -20,6 +20,7 @@ CURRENT_PATH = os.environ.get("CURRENT_PATH", "/db/current_download.txt")
 LOCK_PATH = "/app/work"
 STATE_PATH = os.environ.get("STATE_PATH", "/db/queue_state.json")
 DAILY_UPDATE_STATE_PATH = os.environ.get("DAILY_UPDATE_STATE_PATH", "/db/daily_updater_state.json")
+MERGE_STATE_PATH = os.environ.get("MERGE_STATE_PATH", "/db/merge_chinese_state.json")
 
 worker_proc = None
 queue_proc = None
@@ -28,6 +29,35 @@ running = True
 
 def log(msg):
     print(f"[Launcher] {msg}", flush=True)
+
+
+def assert_download_source_healthy():
+    """启动自检：_plwt_search_slot 必须是 contextmanager，否则磁链解析全挂。"""
+    import tempfile
+    from download_source import _plwt_search_slot
+
+    fd, path = tempfile.mkstemp(prefix="plwt_slot_", suffix=".json")
+    os.close(fd)
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+    try:
+        with _plwt_search_slot(path):
+            pass
+    except TypeError as e:
+        if "generator" in str(e).lower() or "context manager" in str(e).lower():
+            raise RuntimeError(
+                "download_source._plwt_search_slot 缺少 @contextmanager，"
+                "会导致所有下载在取磁链阶段失败。请部署修复后的 download_source.py"
+            ) from e
+        raise
+    finally:
+        for p in (path, path + ".slot.lock"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 def read_json(path, default):
@@ -109,6 +139,101 @@ def next_retention_target(now):
     return target
 
 
+WATCHER_GUARD_ENABLE = os.environ.get("WATCHER_GUARD_ENABLE", "1").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+WATCHER_GUARD_BACKOFF_S = max(15, int(os.environ.get("WATCHER_GUARD_BACKOFF_S", "60") or "60"))
+STATUS_REPORT_ENABLE = os.environ.get("STATUS_REPORT_ENABLE", "1").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+DB_BACKUP_ENABLE = os.environ.get("DB_BACKUP_ENABLE", "1").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
+
+def start_guarded_thread(name, target):
+    """Start daemon thread; on crash, backoff and restart while launcher running.
+
+    Clean return (disable flags / normal exit) does not restart.
+    Set WATCHER_GUARD_ENABLE=0 to disable restarts (still catch+log once).
+    """
+    def loop():
+        while running:
+            try:
+                target()
+                return
+            except Exception as e:
+                log(f"watcher {name} crashed: {e}")
+                log_write("Launcher", f"watcher {name} 崩溃: {e}")
+                if not WATCHER_GUARD_ENABLE or not running:
+                    return
+                log(f"watcher {name}: restart in {WATCHER_GUARD_BACKOFF_S}s")
+                slept = 0
+                while running and slept < WATCHER_GUARD_BACKOFF_S:
+                    time.sleep(min(5, WATCHER_GUARD_BACKOFF_S - slept))
+                    slept += 5
+
+    t = threading.Thread(target=loop, name=name, daemon=True)
+    t.start()
+    return t
+
+
+def run_morning_status_jobs():
+    """04:30: sqlite backup + daily-report.json (same schedule as retention)."""
+    if not STATUS_REPORT_ENABLE and not DB_BACKUP_ENABLE:
+        return
+    try:
+        from src import status_report as sr
+
+        if DB_BACKUP_ENABLE:
+            bak = sr.backup_sqlite()
+            if bak.get("ok"):
+                log_write("Backup", f"数据库备份完成: {bak.get('path')}")
+            else:
+                log_write("Backup", f"数据库备份失败: {bak.get('msg')}")
+        if STATUS_REPORT_ENABLE:
+            sr.write_daily_report()
+            log("daily-report.json updated")
+    except Exception as e:
+        log(f"morning status jobs failed: {e}")
+        log_write("StatusReport", f"日报/备份失败: {e}")
+
+
+def merge_completed_on(day):
+    state = read_json(MERGE_STATE_PATH, {})
+    return state.get("last_success_date") == day
+
+
+def mark_merge_completed(day):
+    write_json(MERGE_STATE_PATH, {
+        "last_success_date": day,
+        "last_success_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+
+
+def next_merge_target(now):
+    """与每日推荐相同：当天 13:00–17:59 随机；今日已跑过则排到次日同窗口。"""
+    today = now.strftime("%Y-%m-%d")
+    if merge_completed_on(today):
+        target_day = now.date() + timedelta(days=1)
+        start = datetime.combine(target_day, datetime.min.time()).replace(hour=13)
+        end = datetime.combine(target_day, datetime.min.time()).replace(hour=17, minute=59)
+        return random_time_between(start, end)
+
+    start = now.replace(hour=13, minute=0, second=0, microsecond=0)
+    end = now.replace(hour=17, minute=59, second=0, microsecond=0)
+    if now < start:
+        return random_time_between(start, end)
+    if now <= end:
+        start_from_now = min(now + timedelta(minutes=1), end)
+        return random_time_between(start_from_now, end)
+
+    tomorrow = now.date() + timedelta(days=1)
+    start = datetime.combine(tomorrow, datetime.min.time()).replace(hour=13)
+    end = datetime.combine(tomorrow, datetime.min.time()).replace(hour=17, minute=59)
+    return random_time_between(start, end)
+
+
 def save_current_back_to_queue():
     """停止前将当前下载任务放回队列"""
     current = None
@@ -172,18 +297,46 @@ def signal_handler(sig, frame):
 
 
 def merge_watcher():
-    """每2小时检查中文版是否下载完成，完成则合并"""
+    """每天一轮中文版合并/清理，定时逻辑与每日推荐一致（13:00–18:00 随机）。
+
+    关闭：MERGE_ENABLE=0
+    """
     import importlib
+
+    if os.environ.get("MERGE_ENABLE", "1").strip().lower() in ("0", "false", "no", "off"):
+        log("Merge watcher disabled (MERGE_ENABLE=0)")
+        return
+
     while running:
-        time.sleep(7200)
+        now = datetime.now()
+        target = next_merge_target(now)
+        delay = max(0.0, (target - now).total_seconds())
+        log(f"Chinese merge: next run at {target.strftime('%Y-%m-%d %H:%M')} ({delay/60:.0f} min)")
+        slept = 0.0
+        while running and slept < delay:
+            chunk = min(60.0, delay - slept)
+            time.sleep(chunk)
+            slept += chunk
         if not running:
             break
+
+        run_day = datetime.now().strftime("%Y-%m-%d")
+        if merge_completed_on(run_day):
+            log(f"Chinese merge: {run_day} already completed, skipping")
+            time.sleep(60)
+            continue
+
         try:
-            log("Checking Chinese torrent merge...")
+            log("Checking Chinese torrent merge (daily)...")
             rc = importlib.import_module("replace_chinese")
             rc.merge_completed_chinese()
+            mark_merge_completed(run_day)
+            log_write("ReplaceCN", f"每日中文合并完成 ({run_day})")
         except Exception as e:
             log(f"Merge watcher error: {e}")
+            log_write("ReplaceCN", f"每日中文合并失败: {e}")
+            # 失败不 mark，当天窗口内可再排一次
+            time.sleep(3600)
 
 
 def run_titlezh_retry(reason=""):
@@ -288,18 +441,60 @@ def heal_watcher():
             slept += 60.0
 
 
-def retention_watcher():
-    """Daily guarded retention: watched 30d, blocked metadata-only, routine records 30d."""
-    if os.environ.get("WEEKLY_RETENTION_ENABLE", "1").strip().lower() in ("0", "false", "no", "off"):
-        log("Weekly retention disabled (WEEKLY_RETENTION_ENABLE=0)")
+def link115_watcher():
+    """周期把 115生活备份/艾薇 下的番号软链到 /data 根（不出现「艾薇」目录）。
+
+    默认 10 分钟；备份落盘后较快能在 2 根目录看到。
+    关闭：LINK115_ENABLE=0
+    """
+    if os.environ.get("LINK115_ENABLE", "1").strip().lower() in ("0", "false", "no", "off"):
+        log("link115 watcher disabled (LINK115_ENABLE=0)")
         return
+    minutes = float(os.environ.get("LINK115_INTERVAL_M", "10") or "10")
+    interval = max(120.0, minutes * 60.0)
+    # 启动后稍等，让 /data 挂载就绪
+    time.sleep(60)
+    log(f"link115 watcher every {interval:.0f}s")
+    while running:
+        try:
+            from tools.maintenance.link_115_aiwei_into_data_root import sync_links
+
+            save = os.environ.get("SAVE_PATH", "/data")
+            stats = sync_links(data_root=save)
+            if stats.get("missing_source"):
+                log(f"link115: wait source {save}/115生活备份/艾薇")
+            else:
+                n = int(stats.get("linked") or 0) + int(stats.get("refreshed") or 0)
+                if n or stats.get("removed_aiwei"):
+                    names = ",".join((stats.get("names") or [])[:8])
+                    msg = f"115链接: 新增/更新={n}" + (f" ({names})" if names else "")
+                    log(msg)
+                    try:
+                        log_write("Heal", msg)
+                    except Exception:
+                        pass
+        except Exception as e:
+            log(f"link115 watcher error: {e}")
+        slept = 0.0
+        while running and slept < interval:
+            time.sleep(min(30.0, interval - slept))
+            slept += 30.0
+
+
+def retention_watcher():
+    """Daily 04:30: optional weekly retention + sqlite backup + status daily report."""
+    retention_on = os.environ.get("WEEKLY_RETENTION_ENABLE", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+    if not retention_on:
+        log("Weekly retention disabled (WEEKLY_RETENTION_ENABLE=0); backup/report still run at 04:30")
     py = os.environ.get("WORKER_PYTHON", "/app/venv/bin/python3")
     script = "/app/tools/maintenance/weekly_retention_maintenance.py"
     while running:
         now = datetime.now()
         target = next_retention_target(now)
         delay = max(0.0, (target - now).total_seconds())
-        log(f"Weekly retention: next run at {target.strftime('%Y-%m-%d %H:%M')}")
+        log(f"Weekly retention/backup: next run at {target.strftime('%Y-%m-%d %H:%M')}")
         slept = 0.0
         while running and slept < delay:
             chunk = min(60.0, delay - slept)
@@ -307,27 +502,33 @@ def retention_watcher():
             slept += chunk
         if not running:
             return
+        if retention_on:
+            try:
+                proc = subprocess.run(
+                    [py, script, "--auto"],
+                    timeout=3600,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if proc.stdout:
+                    sys.stdout.write(proc.stdout)
+                    sys.stdout.flush()
+                if proc.stderr:
+                    sys.stderr.write(proc.stderr)
+                    sys.stderr.flush()
+                if proc.returncode == 0:
+                    log_write("WeeklyRetention", "自动清理完成")
+                else:
+                    log_write("WeeklyRetention", f"自动清理失败: exit={proc.returncode}")
+            except Exception as e:
+                log(f"weekly retention failed: {e}")
+                log_write("WeeklyRetention", f"自动清理失败: {e}")
+        # Same 04:30 window: DB backup + status daily report
         try:
-            proc = subprocess.run(
-                [py, script, "--auto"],
-                timeout=3600,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            if proc.stdout:
-                sys.stdout.write(proc.stdout)
-                sys.stdout.flush()
-            if proc.stderr:
-                sys.stderr.write(proc.stderr)
-                sys.stderr.flush()
-            if proc.returncode == 0:
-                log_write("WeeklyRetention", "自动清理完成")
-            else:
-                log_write("WeeklyRetention", f"自动清理失败: exit={proc.returncode}")
+            run_morning_status_jobs()
         except Exception as e:
-            log(f"weekly retention failed: {e}")
-            log_write("WeeklyRetention", f"自动清理失败: {e}")
+            log(f"morning status jobs: {e}")
 
 
 def daily_updater():
@@ -387,6 +588,30 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
+    try:
+        assert_download_source_healthy()
+        log("download_source slot contextmanager OK")
+    except Exception as e:
+        log(f"FATAL: download_source health check failed: {e}")
+        log_write("Launcher", f"启动失败: download_source 异常 {e}")
+        sys.exit(2)
+
+    # 启动后自动捞回「瞬时/系统」失败项，避免 UI 一直挂着旧失败
+    try:
+        from src.failure_recovery import recover_transient_failures
+
+        hours = float(os.environ.get("RECOVER_FAILED_MAX_AGE_H", "72") or "72")
+        stats = recover_transient_failures(max_age_hours=hours, default_target="qb")
+        rec = stats.get("recovered") or []
+        if rec:
+            msg = f"自动恢复失败项 {len(rec)} 个: {','.join(rec[:12])}"
+            log(msg)
+            log_write("Heal", msg)
+        else:
+            log("no transient failures to recover")
+    except Exception as e:
+        log(f"recover_transient_failures: {e}")
+
     log("Starting AV/GARDEN services...")
     
     # 1. 启动 queue_api（先于 worker，用于状态恢复）
@@ -422,21 +647,14 @@ def main():
     )
     log(f"worker started (PID {worker_proc.pid})")
 
-    # 3. 启动每日刮削定时器
-    t = threading.Thread(target=daily_updater, daemon=True)
-    t.start()
-    # 4. 启动中文版合并检查(每2小时)
-    t2 = threading.Thread(target=merge_watcher, daemon=True)
-    t2.start()
-    # 5. 缺 titleZh 定时补译（DeepSeek 偶发失败）
-    t3 = threading.Thread(target=titlezh_retry_watcher, daemon=True)
-    t3.start()
-    # 6. 自愈：补译/队列对齐/探活（不重刮）
-    t4 = threading.Thread(target=heal_watcher, daemon=True)
-    t4.start()
-    # 7. Weekly 已看/屏蔽条目和例行维护记录自动保留策略
-    t5 = threading.Thread(target=retention_watcher, daemon=True)
-    t5.start()
+    # 3–8. background watchers (guarded: crash → 60s backoff restart)
+    start_guarded_thread("daily_updater", daily_updater)
+    start_guarded_thread("merge_watcher", merge_watcher)
+    start_guarded_thread("titlezh_retry_watcher", titlezh_retry_watcher)
+    start_guarded_thread("heal_watcher", heal_watcher)
+    start_guarded_thread("retention_watcher", retention_watcher)
+    start_guarded_thread("link115_watcher", link115_watcher)
+    log(f"watchers started (guard={'on' if WATCHER_GUARD_ENABLE else 'off'})")
 
     # 等待任意一个退出
     while running:

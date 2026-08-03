@@ -98,14 +98,15 @@ def cleanup_expired_sources(path=None, now=None):
     return removed
 
 
-@contextmanager
 def _mark_plwt_rate_limited(path=None):
     """Mark that search was rate-limited, extending next interval to 60s."""
     path = path or PLWT_RATE_PATH
-    update_json(path, {}, lambda s: {**s, "rate_limited": True})
+    update_json(path, {}, lambda s: {**(s if isinstance(s, dict) else {}), "rate_limited": True})
 
 
+@contextmanager
 def _plwt_search_slot(path=None):
+    """Serialize plwt searches with a minimum interval (file lock)."""
     path = path or PLWT_RATE_PATH
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path + ".slot.lock", "a+", encoding="utf-8") as lock_file:

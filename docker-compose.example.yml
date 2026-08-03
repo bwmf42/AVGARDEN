@@ -31,6 +31,13 @@ services:
       ACTRESS_AGES_FILE: /db/actress_ages.json
       WEEKLY_WATCHED_FILE: /db/weekly_watched.json
       TZ: ${TZ:-Asia/Shanghai}
+      STATUS_DIR: /db/status
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:31471/api/version"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -75,11 +82,19 @@ services:
       FEISHU_WEBHOOK: ${FEISHU_WEBHOOK:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      DEEPSEEK_DAILY_ALERT_LIMIT: ${DEEPSEEK_DAILY_ALERT_LIMIT:-500}
+      STATUS_DIR: /db/status
       WEEKLY_MAX_PAGES: ${WEEKLY_MAX_PAGES:-3}
       WEEKLY_MAX_NEW: ${WEEKLY_MAX_NEW:-20}
       WEEKLY_MAX_AGE: ${WEEKLY_MAX_AGE:-30}
       PYTHONUNBUFFERED: "1"
       TZ: ${TZ:-Asia/Shanghai}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:31473/api/queue || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

@@ -10,7 +10,18 @@ from urllib.parse import quote, unquote, urlparse
 
 from process_control import cancel_request_age, cleanup_stale_cancel_requests, clear_cancel_request, request_cancel
 from main_video import find_main_video
-from queue_store import append_many_unique, append_unique, read_json, read_queue, remove_code, update_json, write_json
+from queue_store import (
+    append_many_unique,
+    append_unique,
+    clear_download_target,
+    normalize_download_target,
+    read_json,
+    read_queue,
+    remove_code,
+    set_download_target,
+    update_json,
+    write_json,
+)
 from video_id import (
     local_video_id_aliases,
     normalize_local_video_id,
@@ -31,6 +42,10 @@ HISTORY_RETENTION_DAYS = int(os.environ.get("HISTORY_RETENTION_DAYS", "7"))
 FAILED_QUEUE_JSON_PATH = os.path.join(os.path.dirname(QUEUE_PATH) or "/db", "failed_queue.json")
 FAILED_QUEUE_PATH = os.path.join(os.path.dirname(QUEUE_PATH) or "/db", "failed_queue.txt")
 RETRY_PATH = os.path.join(os.path.dirname(QUEUE_PATH) or "/db", "retry_counts.json")
+DOWNLOAD_TARGETS_PATH = os.environ.get(
+    "DOWNLOAD_TARGETS_PATH",
+    os.path.join(os.path.dirname(QUEUE_PATH) or "/db", "download_targets.json"),
+)
 WEEKLY_JSON = os.path.join(SAVE_PATH, "__weekly__", "weekly.json")
 ONLINE_DIR = os.path.join(SAVE_PATH, "__online__")
 ONLINE_TTL_SECONDS = int(os.environ.get("ONLINE_TTL_SECONDS", str(30 * 24 * 60 * 60)))
@@ -649,7 +664,12 @@ def write_to_missav_db(code):
     """Write to AV/GARDEN SQLite MissAV table so it shows on homepage"""
     try:
         import sqlite3
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+        except sqlite3.Error:
+            pass
         
         # Check if already exists
         cur = conn.execute("SELECT bvid FROM MissAV WHERE bvid = ?", (code,))
@@ -1084,6 +1104,26 @@ class QueueHandler(BaseHTTPRequestHandler):
             self._json(item)
             return
 
+        if path in ("/api/p115/config", "/api/p115/config/"):
+            try:
+                from src import p115_offline as p115
+
+                self._json(p115.public_config())
+            except Exception as e:
+                self._json({"error": str(e)}, 500)
+            return
+
+        if path in ("/api/p115/test", "/api/p115/test/"):
+            try:
+                from src import p115_offline as p115
+
+                ok, msg = p115.test_connection()
+                pub = p115.public_config()
+                self._json({"ok": ok, "message": msg, **pub}, 200 if ok else 400)
+            except Exception as e:
+                self._json({"ok": False, "message": str(e)}, 500)
+            return
+
         if path != "/api/queue":
             self._json({"error": "not found"}, 404)
             return
@@ -1309,6 +1349,35 @@ class QueueHandler(BaseHTTPRequestHandler):
     @queue_route_locked
     def do_POST(self):
         path = self.path.rstrip("/")
+        if path in ("/api/p115/config", "/api/p115/config/"):
+            try:
+                from src import p115_offline as p115
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b"{}"
+                body = json.loads(raw.decode() or "{}")
+                if not isinstance(body, dict):
+                    self._json({"error": "invalid body"}, 400)
+                    return
+                cfg = p115.save_config(body)
+                self._json({"ok": True, **cfg})
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
+            except Exception as e:
+                self._json({"error": str(e)}, 500)
+            return
+        if path in ("/api/p115/test", "/api/p115/test/"):
+            try:
+                from src import p115_offline as p115
+
+                ok, msg = p115.test_connection()
+                pub = p115.public_config()
+                self._json(
+                    {"ok": ok, "message": msg, **pub},
+                    200 if ok else 400,
+                )
+            except Exception as e:
+                self._json({"ok": False, "message": str(e)}, 500)
+            return
         if path == "/api/weekly-scrape":
             if is_weekly_scrape_running():
                 self._json({"ok": False, "running": True, "message": "周推荐刮削正在运行"}, 409)
@@ -1333,6 +1402,28 @@ class QueueHandler(BaseHTTPRequestHandler):
         if not code:
             self._json({"error": "invalid code"}, 400)
             return
+        target = normalize_download_target(data.get("target", "qb"))
+        if target is None:
+            self._json({"error": "invalid target (use qb or 115)"}, 400)
+            return
+        if target == "115":
+            try:
+                from src import p115_offline as p115
+
+                pub = p115.public_config()
+                if not pub.get("available"):
+                    self._json(
+                        {
+                            "error": "115 未就绪",
+                            "message": "请先在设置启用 115 并配置 Cookie",
+                        },
+                        400,
+                    )
+                    return
+            except Exception as e:
+                self._json({"error": f"115 配置检查失败: {e}"}, 500)
+                return
+
         cancel_age = cancel_request_age(code)
         if cancel_age is not None and cancel_age < 300:
             self._json({"error": "cancellation in progress", "code": code}, 409)
@@ -1341,35 +1432,45 @@ class QueueHandler(BaseHTTPRequestHandler):
             clear_cancel_request(code)
         clear_failure_record(code)
 
-        # 检查 qBittorrent 是否已有此番号（含 queuedDL + tags）
-        qb_torrents = qb_api("/api/v2/torrents/info")
-        cleaned = clean_avid(code)
-        if isinstance(qb_torrents, list):
-            for t in qb_torrents:
-                st = str(t.get("state") or "")
-                if st not in _QB_ACTIVE_DL and st not in _QB_DONE_UP:
-                    continue
-                t_code = code_from_qb_torrent(t)
-                if t_code and (t_code == cleaned or clean_avid(t_code) == cleaned):
-                    # Ensure registration file still shows "已加入"
-                    def ensure_in_state(state):
-                        if code not in [s["code"] for s in state]:
-                            state.append({"code": code, "status": "queued", "added_at": time.time()})
-                        return state
-                    update_state(ensure_in_state)
-                    self._json({"status": "already in qBittorrent", "code": code})
-                    return
+        # 检查 qBittorrent 是否已有此番号（含 queuedDL + tags）— 仅 qB 通道
+        if target == "qb":
+            qb_torrents = qb_api("/api/v2/torrents/info")
+            cleaned = clean_avid(code)
+            if isinstance(qb_torrents, list):
+                for t in qb_torrents:
+                    st = str(t.get("state") or "")
+                    if st not in _QB_ACTIVE_DL and st not in _QB_DONE_UP:
+                        continue
+                    t_code = code_from_qb_torrent(t)
+                    if t_code and (t_code == cleaned or clean_avid(t_code) == cleaned):
+                        # Ensure registration file still shows "已加入"
+                        def ensure_in_state(state):
+                            if code not in [s["code"] for s in state]:
+                                state.append({"code": code, "status": "queued", "added_at": time.time()})
+                            return state
+                        update_state(ensure_in_state)
+                        set_download_target(DOWNLOAD_TARGETS_PATH, code, "qb")
+                        self._json({"status": "already in qBittorrent", "code": code, "target": "qb"})
+                        return
 
         append_unique(QUEUE_PATH, code)
+        set_download_target(DOWNLOAD_TARGETS_PATH, code, target)
 
         # Registration file is UI source of truth (write-through on add)
         def add_or_update_code(state):
             existing = next((s for s in state if s.get("code") == code), None)
             if existing is None:
-                state.append({"code": code, "status": "queued", "added_at": time.time()})
-                log_write("Queue", f"{code} 已加入下载列表")
+                state.append({
+                    "code": code,
+                    "status": "queued",
+                    "added_at": time.time(),
+                    "target": target,
+                })
+                channel = "115" if target == "115" else "qB"
+                log_write("Queue", f"{code} 已加入下载列表（{channel}）")
             else:
                 existing["status"] = "queued"
+                existing["target"] = target
                 if not existing.get("added_at"):
                     existing["added_at"] = time.time()
             return state
@@ -1379,11 +1480,11 @@ class QueueHandler(BaseHTTPRequestHandler):
         if existing and existing.get("status") == "queued" and existing.get("added_at"):
             # 重复入队静默（前台不刷）
             if any(s.get("code") == code and s.get("status") == "queued" for s in state[:-1] if s.get("code") == code):
-                self._json({"status": "already in queue", "code": code})
+                self._json({"status": "already in queue", "code": code, "target": target})
             else:
-                self._json({"status": "added", "code": code})
+                self._json({"status": "added", "code": code, "target": target})
         else:
-            self._json({"status": "added", "code": code})
+            self._json({"status": "added", "code": code, "target": target})
 
     @queue_route_locked
     def do_DELETE(self):
@@ -1415,7 +1516,8 @@ class QueueHandler(BaseHTTPRequestHandler):
         update_state(remove_code_from_state)
 
         remove_code(QUEUE_PATH, code)
-        
+        clear_download_target(DOWNLOAD_TARGETS_PATH, code)
+
         if read_current_download() == code:
             clear_current_download()
         

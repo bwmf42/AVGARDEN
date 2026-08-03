@@ -30,7 +30,7 @@ RUN cd frontend &&     npm install &&     npm run build
 # =============================================
 FROM debian:bookworm-slim
 
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates tzdata &&     rm -rf /var/lib/apt/lists/*
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates tzdata curl &&     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

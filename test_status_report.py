@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Tests for status_report: backup_sqlite, health payload, DS usage."""
+from __future__ import annotations
+
+import gzip
+import json
+import os
+import sqlite3
+import tempfile
+import unittest
+from unittest import mock
+
+from src import status_report as sr
+
+
+class TestBackupSqlite(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "downloaded.db")
+        self.bak = os.path.join(self.tmp.name, "backups")
+        conn = sqlite3.connect(self.db)
+        conn.execute("CREATE TABLE MissAV (bvid TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO MissAV (bvid) VALUES ('ABF-1')")
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_backup_ok_and_quick_check(self):
+        r = sr.backup_sqlite(self.db, self.bak, keep=7)
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(r["check_ok"])
+        self.assertTrue(r["path"].endswith(".db.gz"))
+        self.assertTrue(os.path.exists(r["path"]))
+        # gunzip and query
+        raw = r["path"][:-3]
+        with gzip.open(r["path"], "rb") as f:
+            with open(raw, "wb") as out:
+                out.write(f.read())
+        c = sqlite3.connect(raw)
+        row = c.execute("SELECT bvid FROM MissAV").fetchone()
+        c.close()
+        self.assertEqual(row[0], "ABF-1")
+
+    def test_backup_missing_db(self):
+        r = sr.backup_sqlite(os.path.join(self.tmp.name, "nope.db"), self.bak)
+        self.assertFalse(r["ok"])
+        self.assertIn("missing", r["msg"])
+
+    def test_backup_corrupt_quick_check_fails(self):
+        # write non-sqlite file as "db"
+        bad = os.path.join(self.tmp.name, "bad.db")
+        with open(bad, "wb") as f:
+            f.write(b"not a sqlite database!!!!!")
+        r = sr.backup_sqlite(bad, self.bak)
+        # sqlite may refuse connect or backup may fail
+        self.assertFalse(r["ok"])
+
+
+class TestHealthPayload(unittest.TestCase):
+    def test_green_yellow_red(self):
+        green = sr.build_health_from_diag(
+            {
+                "qb_ok": True,
+                "qb_msg": "ok",
+                "deepseek_ok": True,
+                "deepseek_msg": "ok",
+                "plwt_ok": True,
+                "plwt_msg": "ok",
+                "missing_files": 0,
+                "scrape_hours": None,
+            }
+        )
+        # version may force yellow if tree unknown
+        self.assertIn(green["overall"], ("green", "yellow"))
+
+        red = sr.build_health_from_diag(
+            {
+                "qb_ok": False,
+                "qb_msg": "down",
+                "deepseek_ok": True,
+                "deepseek_msg": "ok",
+                "plwt_ok": True,
+                "plwt_msg": "ok",
+                "missing_files": 0,
+            }
+        )
+        self.assertEqual(red["overall"], "red")
+
+        yellow = sr.build_health_from_diag(
+            {
+                "qb_ok": True,
+                "qb_msg": "ok",
+                "deepseek_ok": True,
+                "deepseek_msg": "ok",
+                "plwt_ok": True,
+                "plwt_msg": "ok",
+                "missing_files": 3,
+            }
+        )
+        self.assertEqual(yellow["overall"], "yellow")
+
+
+class TestDeepseekUsage(unittest.TestCase):
+    def test_limit_alert(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = os.path.join(tmp.name, "ds_usage.json")
+            with mock.patch.object(sr, "DS_USAGE_PATH", path), mock.patch.object(
+                sr, "DEEPSEEK_DAILY_ALERT_LIMIT", 2
+            ):
+                d1 = sr.record_deepseek_usage(1)
+                self.assertEqual(d1["count"], 1)
+                self.assertFalse(d1.get("alerted"))
+                d2 = sr.record_deepseek_usage(1)
+                self.assertEqual(d2["count"], 2)
+                self.assertTrue(d2.get("alerted"))
+                with open(path, encoding="utf-8") as f:
+                    saved = json.load(f)
+                self.assertEqual(saved["count"], 2)
+        finally:
+            tmp.cleanup()
+
+
+class TestAtomicWrite(unittest.TestCase):
+    def test_atomic(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = os.path.join(tmp.name, "h.json")
+            sr.atomic_write_json(path, {"a": 1})
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["a"], 1)
+        finally:
+            tmp.cleanup()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -458,9 +458,54 @@ func mediaFileURL(dirName, filename string) string {
 	return "/file/" + strings.Join(parts, "/")
 }
 
-// addVideoHandler 添加视频到下载队列（不再直接调 Python）
-// weeklyHandler 获取本周新片推荐（含下载状态）
-func appendToQueue(id string) error {
+// downloadTargetsPath is sidecar JSON mapping code → qb|115.
+func downloadTargetsPath() string {
+	if v := os.Getenv("DOWNLOAD_TARGETS_PATH"); v != "" {
+		return v
+	}
+	return filepath.Join(filepath.Dir(queuePath), "download_targets.json")
+}
+
+func normalizeDownloadTarget(raw string) (string, bool) {
+	t := strings.ToLower(strings.TrimSpace(raw))
+	if t == "" || t == "qb" || t == "qbit" || t == "qbittorrent" {
+		return "qb", true
+	}
+	if t == "115" || t == "p115" {
+		return "115", true
+	}
+	return "", false
+}
+
+func setDownloadTarget(id, target string) error {
+	path := downloadTargetsPath()
+	targets := map[string]string{}
+	if data, err := ioutil.ReadFile(path); err == nil && len(data) > 0 {
+		_ = json.Unmarshal(data, &targets)
+		if targets == nil {
+			targets = map[string]string{}
+		}
+	}
+	// Drop case-variant keys
+	upper := strings.ToUpper(id)
+	for k := range targets {
+		if strings.ToUpper(k) == upper {
+			delete(targets, k)
+		}
+	}
+	targets[id] = target
+	raw, err := json.MarshalIndent(targets, "", "  ")
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile(path, raw, 0644)
+}
+
+// appendToQueue writes code to the queue file and records download target.
+func appendToQueue(id string, target string) error {
+	if target == "" {
+		target = "qb"
+	}
 	existing := make(map[string]bool)
 	if data, err := ioutil.ReadFile(queuePath); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -470,16 +515,18 @@ func appendToQueue(id string) error {
 			}
 		}
 	}
-	if existing[id] {
-		return nil
+	if !existing[id] {
+		f, err := os.OpenFile(queuePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return err
+		}
+		if _, err := f.WriteString(id + "\n"); err != nil {
+			f.Close()
+			return err
+		}
+		f.Close()
 	}
-	f, err := os.OpenFile(queuePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.WriteString(id + "\n")
-	return err
+	return setDownloadTarget(id, target)
 }
 
 func checkStringExists(db *sql.DB, target string) (bool, error) {
@@ -534,7 +581,13 @@ func addVideoHandler(w http.ResponseWriter, r *http.Request) {
 		httpError(w, "Invalid video ID", http.StatusBadRequest)
 		return
 	}
-	db, err := sql.Open("sqlite3", dbPath)
+	target, ok := normalizeDownloadTarget(r.URL.Query().Get("target"))
+	if !ok {
+		httpError(w, "Invalid target (use qb or 115)", http.StatusBadRequest)
+		return
+	}
+	// WAL + busy_timeout: concurrent worker/queue writes less likely to hit "database is locked"
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		httpError(w, "Database error", http.StatusInternalServerError)
 		return
@@ -550,13 +603,62 @@ func addVideoHandler(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(id + " already downloaded"))
 		return
 	}
-	if err := appendToQueue(id); err != nil {
+	if err := appendToQueue(id, target); err != nil {
 		httpError(w, "Failed to add to queue", http.StatusInternalServerError)
 		return
 	}
-	logger.Printf("Added to queue: %s", id)
+	logger.Printf("Added to queue: %s target=%s", id, target)
 	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte("Added " + id + " to download queue"))
+	w.Write([]byte("Added " + id + " to download queue (" + target + ")"))
+}
+
+// p115ProxyHandler proxies /api/p115/* to Python queue_api.
+func p115ProxyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost && r.Method != http.MethodOptions {
+		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	targetURL := queueAPI + r.URL.Path
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		httpError(w, "Proxy read error", http.StatusBadRequest)
+		return
+	}
+	proxyReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(body))
+	if err != nil {
+		httpError(w, "Proxy error", http.StatusInternalServerError)
+		return
+	}
+	proxyReq.Header = r.Header.Clone()
+	proxyReq.ContentLength = int64(len(body))
+	resp, err := queueHTTPClient.Do(proxyReq)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error":   "queue_unavailable",
+			"message": "队列服务暂不可用（可能在部署/重启），请稍后重试",
+		})
+		logger.Printf("HTTP Error 503: p115 proxy: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	for k, v := range resp.Header {
+		for _, vv := range v {
+			w.Header().Add(k, vv)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
 var (
@@ -1270,7 +1372,8 @@ func queueHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost && strings.TrimRight(r.URL.Path, "/") == "/api/queue" {
 		var payload struct {
-			Code string `json:"code"`
+			Code   string `json:"code"`
+			Target string `json:"target"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			httpError(w, "Invalid JSON", http.StatusBadRequest)
@@ -1281,7 +1384,12 @@ func queueHandler(w http.ResponseWriter, r *http.Request) {
 			httpError(w, "Invalid video ID", http.StatusBadRequest)
 			return
 		}
-		body, _ = json.Marshal(map[string]string{"code": code})
+		target, ok := normalizeDownloadTarget(payload.Target)
+		if !ok {
+			httpError(w, "Invalid target (use qb or 115)", http.StatusBadRequest)
+			return
+		}
+		body, _ = json.Marshal(map[string]string{"code": code, "target": target})
 		failedAckMtx.Lock()
 		acked := loadFailedAckIDs()
 		if acked[code] {
@@ -2356,6 +2464,46 @@ func parseLogLineTime(line string) time.Time {
 		return time.Time{}
 	}
 	return ts
+}
+
+// statusHandler GET /api/status — readonly health + daily report snapshots from /db/status.
+// Missing files yield empty objects (not 500). LAN-trusted; no extra auth.
+func statusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	statusDir := strings.TrimSpace(os.Getenv("STATUS_DIR"))
+	if statusDir == "" {
+		statusDir = "/db/status"
+	}
+	healthPath := filepath.Join(statusDir, "health.json")
+	dailyPath := filepath.Join(statusDir, "daily-report.json")
+	if p := strings.TrimSpace(os.Getenv("HEALTH_PATH")); p != "" {
+		healthPath = p
+	}
+	if p := strings.TrimSpace(os.Getenv("DAILY_REPORT_PATH")); p != "" {
+		dailyPath = p
+	}
+
+	loadObj := func(path string) interface{} {
+		data, err := ioutil.ReadFile(path)
+		if err != nil {
+			return map[string]interface{}{}
+		}
+		var obj interface{}
+		if json.Unmarshal(data, &obj) != nil || obj == nil {
+			return map[string]interface{}{}
+		}
+		return obj
+	}
+
+	payload := map[string]interface{}{
+		"health": loadObj(healthPath),
+		"daily":  loadObj(dailyPath),
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(payload)
 }
 
 func versionHandler(w http.ResponseWriter, r *http.Request) {

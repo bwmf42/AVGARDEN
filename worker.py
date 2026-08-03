@@ -22,7 +22,15 @@ from main_video import find_main_video
 from process_control import clear_cancel_request, is_cancel_requested, terminate_active_process
 from qb_file_selection import strict_priority_plan
 from qb_task_guard import has_matching_qb_task
-from queue_store import append_unique, pop_first, read_json, update_json, write_queue
+from queue_store import (
+    append_unique,
+    clear_download_target,
+    get_download_target,
+    pop_first,
+    read_json,
+    update_json,
+    write_queue,
+)
 from video_id import local_video_id_aliases, normalize_video_id, safe_video_dir
 
 # 从 comm 加载配置
@@ -48,6 +56,9 @@ if env_proxy:
 queue_dir = os.path.dirname(queue_path) if os.path.dirname(queue_path) else "/db"
 failed_queue_path = os.path.join(queue_dir, "failed_queue.txt")
 failed_queue_json_path = os.path.join(queue_dir, "failed_queue.json")
+download_targets_path = os.environ.get(
+    "DOWNLOAD_TARGETS_PATH", os.path.join(queue_dir, "download_targets.json")
+)
 retry_file = os.path.join(os.path.dirname(queue_path) if os.path.dirname(queue_path) else "/db", "retry_counts.json")
 MAX_RETRIES = 3
 MAGNET_COMPLETED = "completed"
@@ -151,21 +162,36 @@ def _load_failed_records():
     return records
 
 
-def record_failed_download(avid):
+def record_failed_download(avid, reason="", recoverable=None):
     """记录最终失败，主存储为带时间戳的 failed_queue.json。"""
+    from src.failure_recovery import is_transient_reason
+
     code = avid.upper().strip()
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     retries = get_retries(code)
+    reason = str(reason or "").strip()
+    if recoverable is None:
+        recoverable = is_transient_reason(reason)
+
     def record(records):
         records = records if isinstance(records, list) else []
         for item in records:
             if isinstance(item, dict) and str(item.get("code", "")).upper() == code:
                 item["failed_at"] = now
                 item["retries"] = retries
+                item["reason"] = reason
+                item["recoverable"] = bool(recoverable)
                 break
         else:
-            records.append({"code": code, "failed_at": now, "retries": retries})
+            records.append({
+                "code": code,
+                "failed_at": now,
+                "retries": retries,
+                "reason": reason,
+                "recoverable": bool(recoverable),
+            })
         return records
+
     update_json(failed_queue_json_path, [], record)
 
 
@@ -173,6 +199,7 @@ def _handle_failure(avid, reason="下载失败"):
     """处理下载失败：记录重试次数，超过上限则放弃并通知飞书。
 
     前台 log_write 仅在最终放弃时写一条；中间重试只打 logger。
+    瞬时/系统异常会标记 recoverable，启动与 heal 会自动捞回重试。
     """
     if has_active_qb_task(avid):
         logger.info(f"[Worker] {avid} qB 任务仍在进行，跳过失败记录和飞书通知")
@@ -181,9 +208,9 @@ def _handle_failure(avid, reason="下载失败"):
     retries = incr_retry(avid)
     if retries >= MAX_RETRIES:
         logger.warning(f"[Worker] {avid} 失败 {retries} 次，放弃，写入失败队列 ({reason})")
-        record_failed_download(avid)
+        record_failed_download(avid, reason=reason)
         log_write("Worker", f"{avid} 失败: {reason}（已重试{retries}次）")
-        notify_feishu_all_failed(avid)
+        notify_feishu_all_failed(avid, reason=reason)
     else:
         logger.warning(f"[Worker] {avid} 失败 ({retries}/{MAX_RETRIES})，放回队列重试 ({reason})")
         append_unique(queue_path, avid)
@@ -199,9 +226,9 @@ def _handle_magnet_unavailable(avid, reason="磁链暂不可用"):
     retries = incr_retry(avid)
     if retries >= MAX_RETRIES:
         logger.warning(f"[Worker] {avid} 磁链处理异常 {retries} 次，放弃 ({reason})")
-        record_failed_download(avid)
+        record_failed_download(avid, reason=reason)
         log_write("Worker", f"{avid} 失败: {reason}（已重试{retries}次）")
-        notify_feishu_all_failed(avid)
+        notify_feishu_all_failed(avid, reason=reason)
     else:
         logger.warning(f"[Worker] {avid} 磁链暂不可用 ({retries}/{MAX_RETRIES})，放回队列重试 ({reason})")
         append_unique(queue_path, avid)
@@ -251,12 +278,19 @@ def _completed_qb_task_has_main_video(avid, torrent):
             return True
     return False
 
-def notify_feishu_all_failed(avid):
-    """所有下载方式失败时通过飞书通知"""
+def notify_feishu_all_failed(avid, reason=""):
+    """最终失败时通过飞书通知（带真实原因，瞬时错误会标注可自动重试）。"""
     webhook = os.environ.get("FEISHU_WEBHOOK") or feishu_webhook
     if not webhook:
         return
-    msg = f"AV/GARDEN 下载失败\n番号: {avid}\n原因: 所有下载源均失败(已重试3次)"
+    from src.failure_recovery import is_transient_reason
+
+    reason = str(reason or "").strip() or "所有下载源均失败"
+    if is_transient_reason(reason):
+        detail = f"{reason}（系统/瞬时错误，启动或自愈将自动重试）"
+    else:
+        detail = f"{reason}（已重试{MAX_RETRIES}次）"
+    msg = f"AV/GARDEN 下载失败\n番号: {avid}\n原因: {detail}"
     try:
         data = json.dumps({"msg_type": "text", "content": {"text": msg}}).encode()
         req = urllib.request.Request(webhook, data=data, headers={"Content-Type": "application/json"})
@@ -545,17 +579,14 @@ def find_and_rename_output(save_dir, avid, qb_content_path=None):
 _last_magnet_reason = ""
 
 
-def try_magnet_download(avid, save_dir, magnet=None):
+def try_magnet_download(avid, save_dir, magnet=None, target="qb"):
     """
-    尝试通过 qBittorrent 磁链下载。
-    返回 (status, torrent_hash)，其中 status 为 MAGNET_COMPLETED / MAGNET_PENDING / MAGNET_FAILED。
-    使用 weekly.json 中 sukebei 搜到的磁链（中文字幕版）
+    磁链下载：按用户选择的 target 分流。
+    - target=qb  → 仅 qBittorrent
+    - target=115 → 仅 115 云端离线（成功 PENDING；失败不回退 qB）
 
-    策略：
-    - 最多等 60 秒获取元数据（metadata）
-    - 获取到元数据后继续下载，最长 2 小时
-    - 无速度超时从 30 分钟缩短到 10 分钟
-    - 已进入 qB 但未完成时返回 pending 和 hash，供外部清理
+    返回 (status, torrent_hash)，status 为 MAGNET_* 。
+    115 成功时 hash 为 None（本地由极空间备份）。
     """
     global _last_magnet_reason
     _last_magnet_reason = ""
@@ -570,6 +601,42 @@ def try_magnet_download(avid, save_dir, magnet=None):
         _last_magnet_reason = "无可用磁链"
         return (MAGNET_FAILED, None)
 
+    target = (target or "qb").strip().lower()
+    if target == "115":
+        try:
+            from src import p115_offline as p115
+
+            pub = p115.public_config()
+            p115_cfg = p115.load_config()
+            if not p115_cfg.get("cookies"):
+                _last_magnet_reason = "未配置 115 Cookie"
+                logger.warning(f"[Magnet] {avid} 115: no cookies")
+                return (MAGNET_FAILED, None)
+            if not p115_cfg.get("enabled"):
+                _last_magnet_reason = "115 离线未启用（设置页）"
+                logger.warning(f"[Magnet] {avid} 115: not enabled")
+                return (MAGNET_FAILED, None)
+            if not pub.get("verified"):
+                _last_magnet_reason = "115 未通过测试连接（设置页）"
+                logger.warning(f"[Magnet] {avid} 115: not verified")
+                return (MAGNET_FAILED, None)
+            save_to = p115_cfg.get("save_path") or "/艾薇"
+            logger.info(f"[Magnet] {avid} 115 offline → {save_to}")
+            ok, msg, raw = p115.submit_magnet(magnet)
+            if ok:
+                logger.info(f"[Magnet] {avid} 115 ok: {msg} raw={str(raw)[:200]}")
+                _last_magnet_reason = msg or f"已提交 115 离线 → {save_to}"
+                log_write("Worker", f"{avid} {_last_magnet_reason}")
+                return (MAGNET_PENDING, None)
+            logger.warning(f"[Magnet] {avid} 115 cloud failed: {msg}")
+            _last_magnet_reason = f"115 云下载失败: {msg}"
+            return (MAGNET_FAILED, None)
+        except Exception as e:
+            logger.warning(f"[Magnet] {avid} 115 path error: {e}")
+            _last_magnet_reason = f"115 云下载异常: {e}"
+            return (MAGNET_FAILED, None)
+
+    # ----- qB only -----
     # 不预先创建 save_dir，等下载完再建，避免和 qB 目录冲突
 
     # 通过 qBittorrent API 添加磁链（不指定 savepath，用 qB 默认的 /data/）
@@ -795,40 +862,59 @@ def download_video(avid):
         retries = get_retries(avid)
         if retries >= MAX_RETRIES and not magnet:
             logger.warning(f"[Worker] {avid} 已失败 {retries} 次，放弃，写入失败队列")
-            record_failed_download(avid)
+            record_failed_download(avid, reason="无可用源")
             log_write("Worker", f"{avid} 失败: 无可用源（已重试{retries}次）")
             release_lock()
             return True
         if retries >= MAX_RETRIES and magnet:
             logger.info(f"[Worker] {avid} 已失败 {retries} 次，但找到磁链，尝试 qB")
+        download_target = get_download_target(download_targets_path, avid, default="qb")
         if magnet:
-            magnet_status, torrent_hash = try_magnet_download(avid, save_dir, magnet)
+            magnet_status, torrent_hash = try_magnet_download(
+                avid, save_dir, magnet, target=download_target
+            )
             if magnet_status == MAGNET_CANCELLED:
                 logger.info(f"[Worker] {avid} 下载已取消")
                 log_write("Worker", f"{avid} 失败: 已取消")
                 clear_cancel_request(avid)
+                clear_download_target(download_targets_path, avid)
                 return False
             if magnet_status == MAGNET_COMPLETED:
                 gen_nfo()
                 logger.info(f"[Worker] {avid} 磁链下载完成!")
                 clear_retry(avid)
+                clear_download_target(download_targets_path, avid)
                 log_write("Worker", f"{avid} 下载完成")
                 release_lock()
                 return True
             if magnet_status == MAGNET_PENDING:
-                # 磁链已加 qB（还在下载中），不 fallback 到在线流
-                logger.info(f"[Worker] {avid} 磁链下载中(qB)，尚未完成 ({_last_magnet_reason})")
-                if torrent_hash:
-                    logger.info(f"[Worker] {avid} qB hash: {torrent_hash}, 可通过 heal_runner 清理")
-                log_write(
-                    "Worker",
-                    f"{avid} 已交 qB 后台继续下载"
-                    + (f"（{_last_magnet_reason}）" if _last_magnet_reason else ""),
+                # 115 离线或 qB 后台：不 fallback 到在线流
+                logger.info(
+                    f"[Worker] {avid} 磁链已交后台 target={download_target} ({_last_magnet_reason})"
                 )
+                if torrent_hash:
+                    logger.info(f"[Worker] {avid} qB hash: {torrent_hash}")
+                # 115 路径已在 try_magnet_download 内 log_write；qB 在此补一条
+                if download_target != "115":
+                    log_write(
+                        "Worker",
+                        f"{avid} 已交 qB 后台继续下载"
+                        + (f"（{_last_magnet_reason}）" if _last_magnet_reason else ""),
+                    )
+                clear_download_target(download_targets_path, avid)
                 release_lock()
                 return False
 
             _handle_magnet_unavailable(avid, _last_magnet_reason or "磁链下载失败")
+            clear_download_target(download_targets_path, avid)
+            release_lock()
+            return False
+
+        # target=115 但无磁链：不能回退在线流（语义是云端离线）
+        if download_target == "115":
+            logger.warning(f"[Worker] {avid} 选择 115 但无可用磁链")
+            _handle_magnet_unavailable(avid, "无可用磁链（115）")
+            clear_download_target(download_targets_path, avid)
             release_lock()
             return False
 

@@ -15,6 +15,12 @@
         "username": "admin",
         "password": "your_password"
     },
+    "P115": {
+        "enabled": false,
+        "save_path": "/艾薇",
+        "cookies_path": "/db/115-cookies.txt",
+        "comment": "Cookie 一次配置后，详情页可点「加入 115」提交离线；与 qB 并列，本地由极空间自动备份"
+    },
     "Downloader": [
         {
             "downloaderName": "MissAV",

@@ -100,6 +100,50 @@
           <span>{{ statusSummary }}</span>
         </div>
 
+        <div
+          class="activity-card system-status-card"
+          :class="'status-' + (systemStatus.overall || 'unknown')"
+        >
+          <button type="button" class="system-status-toggle" @click="systemStatus.expanded = !systemStatus.expanded">
+            <span class="system-status-dot"></span>
+            <strong>系统状态</strong>
+            <span class="system-status-label">{{ systemStatusLabel }}</span>
+            <span v-if="systemStatus.versionBehind" class="system-status-badge">版本落后</span>
+            <span class="system-status-time">{{ systemStatusTime }}</span>
+            <span class="system-status-chevron">{{ systemStatus.expanded ? '收起' : '明细' }}</span>
+          </button>
+          <div v-if="systemStatus.expanded" class="system-status-detail">
+            <p v-if="!systemStatus.hasData" class="muted-line">尚无探活数据（heal 尚未写出 health.json）。</p>
+            <template v-else>
+              <div class="system-status-checks">
+                <div
+                  v-for="(check, name) in systemStatus.checks"
+                  :key="name"
+                  class="system-check-row"
+                  :class="check.ok ? 'ok' : 'bad'"
+                >
+                  <span>{{ name }}</span>
+                  <span>{{ check.ok ? '正常' : (check.msg || '异常') }}</span>
+                </div>
+              </div>
+              <div v-if="systemStatus.failEvents.length" class="system-status-fails">
+                <strong>24h 失败</strong>
+                <p v-for="(ev, idx) in systemStatus.failEvents.slice(0, 6)" :key="idx" class="fail-line">
+                  {{ ev.ts }} [{{ ev.tag }}] {{ ev.msg }}
+                </p>
+              </div>
+              <div v-if="systemStatus.diskLines.length" class="system-status-disk">
+                <strong>磁盘</strong>
+                <p v-for="line in systemStatus.diskLines" :key="line">{{ line }}</p>
+              </div>
+              <div v-if="systemStatus.queueLine" class="system-status-queue">
+                <strong>队列</strong>
+                <p>{{ systemStatus.queueLine }}</p>
+              </div>
+            </template>
+          </div>
+        </div>
+
         <div v-if="primaryActiveItem" class="activity-card">
           <strong>下载中的条目</strong>
           <button type="button" class="activity-code" @click="openStatusDetail(primaryActiveItem)">
@@ -166,10 +210,30 @@ export default {
       scrapeRunning: false,
       toast: { visible: false, msg: '', type: 'info' },
       statusBar: { visible: false, items: [] },
-      statusTimer: null
+      statusTimer: null,
+      systemStatus: {
+        overall: 'unknown',
+        ts: '',
+        versionBehind: false,
+        checks: {},
+        failEvents: [],
+        diskLines: [],
+        queueLine: '',
+        hasData: false,
+        expanded: false
+      }
     }
   },
   computed: {
+    systemStatusLabel() {
+      const map = { green: '正常', yellow: '告警', red: '异常', unknown: '未知' }
+      return map[this.systemStatus.overall] || '未知'
+    },
+    systemStatusTime() {
+      const ts = this.systemStatus.ts
+      if (!ts) return '—'
+      return String(ts).replace('T', ' ').slice(0, 16)
+    },
     routeViewKey() {
       return this.$route.name === 'weekly-detail' ? 'weekly-detail' : this.$route.fullPath
     },
@@ -199,7 +263,11 @@ export default {
     window.addEventListener('av-garden-toast', this.onToast)
     window.addEventListener('av-garden-refresh-status', this.fetchStatus)
     this.fetchStatus()
-    this.statusTimer = setInterval(() => this.fetchStatus(), 60000)
+    this.fetchSystemStatus()
+    this.statusTimer = setInterval(() => {
+      this.fetchStatus()
+      this.fetchSystemStatus()
+    }, 60000)
   },
   beforeUnmount() {
     window.removeEventListener('av-garden-toast', this.onToast)
@@ -258,6 +326,43 @@ export default {
         window.dispatchEvent(new CustomEvent('av-garden-status', { detail: { items } }))
         this.applyVisibleStatusItems(items)
       } catch(e) {}
+    },
+    async fetchSystemStatus() {
+      try {
+        const resp = await fetch('/api/status')
+        if (!resp.ok) return
+        const data = await resp.json()
+        const health = data.health || {}
+        const daily = data.daily || {}
+        const checks = health.checks || {}
+        const hasData = !!(health.overall || health.ts || Object.keys(checks).length)
+        const disk = daily.disk || {}
+        const diskLines = []
+        for (const key of ['data', 'db', 'backups']) {
+          const row = disk[key]
+          if (row && (row.human || row.path)) {
+            diskLines.push(`${key}: ${row.human || '?'}${row.path ? ' (' + row.path + ')' : ''}`)
+          }
+        }
+        const q = daily.queue || {}
+        let queueLine = ''
+        if (q.ok && q.counts) {
+          queueLine = Object.entries(q.counts).map(([k, v]) => `${k}=${v}`).join(' · ') || `total=${q.total || 0}`
+        } else if (q.error) {
+          queueLine = `不可用: ${q.error}`
+        }
+        this.systemStatus = {
+          ...this.systemStatus,
+          overall: health.overall || 'unknown',
+          ts: health.ts || daily.ts || '',
+          versionBehind: !!(health.version_behind || (checks.version && checks.version.behind)),
+          checks,
+          failEvents: Array.isArray(daily.fail_events) ? daily.fail_events : [],
+          diskLines,
+          queueLine,
+          hasData
+        }
+      } catch (e) {}
     },
     applyVisibleStatusItems(items) {
       this.statusBar.items = items
@@ -607,6 +712,97 @@ body {
   border-radius: 8px;
   background: var(--surface);
   box-shadow: 0 10px 26px rgba(186, 47, 93, 0.055);
+}
+
+.system-status-card {
+  padding: 10px 12px;
+}
+
+.system-status-toggle {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 4px 8px;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.system-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #9ca3af;
+  grid-row: 1 / span 2;
+}
+
+.status-green .system-status-dot { background: var(--success-color); }
+.status-yellow .system-status-dot { background: var(--warning-color); }
+.status-red .system-status-dot { background: var(--danger-color); }
+
+.system-status-label {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--muted-color);
+}
+
+.system-status-badge {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--warning-color);
+  background: #fff4e5;
+  border: 1px solid #f0d2a0;
+  border-radius: 999px;
+  padding: 1px 8px;
+  justify-self: start;
+}
+
+.system-status-time {
+  font-size: 11px;
+  color: var(--muted-color);
+  grid-column: 2;
+}
+
+.system-status-chevron {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--secondary-color);
+}
+
+.system-status-detail {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+}
+
+.system-check-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.system-check-row.ok span:last-child { color: var(--success-color); }
+.system-check-row.bad span:last-child { color: var(--danger-color); }
+
+.system-status-fails .fail-line,
+.system-status-disk p,
+.system-status-queue p,
+.muted-line {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--muted-color);
+  line-height: 1.45;
+  word-break: break-word;
 }
 
 .activity-card strong {

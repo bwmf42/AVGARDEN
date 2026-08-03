@@ -107,19 +107,31 @@
                             </div>
 
                             <div class="action-row">
-                                <button v-if="!video.downloaded && (queueState === 'idle' || queueState === 'error')"
-                                    class="btn-download"
-                                    :class="{ error: queueState === 'error' }"
-                                    @click="addToQueue"
-                                    :disabled="queueBusy">
-                                    {{ queueState === 'error' ? (queueErrorReason ? '加入失败，重试' : '添加失败，重试') : '加入下载队列' }}
-                                </button>
+                                <template v-if="!video.downloaded && (queueState === 'idle' || queueState === 'error')">
+                                    <button
+                                        class="btn-download"
+                                        :class="{ error: queueState === 'error' }"
+                                        @click="addToQueue('qb')"
+                                        :disabled="queueBusy">
+                                        {{ queueState === 'error' ? '重试 qB' : '加入 qB' }}
+                                    </button>
+                                    <button
+                                        class="btn-download btn-115"
+                                        :class="{ error: queueState === 'error', disabled: !p115Available }"
+                                        @click="addToQueue('115')"
+                                        :disabled="queueBusy || !p115Available"
+                                        :title="p115Available ? '提交 115 云端离线' : '请先在设置配置并启用 115 Cookie'">
+                                        {{ queueState === 'error' ? '重试 115' : '加入 115' }}
+                                    </button>
+                                </template>
                                 <button v-if="queueState === 'adding'" class="btn-download" disabled>添加中...</button>
                                 <button v-if="queueState === 'waiting_ready'" class="btn-download waiting" disabled>
                                     等待服务就绪…
                                 </button>
                                 <div v-if="queueState === 'success'" class="btn-download success">已加入队列</div>
-                                <div v-if="queueState === 'queued'" class="btn-download queued">已加入队列</div>
+                                <div v-if="queueState === 'queued'" class="btn-download queued">
+                                    {{ lastQueueTarget === '115' ? '已加入 115 队列' : '已加入 qB 队列' }}
+                                </div>
                                 <div v-if="queueState === 'downloading'" class="btn-download downloading">
                                     下载中 {{ queueProgress }}%
                                 </div>
@@ -231,6 +243,8 @@ export default {
             queueErrorReason: '',
             queueHint: '',
             queueAddToken: 0,
+            lastQueueTarget: 'qb',
+            p115Available: false,
             blockInFlight: false,
             blockingName: null,
             blockingGenre: null,
@@ -297,6 +311,7 @@ export default {
         window.addEventListener('keydown', this.handlePageKeydown, true)
         window.addEventListener('keyup', this.handlePageKeyup, true)
         this.unlockPageScroll()
+        this.loadP115Availability()
         this.loadWatched()
         this.syncWatched().then(async () => {
             if (this.isGenreBrowse) {
@@ -341,6 +356,7 @@ export default {
             const token = ++this.routeLoadToken
             this.routeLoading = true
             try {
+                this.loadP115Availability()
                 const loaded = await this.loadDetail(targetId, token)
                 if (!loaded || token !== this.routeLoadToken) return
 
@@ -991,12 +1007,26 @@ export default {
             }
             return false
         },
-        async postToQueue(targetId) {
+        async loadP115Availability() {
+            try {
+                const r = await fetch('/api/p115/config')
+                if (!r.ok) {
+                    this.p115Available = false
+                    return
+                }
+                const d = await r.json()
+                // only after 测试连接 sets verified
+                this.p115Available = !!d.available
+            } catch (e) {
+                this.p115Available = false
+            }
+        },
+        async postToQueue(targetId, downloadTarget = 'qb') {
             try {
                 const resp = await fetch('/api/queue/', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ code: targetId })
+                    body: JSON.stringify({ code: targetId, target: downloadTarget })
                 })
                 if (resp.ok) {
                     return { ok: true }
@@ -1018,27 +1048,26 @@ export default {
                 }
             }
         },
-        async addToQueue() {
+        async addToQueue(downloadTarget = 'qb') {
             const targetId = normalizeVideoID(this.video?.id || this.id)
             if (!targetId || this.queueBusy) return
+
+            const channel = downloadTarget === '115' ? '115' : 'qb'
+            if (channel === '115' && !this.p115Available) {
+                this.showToast('请先在设置配置并启用 115 Cookie', 'warn')
+                return
+            }
 
             const token = ++this.queueAddToken
             this.queueState = 'adding'
             this.queueErrorReason = ''
-            this.queueHint = '正在加入下载队列…'
+            this.lastQueueTarget = channel
+            this.queueHint = channel === '115' ? '正在加入 115 离线队列…' : '正在加入 qB 队列…'
             this.queueSubmittedAt = Date.now()
             this.queueSubmittedId = targetId
 
-            // Already in queue? (e.g. previous click succeeded but UI showed error)
-            if (await this.isCodeInQueue(targetId)) {
-                if (token !== this.queueAddToken) return
-                this.queueState = 'queued'
-                this.queueHint = ''
-                this.queueErrorReason = ''
-                this.showToast(targetId + ' 已在下载队列中', 'info')
-                window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
-                return
-            }
+            // Already in queue? Still allow re-POST to switch target (backend overwrites).
+            // Skip early-return so user can switch qb ↔ 115.
 
             const maxPostAttempts = 4
             let lastReason = ''
@@ -1055,27 +1084,23 @@ export default {
                         lastReason = '等待服务就绪超时'
                         break
                     }
-                    // Reconcile after wait — may already be queued from half-success
-                    if (await this.isCodeInQueue(targetId)) {
-                        this.queueState = 'queued'
-                        this.queueHint = ''
-                        this.queueErrorReason = ''
-                        this.showToast(targetId + ' 已在下载队列中', 'info')
-                        window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
-                        return
-                    }
                     this.queueState = 'adding'
                     this.queueHint = '服务已恢复，正在加入队列…'
                 }
 
-                const result = await this.postToQueue(targetId)
+                const result = await this.postToQueue(targetId, channel)
                 if (token !== this.queueAddToken) return
 
                 if (result.ok) {
                     this.queueState = 'queued'
-                    this.queueHint = ''
+                    this.queueHint = channel === '115' ? '通道：115 离线（本地靠极空间备份）' : '通道：qB'
                     this.queueErrorReason = ''
-                    this.showToast(targetId + ' 已加入下载队列', 'info')
+                    this.showToast(
+                        channel === '115'
+                            ? targetId + ' 已加入 115 离线队列'
+                            : targetId + ' 已加入 qB 队列',
+                        'info'
+                    )
                     window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
                     return
                 }
@@ -1097,7 +1122,7 @@ export default {
             if (await this.isCodeInQueue(targetId)) {
                 if (token !== this.queueAddToken) return
                 this.queueState = 'queued'
-                this.queueHint = ''
+                this.queueHint = channel === '115' ? '通道：115 离线' : '通道：qB'
                 this.queueErrorReason = ''
                 this.showToast(targetId + ' 已在下载队列中', 'info')
                 window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
@@ -1298,6 +1323,8 @@ export default {
 
 .action-row {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   justify-content: flex-start;
   margin-top: 16px;
 }
@@ -1313,7 +1340,8 @@ export default {
   margin: 0;
   border: 1px solid var(--primary-color);
   font-size: 14px;
-  width: 100%;
+  flex: 1 1 0;
+  min-width: 0;
   line-height: 1.35;
   transition: all 0.18s ease;
 }
@@ -1322,6 +1350,16 @@ export default {
   background: var(--primary-color);
   color: white;
   cursor: pointer;
+}
+
+.btn-download.btn-115 {
+  background: #2d6cdf;
+  border-color: #2d6cdf;
+}
+
+.btn-download.btn-115:hover:not(:disabled) {
+  background: #1f56b8;
+  border-color: #1f56b8;
 }
 
 .btn-download:hover:not(:disabled) {

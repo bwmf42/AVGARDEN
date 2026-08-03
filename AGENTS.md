@@ -213,3 +213,4 @@ curl -sS http://127.0.0.1:31471/api/queue-status
 - Triage labels：`docs/agents/triage-labels.md`
 - Domain / ADR：`docs/agents/domain.md`
 - 交接快照：根目录 `handoff.md`（当前会话状态，可随功能更新）
+- 跨项目「外网 Hermes → 回家同步本机」：工作区 [`../docs/nas-home-sync.md`](../docs/nas-home-sync.md)（`/Users/vigo/Desktop/code/docs/nas-home-sync.md`）

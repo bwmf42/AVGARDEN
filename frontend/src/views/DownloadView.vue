@@ -6,7 +6,7 @@
         
         <div v-else-if="items.length === 0" class="empty">
             <p>队列为空</p>
-            <p class="hint">在每日推荐详情页点击「加入下载队列」即可添加</p>
+            <p class="hint">在每日推荐详情页点「加入 qB」或「加入 115」即可添加</p>
         </div>
 
         <div v-else class="queue-sections">

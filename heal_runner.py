@@ -118,9 +118,10 @@ def save_json(path: str, data: Any) -> None:
         log(f"save {path}: {e}")
 
 
-def cooldown_ok(state: dict, key: str) -> bool:
+def cooldown_ok(state: dict, key: str, minutes: Optional[float] = None) -> bool:
     last = float((state.get("cooldown") or {}).get(key) or 0)
-    return (time.time() - last) >= HEAL_COOLDOWN_M * 60
+    wait_m = HEAL_COOLDOWN_M if minutes is None else float(minutes)
+    return (time.time() - last) >= wait_m * 60
 
 
 def mark_cooldown(state: dict, key: str) -> None:
@@ -285,6 +286,11 @@ def probe_deepseek() -> Tuple[bool, str]:
     try:
         with urllib.request.urlopen(req, timeout=25) as resp:
             data = json.loads(resp.read().decode())
+        try:
+            from src.status_report import record_deepseek_usage
+            record_deepseek_usage(1)
+        except Exception:
+            pass
         content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
         if content is None:
             return False, "empty content"
@@ -551,6 +557,66 @@ def heal_lock_note(diag: dict) -> None:
         log(f"lock held but no weekly_updater pid seen: {diag.get('related_pids')}")
 
 
+def heal_link115(state: dict) -> bool:
+    """把 115生活备份/艾薇 下番号软链到 /data 根（不出现「艾薇」目录）。"""
+    if not _env_true("HEAL_LINK115", "1"):
+        return False
+    # 短冷却，避免与 launcher 专用 watcher 重复刷日志
+    if not cooldown_ok(state, "link115", minutes=max(5, int(os.environ.get("HEAL_LINK115_COOLDOWN_M", "15") or "15"))):
+        return False
+    try:
+        from tools.maintenance.link_115_aiwei_into_data_root import sync_links
+
+        stats = sync_links(data_root=SAVE_PATH)
+        mark_cooldown(state, "link115")
+        if stats.get("missing_source"):
+            log(f"link115: source missing under {SAVE_PATH}")
+            return False
+        n = int(stats.get("linked") or 0) + int(stats.get("refreshed") or 0)
+        if n or stats.get("removed_aiwei"):
+            names = ",".join((stats.get("names") or [])[:8])
+            report(
+                f"115链接: 新增/更新={n}"
+                + (f" ({names})" if names else "")
+                + (f" 去艾薇入口={stats.get('removed_aiwei')}" if stats.get("removed_aiwei") else "")
+            )
+            return True
+        log(f"link115: ok skipped={stats.get('skipped')}")
+        return False
+    except Exception as e:
+        mark_cooldown(state, "link115")
+        log(f"link115 error: {e}")
+        return False
+
+
+def heal_recover_transient(state: dict) -> bool:
+    """捞回瞬时/系统类失败项（如 generator bug），清 retry 并重新入队。"""
+    if not _env_true("HEAL_RECOVER_FAILED", "1"):
+        return False
+    if not cooldown_ok(
+        state,
+        "recover_failed",
+        minutes=max(15, int(os.environ.get("HEAL_RECOVER_COOLDOWN_M", "30") or "30")),
+    ):
+        return False
+    try:
+        from src.failure_recovery import recover_transient_failures
+
+        hours = float(os.environ.get("RECOVER_FAILED_MAX_AGE_H", "72") or "72")
+        stats = recover_transient_failures(max_age_hours=hours, default_target="qb")
+        mark_cooldown(state, "recover_failed")
+        rec = stats.get("recovered") or []
+        if rec:
+            report(f"自动恢复失败项 {len(rec)} 个: {','.join(rec[:12])}")
+            return True
+        log("recover_failed: nothing")
+        return False
+    except Exception as e:
+        mark_cooldown(state, "recover_failed")
+        log(f"recover_failed error: {e}")
+        return False
+
+
 def run_once(do_heal: bool = True) -> dict:
     if not HEAL_ENABLE and do_heal:
         log("HEAL_ENABLE=0, diagnose only")
@@ -581,6 +647,10 @@ def run_once(do_heal: bool = True) -> dict:
             actions.append("queue_sync")
         if heal_probes_alert(state, diag):
             actions.append("probe_alert")
+        if heal_link115(state):
+            actions.append("link115")
+        if heal_recover_transient(state):
+            actions.append("recover_failed")
 
     try:
         log_cleanup()
@@ -600,7 +670,18 @@ def run_once(do_heal: bool = True) -> dict:
         )
     }
     save_json(HEAL_STATE_PATH, state)
-    return {"diag": diag, "actions": actions}
+
+    # Persist probe snapshot for /api/status (atomic tmp+rename)
+    health_payload = None
+    try:
+        from src.status_report import write_health_json
+
+        health_payload = write_health_json(diag)
+        log(f"health.json overall={health_payload.get('overall')}")
+    except Exception as e:
+        log(f"write health.json: {e}")
+
+    return {"diag": diag, "actions": actions, "health": health_payload}
 
 
 def main():

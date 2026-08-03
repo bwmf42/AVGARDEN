@@ -153,6 +153,11 @@ class Sracper:
             )
             resp = urllib.request.urlopen(req, timeout=15)
             result = json.loads(resp.read().decode())
+            try:
+                from src.status_report import record_deepseek_usage
+                record_deepseek_usage(1)
+            except Exception:
+                pass
             zh = result["choices"][0]["message"]["content"].strip()
             if zh and zh != metadata.title:
                 metadata.title_zh = zh

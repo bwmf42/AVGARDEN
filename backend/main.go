@@ -497,6 +497,7 @@ func main() {
 	mux.HandleFunc("/api/failed-ack", failedAckHandler)
 	mux.HandleFunc("/api/block-actress/", blockActressHandler)
 	mux.HandleFunc("/api/block-by-code/", blockByCodeHandler)
+	mux.HandleFunc("/api/p115/", p115ProxyHandler)
 	mux.HandleFunc("/api/block-genre/", blockGenreHandler)
 	mux.HandleFunc("/api/video-status/", videoStatusHandler)
 	mux.HandleFunc("/api/fav-actress/", favActressHandler)
@@ -504,6 +505,7 @@ func main() {
 	mux.HandleFunc("/api/logs", logsHandler)
 	mux.HandleFunc("/api/queue-status", queueStatusHandler)
 	mux.HandleFunc("/api/version", versionHandler)
+	mux.HandleFunc("/api/status", statusHandler)
 	mux.HandleFunc("/api/weekly/scrape", weeklyScrapeHandler)
 
 	// 前端静态文件 — 如果存在则 serve SPA (with Vue Router fallback)

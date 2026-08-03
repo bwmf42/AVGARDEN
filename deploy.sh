@@ -334,9 +334,10 @@ if [ "$DEPLOY_HOT" = "1" ] && [ "${HOT_WORKER:-0}" = "1" ]; then
             worker.py queue_api.py queue_store.py launcher.py heal_runner.py \
             download_source.py \
             requirements.txt \
-            src/p115_offline.py src/log_writer.py \
+            src/p115_offline.py src/log_writer.py src/failure_recovery.py \
             tools/maintenance/link_115_aiwei_into_data_root.py \
             ; do
+            # note: queue_store.py is required when queue_api imports download_targets helpers
             if [ -f '$NAS_DIR/'\"\$rel\" ]; then
                 # ensure parent dir inside container for nested paths
                 dir=\$(dirname \"\$rel\")
