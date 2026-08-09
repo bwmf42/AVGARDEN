@@ -6,6 +6,7 @@ Images: artwork module (javdatabase → MGS → DMM → forum → existing URLs)
 from __future__ import annotations
 
 import os
+import re
 from typing import Optional
 
 from . import actresses as actress_util
@@ -222,6 +223,50 @@ def apply_javdatabase_meta(item: dict, meta: dict) -> bool:
     return changed
 
 
+def _normalize_title_for_compare(title: str, actresses) -> str:
+    """去番号前缀、女优名与尾部标点，用于截断前缀比对。"""
+    acts = actress_util.clean_actresses(actresses)
+    body, _ = actress_util.title_for_translate(title, acts)
+    for name in reversed(acts):
+        body = re.sub(rf"[\s　、,・。．.!！?？]*{re.escape(name)}+\s*$", "", body)
+    return body.rstrip(" 、,。．.!！?？』」》—–-")
+
+
+def _forum_title_is_truncated_prefix(item: dict, official_title: str) -> bool:
+    """plwt 论坛标题若只是官方标题的截断前缀，返回 True。"""
+    if not str(item.get("source") or "").startswith("plwt"):
+        return False
+    current = str(item.get("title") or "").strip()
+    official = str(official_title or "").strip()
+    if not current or not official:
+        return False
+    cur = _normalize_title_for_compare(current, item.get("actresses"))
+    off = _normalize_title_for_compare(official, item.get("actresses"))
+    if not cur or not off or not off.startswith(cur):
+        return False
+    gap = sum(1 for ch in off if ch.isalnum()) - sum(1 for ch in cur if ch.isalnum())
+    # 差距过小视为正常标题差异，避免误回填
+    return gap >= 8
+
+
+def restore_truncated_forum_title(item: dict) -> bool:
+    """论坛标题截断时回填 javbus 官方完整标题并清空 titleZh。返回是否变更。"""
+    if not str(item.get("source") or "").startswith("plwt"):
+        return False
+    try:
+        html = javbus.fetch_page(str(item.get("id") or "").strip().upper())
+        detail = javbus.parse_page(html) if html else {}
+    except Exception as e:
+        print(f"[Enrich] JavBus title check {item.get('id')}: {e}")
+        return False
+    official = str(detail.get("title") or "").strip()
+    if not official or not _forum_title_is_truncated_prefix(item, official):
+        return False
+    item["title"] = official
+    item["titleZh"] = ""
+    return True
+
+
 def enrich_item(
     item: dict,
     save_dir: Optional[str] = None,
@@ -277,7 +322,10 @@ def enrich_item(
         elif javdatabase_meta:
             apply_javdatabase_meta(item, javdatabase_meta)
 
-    # 3) Download images with the independent established artwork source order.
+    # 3) plwt 论坛标题截断修复：论坛标题只是官方标题截断前缀时回填完整标题
+    restore_truncated_forum_title(item)
+
+    # 4) Download images with the independent established artwork source order.
     if download_images and save_dir:
         from . import artwork
 
