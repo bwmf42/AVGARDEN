@@ -531,7 +531,6 @@ func main() {
 	mux.HandleFunc("/api/version", versionHandler)
 	mux.HandleFunc("/api/status", statusHandler)
 	mux.HandleFunc("/api/weekly/scrape", weeklyScrapeHandler)
-	mux.HandleFunc("/api/scrape-status", scrapeStatusHandler)
 
 	// 前端静态文件 — 如果存在则 serve SPA (with Vue Router fallback)
 	if _, err := os.Stat(frontendDir); err == nil {
