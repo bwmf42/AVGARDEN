@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed slow dashboard loading: added gzip compression middleware to Go server, reducing 240KB JS payload to ~60KB and improving frontend load time from 3.4s to under 1s on local network.
 - Fixed duplicate Chinese downloads in `replace_chinese.py`: now checks queue and qBittorrent for any version of the video ID (not just Chinese-marked tasks) before adding Chinese replacements. When a video ID already exists in the system, its Weekly entry magnet is updated if unwatched, preventing redundant downloads while keeping the recommendation list current.
 - Fixed concurrent write race condition in `queue_state.json`: added file-level locking (`fcntl.flock`) across Queue API, Worker, and Launcher to prevent state corruption when multiple processes modify the queue simultaneously.
 - Fixed path traversal vulnerability in Python file operations: now use `os.path.realpath()` to resolve symlinks before validation, matching Go's `filepath.EvalSymlinks` security posture.

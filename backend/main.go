@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -464,6 +465,29 @@ func enableCORS(next http.Handler) http.Handler {
 	})
 }
 
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	Writer io.Writer
+}
+
+func (w gzipResponseWriter) Write(b []byte) (int, error) {
+	return w.Writer.Write(b)
+}
+
+func gzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+		gzr := gzipResponseWriter{ResponseWriter: w, Writer: gz}
+		next.ServeHTTP(gzr, r)
+	})
+}
+
 func main() {
 	logger.Println("Starting AV/GARDEN server...")
 	logger.Printf("basePath=%s port=%s db=%s queue=%s", basePath, serverPort, dbPath, queuePath)
@@ -507,6 +531,7 @@ func main() {
 	mux.HandleFunc("/api/version", versionHandler)
 	mux.HandleFunc("/api/status", statusHandler)
 	mux.HandleFunc("/api/weekly/scrape", weeklyScrapeHandler)
+	mux.HandleFunc("/api/scrape-status", scrapeStatusHandler)
 
 	// 前端静态文件 — 如果存在则 serve SPA (with Vue Router fallback)
 	if _, err := os.Stat(frontendDir); err == nil {
@@ -536,8 +561,8 @@ func main() {
 		})
 	}
 
-	// CORS 中间件
-	handler := enableCORS(mux)
+	// CORS + gzip 中间件
+	handler := gzipMiddleware(enableCORS(mux))
 
 	port := strings.TrimPrefix(serverPort, ":")
 
