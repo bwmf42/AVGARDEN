@@ -6,8 +6,10 @@ Parses product_detail/{code}/ for cover/samples and table fields:
 import os
 import re
 import urllib.parse
+from io import BytesIO
 
 from curl_cffi import requests
+from PIL import Image
 
 PROXY = os.environ.get("PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or None
 DOMAIN = "www.mgstage.com"
@@ -30,6 +32,9 @@ _COVER_RANK = {
     "pb_t1": 20,
     "pf_t1": 10,
 }
+_MIN_COVER_WIDTH = 300
+_MIN_COVER_HEIGHT = 400
+_COVER_SIZE_CACHE = {}
 
 _ROW_RE = re.compile(
     r"<tr[^>]*>(?:<!--.*?-->|\s)*<th[^>]*>(.*?)</th>\s*<td[^>]*>(.*?)</td>\s*</tr>",
@@ -51,6 +56,44 @@ def _proxies():
 
 def _norm_code(code):
     return (code or "").strip().upper()
+
+
+def cover_meets_min_size(url, min_width=_MIN_COVER_WIDTH, min_height=_MIN_COVER_HEIGHT):
+    """Reject MGS thumbnails while keeping unknown image responses usable."""
+    if not url or not isinstance(url, str):
+        return False
+    cache_key = (url, int(min_width), int(min_height))
+    if cache_key in _COVER_SIZE_CACHE:
+        return _COVER_SIZE_CACHE[cache_key]
+
+    ok = None
+    try:
+        response = requests.get(
+            url,
+            proxies=_proxies(),
+            headers=HEADERS,
+            impersonate="chrome110",
+            timeout=12,
+        )
+        try:
+            if response.status_code < 400 and response.content:
+                with Image.open(BytesIO(response.content)) as image:
+                    width, height = image.size
+                ok = width >= min_width and height >= min_height
+        finally:
+            response.close()
+    except Exception:
+        pass
+
+    if ok is None:
+        # These MGS filename variants are known thumbnail-sized fallbacks.
+        name = url.rsplit("/", 1)[-1].lower()
+        ok = not bool(re.search(r"(?:^|_)(?:pf_o1|pb_t1|pf_t1)_", name))
+
+    if len(_COVER_SIZE_CACHE) >= 256:
+        _COVER_SIZE_CACHE.clear()
+    _COVER_SIZE_CACHE[cache_key] = bool(ok)
+    return bool(ok)
 
 
 _PROFILE_AGE_RE = re.compile(r"(?:[（(]\s*)?\d{1,3}\s*歳(?:\s*[）)])?")

@@ -37,6 +37,7 @@
 # ---------------------------------------------------------------------------
   # 刮削 / 列表源
   - DOMAIN-SUFFIX,javbus.com,Global
+  - DOMAIN-SUFFIX,javdatabase.com,日本
   - DOMAIN-SUFFIX,busdmm.ink,Global
   - DOMAIN-SUFFIX,dmmsee.bond,Global
   # 98堂 / plwt（自动选美/港/新/台/韩；勿绑死单节点）

@@ -263,6 +263,7 @@ class TestPreferOrder(unittest.TestCase):
     def test_cover_only_prefers_mgs_before_dmm(self):
         orig_jdb = javdatabase.fetch_artwork
         orig_mgs = mgs.fetch_artwork
+        orig_mgs_quality = mgs.cover_meets_min_size
         orig_dmm = dmm.fetch_artwork
 
         try:
@@ -272,6 +273,7 @@ class TestPreferOrder(unittest.TestCase):
                 "cover": "https://image.mgstage.com/example/pb_e.jpg",
                 "samples": [],
             }
+            mgs.cover_meets_min_size = lambda url: True
             dmm.fetch_artwork = lambda code, samples=True: self.fail(
                 "DMM should not run after MGS cover hit"
             )
@@ -282,6 +284,41 @@ class TestPreferOrder(unittest.TestCase):
         finally:
             javdatabase.fetch_artwork = orig_jdb
             mgs.fetch_artwork = orig_mgs
+            mgs.cover_meets_min_size = orig_mgs_quality
+            dmm.fetch_artwork = orig_dmm
+
+    def test_low_res_mgs_cover_falls_through_to_dmm(self):
+        orig_jdb = javdatabase.fetch_artwork
+        orig_mgs = mgs.fetch_artwork
+        orig_mgs_quality = mgs.cover_meets_min_size
+        orig_dmm = dmm.fetch_artwork
+
+        try:
+            javdatabase.fetch_artwork = lambda code: None
+            mgs.fetch_artwork = lambda code: {
+                "source": "mgs",
+                "cover": "https://image.mgstage.com/example/pf_o1.jpg",
+                "samples": [],
+            }
+            mgs.cover_meets_min_size = lambda url: False
+
+            def fake_dmm(code, samples=True):
+                self.assertFalse(samples)
+                return {
+                    "source": "dmm",
+                    "cover": "https://pics.dmm.co.jp/example/large.jpg",
+                    "samples": [],
+                }
+
+            dmm.fetch_artwork = fake_dmm
+            cover, samples, src = prefer_urls("LOW-001", cover_only=True)
+            self.assertIn("large.jpg", cover)
+            self.assertEqual(samples, [])
+            self.assertEqual(src, "mgs+dmm")
+        finally:
+            javdatabase.fetch_artwork = orig_jdb
+            mgs.fetch_artwork = orig_mgs
+            mgs.cover_meets_min_size = orig_mgs_quality
             dmm.fetch_artwork = orig_dmm
 
     def test_cover_only_dmm_does_not_probe_samples(self):

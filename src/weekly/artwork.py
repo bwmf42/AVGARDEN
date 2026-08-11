@@ -68,15 +68,32 @@ def resolve(code, proxy=None, cover_only=False):
                     return merged
             return art
 
+    dmm_attempted = False
     if use_mgs_img:
         try:
             art = mgs.fetch_artwork(code)
+            if art and art.get("cover") and not mgs.cover_meets_min_size(art["cover"]):
+                # Keep usable MGS samples, but force a better cover candidate.
+                art = dict(art)
+                art["cover"] = ""
+                if not skip_dmm:
+                    dmm_art = dmm.fetch_artwork(code, samples=not cover_only)
+                    dmm_attempted = True
+                    if dmm_art:
+                        merged = dict(art)
+                        if dmm_art.get("cover"):
+                            merged["cover"] = dmm_art["cover"]
+                        if not merged.get("samples") and dmm_art.get("samples"):
+                            merged["samples"] = dmm_art["samples"]
+                        if merged.get("cover") or merged.get("samples"):
+                            merged["source"] = "mgs+dmm"
+                            art = merged
             if art and (art.get("cover") or (art.get("samples") and not cover_only)):
                 return art
         except Exception as e:
             print(f"[artwork] MGS image {code}: {e}")
 
-    if not skip_dmm:
+    if not skip_dmm and not dmm_attempted:
         art = dmm.fetch_artwork(code, samples=not cover_only)
         if art and (art.get("cover") or art.get("samples")):
             return art
