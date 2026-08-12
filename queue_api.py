@@ -6,7 +6,7 @@ AV/GARDEN Queue API v7 —
 """
 import os, sys, json, signal, time, subprocess, re, shutil, threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import unquote, urlparse
 
 from process_control import cancel_request_age, cleanup_stale_cancel_requests, clear_cancel_request, request_cancel
 from main_video import find_main_video
@@ -788,10 +788,6 @@ def normalize_online_code(raw):
     return normalize_video_id(unquote(str(raw or "")))
 
 
-def online_file_url(code, filename):
-    return "/file/" + "/".join(quote(part) for part in ["__online__", code.upper(), filename])
-
-
 def online_code_dir(code):
     """Return safe path for online code directory with realpath resolution."""
     normalized = code.upper()
@@ -877,91 +873,64 @@ def online_cleanup_loop(stop_event=None):
             log(f"Download source TTL cleanup failed: {e}")
 
 
-def download_online_cover(code, image_url):
-    if not image_url:
-        return ""
-    code = code.upper()
-    filename = f"{code}-cover.jpg"
-    try:
-        local_dir = online_code_dir(code)
-    except ValueError as e:
-        log(f"Invalid online code path {code}: {e}")
-        return image_url
-    local_path = os.path.join(local_dir, filename)
-    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-        return online_file_url(code, filename)
-    try:
-        from curl_cffi import requests
-        from src.weekly import javbus
-        javbus.set_proxy(ONLINE_PROXY)
-        os.makedirs(local_dir, exist_ok=True)
-        headers = dict(javbus.HEADERS)
-        headers["Referer"] = "https://www.javbus.com/"
-        resp = requests.get(
-            image_url,
-            proxies=javbus._proxies(),
-            headers=headers,
-            impersonate="chrome110",
-            timeout=15,
-        )
-        try:
-            if resp.status_code >= 400 or not resp.content:
-                return image_url
-            with open(local_path, "wb") as f:
-                f.write(resp.content)
-            return online_file_url(code, filename)
-        finally:
-            resp.close()
-    except Exception as e:
-        log(f"Online cover download failed for {code}: {e}")
-        return image_url
-
-
 def build_online_detail(raw_code):
     code = normalize_online_code(raw_code)
     if not code:
         return None, "invalid code"
     try:
         from download_source import resolve_download_source
-        from src.weekly import artwork, javbus
-        javbus.set_proxy(ONLINE_PROXY)
-        artwork.set_proxy(ONLINE_PROXY)
-        html = javbus.fetch_page(code)
-        if not html:
-            return None, "detail not found"
-        item = javbus.parse_page(html) or {}
-        item["id"] = code
-        if not item.get("title"):
-            item["title"] = code
-        item.setdefault("titleZh", "")
-        item.setdefault("titleJp", "")
-        item.setdefault("releaseDate", "")
-        item.setdefault("duration", "")
-        item.setdefault("actresses", [])
-        item.setdefault("genres", [])
-        item.setdefault("fanarts", [])
-        item.setdefault("hasChinese", False)
-        item.setdefault("size", "")
-        item["source"] = "online"
-        item["downloaded"] = False
+        from src.weekly import enrich
 
-        remote_cover = item.get("cover", "")
-        if remote_cover:
-            item["remoteCover"] = remote_cover
+        item = {
+            "id": code,
+            "title": code,
+            "titleZh": "",
+            "titleJp": "",
+            "cover": "",
+            "poster": "",
+            "releaseDate": "",
+            "duration": "",
+            "actresses": [],
+            "genres": [],
+            "fanarts": [],
+            "hasChinese": False,
+            "size": "",
+            "source": "online",
+            "downloaded": False,
+        }
+        enrich.enrich_item(
+            item,
+            save_dir=ONLINE_DIR,
+            proxy=ONLINE_PROXY,
+            download_images=True,
+        )
 
-        # Cover/previews: MGS first, DMM CDN rules, else JavBus URLs
-        artwork.download_for_item(item, ONLINE_DIR)
-        if item.get("cover"):
-            item["poster"] = item["cover"]
-        else:
-            item.setdefault("poster", "")
-            if remote_cover:
-                item["cover"] = download_online_cover(code, remote_cover)
-                item["poster"] = item["cover"]
-
-        source = resolve_download_source(code, proxy=ONLINE_PROXY)
+        source = {}
+        try:
+            source = resolve_download_source(code, proxy=ONLINE_PROXY) or {}
+        except Exception as source_error:
+            log(f"Online download source lookup failed for {code}: {source_error}")
         item["magnet"] = source.get("magnet") or ""
         item["magnetSource"] = source.get("source") or ""
+        item["hasChinese"] = item["magnetSource"] in (
+            "plwt_chinese",
+            "sukebei_chinese",
+        )
+
+        metadata_found = any((
+            item.get("title") and item.get("title") != code,
+            item.get("actresses"),
+            item.get("genres"),
+            item.get("releaseDate"),
+            item.get("duration"),
+            item.get("maker"),
+            item.get("series"),
+            item.get("label"),
+        ))
+        artwork_found = bool(item.get("cover") or item.get("poster") or item.get("fanarts"))
+        download_found = bool(item.get("magnet"))
+        if not (metadata_found or artwork_found or download_found):
+            return None, "detail not found"
         return item, ""
     except Exception as e:
         log(f"Online detail lookup failed for {code}: {e}")
