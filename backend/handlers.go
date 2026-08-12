@@ -2032,6 +2032,10 @@ func blockGenreHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func getQBCookie() string {
+	if strings.TrimSpace(qbPass) == "" {
+		logger.Printf("QBITTORRENT_PASSWORD is not configured")
+		return ""
+	}
 	resp, err := qbHTTPClient.PostForm(qbAPI+"/api/v2/auth/login",
 		url.Values{"username": {qbUser}, "password": {qbPass}})
 	if err != nil {
@@ -2641,6 +2645,46 @@ func weeklyScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(body)
+}
+
+func scrapeStatusFallback() []byte {
+	statusDir := strings.TrimSpace(os.Getenv("STATUS_DIR"))
+	if statusDir == "" {
+		statusDir = "/db/status"
+	}
+	path := strings.TrimSpace(os.Getenv("SCRAPE_PIPELINE_PATH"))
+	if path == "" {
+		path = filepath.Join(statusDir, "scrape_pipeline.json")
+	}
+	if body, err := ioutil.ReadFile(path); err == nil && json.Valid(body) {
+		return body
+	}
+	return []byte(`{"running":false,"phase":"idle","phase_label":"空闲","progress":{"current":0,"total":0,"code":""},"last_error":"","last_summary":"","stats":{}}`)
+}
+
+func scrapeStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	resp, err := queueHTTPClient.Get(strings.TrimRight(queueAPI, "/") + "/api/scrape-status")
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if body, readErr := io.ReadAll(resp.Body); readErr == nil && json.Valid(body) {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.Write(body)
+				return
+			}
+		}
+	}
+
+	if err != nil {
+		logger.Printf("Scrape status Queue API unavailable, using shared file: %v", err)
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Write(scrapeStatusFallback())
 }
 
 func loadQueueAPIItems() ([]queueAPIItem, error) {

@@ -51,6 +51,8 @@ list_identity_files() {
         metadata.py
         video_id.py
         weekly_updater.py
+        run_scrape_followups.py
+        unwatched_chinese_refill.py
         download_source.py
         heal_runner.py
         src
@@ -72,6 +74,8 @@ list_identity_files() {
         metadata.py
         video_id.py
         weekly_updater.py
+        run_scrape_followups.py
+        unwatched_chinese_refill.py
         download_source.py
         heal_runner.py
         backend

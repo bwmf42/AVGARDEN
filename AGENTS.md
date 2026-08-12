@@ -80,13 +80,13 @@
 - 在线搜索、搜索结果详情、搜索框添加和 Worker 必须复用 `/db/download_source_cache.json` 的受锁解析结果；搜索详情离开且未入队时删除该番号缓存，已入队时保留给 Worker，默认 24 小时失效。
 - 98堂站内搜索每个番号只请求一次，并通过跨进程槽位保持至少 31 秒间隔；不得为中文/普通版连续搜索两次。只接受 `forum-103` 的精确番号结果，普通版不从 98堂取。
 - Sukebei 只接受精确番号：有中文标记时按文件大小降序取最大；完全无中文时按上传时间升序取最早，不按做种数、可信标记或容量选择原版。
-- 手动刮削按钮触发的是 worker 容器内的 `weekly_updater.py`，不要让 Go server 直接依赖 Python 环境。
+- 手动刮削按钮触发 worker 容器内的 `weekly_updater.py`，成功后运行未看中文磁链补链；定时任务复用同一条流水线。Go server 只代理启动与状态，不直接依赖 Python 环境。
 - 屏蔽演员、屏蔽标签、收藏演员、标题关键词是持久化配置，改动前要确认对应接口和文件。
 
 ## 每日推荐列表与图片刮削规则
 
 - **列表源（默认）**：98堂 `https://plwt.kpqq4.com/forum-37-1.html`（`WEEKLY_FORUM_FID=37`，默认 **3 页** `WEEKLY_MAX_PAGES`）。实现：`sources.get_recent` → `chinese_forum.get_weekly_list`。
-- **中文资源日常**：同站 `forum-103`，默认 **2 页**（`CHINESE_FORUM_DAILY_PAGES`），`replace_chinese` 在 weekly 之后跑；缺中文才进帖取磁链。
+- **未看中文补链**：`weekly_updater.py` 成功后逐个精确搜索 `forum-103`，复用跨进程 31/60 秒槽位，只回写 `weekly.json` 的中文磁链字段；不创建下载任务。库内 `replace_chinese` 仍由独立 `merge_watcher` 调度，不属于刮削流水线。
 - JavBus 访问代码保留但当前不参与下载磁链候选。手动/搜索下载磁链按 98堂 forum-103 精确搜索 → Sukebei 选择规则执行；每日中文替换仍按 forum-103 列表命中后进帖。
 - 每日推荐封面和详情预览图应尽量本地化到 `/data/__weekly__/{番号}/`，前端优先使用 `/file/__weekly__/...`，避免用户浏览时再等外站图片。
 - 标题补全或规范化没有产生实际变化时不得重写 `weekly.json`，避免无意义失效缓存和已审核的维护 manifest。
@@ -141,11 +141,13 @@ Python 语法检查：
 
 ```bash
 PYTHONPYCACHEPREFIX=/private/tmp/av-garden-pycache python3 -m py_compile \
-  worker.py queue_api.py launcher.py weekly_updater.py metadata.py replace_chinese.py \
+  worker.py queue_api.py launcher.py weekly_updater.py run_scrape_followups.py \
+  unwatched_chinese_refill.py metadata.py replace_chinese.py \
   plwt_art_backfill.py weekly_backfill_details.py \
   src/weekly/artwork.py src/weekly/javdatabase.py src/weekly/dmm.py src/weekly/mgs.py \
   src/weekly/enrich.py src/weekly/sukebei.py
 python3 -m unittest test_artwork_sources -v
+python3 -m unittest test_unwatched_chinese_refill -v
 ```
 
 Compose 部署验证：

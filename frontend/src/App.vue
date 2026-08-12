@@ -17,7 +17,7 @@
 
         <div class="scrape-card">
           <strong>周推荐刮削</strong>
-          <p>手动更新每日推荐会触发 worker 容器内的 weekly_updater.py。</p>
+          <p :class="{ 'scrape-error': scrapeError }">{{ scrapeMessage }}</p>
           <button type="button" class="sidebar-action" :disabled="scrapeRunning" @click="runWeeklyScrape">
             {{ scrapeRunning ? '刮削中...' : '手动刮削' }}
           </button>
@@ -186,6 +186,7 @@
 
 <script>
 import { normalizeVideoId } from './utils/videoId'
+import { scrapeStatusMessage } from './scrapeStatus'
 
 function normalizeStatusID(id) {
   return String(id || '').trim().toUpperCase()
@@ -208,6 +209,9 @@ export default {
       inputContent: '',
       isAdding: false,
       scrapeRunning: false,
+      scrapeMessage: '正在读取刮削状态...',
+      scrapeError: false,
+      scrapeTimer: null,
       toast: { visible: false, msg: '', type: 'info' },
       statusBar: { visible: false, items: [] },
       statusTimer: null,
@@ -264,15 +268,18 @@ export default {
     window.addEventListener('av-garden-refresh-status', this.fetchStatus)
     this.fetchStatus()
     this.fetchSystemStatus()
+    this.fetchScrapeStatus()
     this.statusTimer = setInterval(() => {
       this.fetchStatus()
       this.fetchSystemStatus()
     }, 60000)
+    this.scrapeTimer = setInterval(this.fetchScrapeStatus, 5000)
   },
   beforeUnmount() {
     window.removeEventListener('av-garden-toast', this.onToast)
     window.removeEventListener('av-garden-refresh-status', this.fetchStatus)
     if (this.statusTimer) clearInterval(this.statusTimer)
+    if (this.scrapeTimer) clearInterval(this.scrapeTimer)
   },
   methods: {
     onToast(e) {
@@ -392,6 +399,16 @@ export default {
         }
       } catch (e) {}
     },
+    async fetchScrapeStatus() {
+      try {
+        const resp = await fetch('/api/scrape-status', { cache: 'no-store' })
+        if (!resp.ok) return
+        const status = await resp.json()
+        this.scrapeRunning = !!status.running
+        this.scrapeError = !status.running && !!status.last_error
+        this.scrapeMessage = scrapeStatusMessage(status)
+      } catch (e) {}
+    },
     checkLabel(name) {
       return {
         translation: '翻译服务',
@@ -449,18 +466,23 @@ export default {
     async runWeeklyScrape() {
       if (this.scrapeRunning) return
       this.scrapeRunning = true
+      this.scrapeError = false
+      this.scrapeMessage = '正在启动每日推荐刮削...'
       try {
         const resp = await fetch('/api/weekly/scrape', { method: 'POST' })
         const data = await resp.json().catch(() => ({}))
         if (!resp.ok) {
           this.showToast(data.message || '周推荐刮削启动失败', 'warn')
+          await this.fetchScrapeStatus()
           return
         }
         this.showToast(data.message || '周推荐刮削已开始', 'info')
+        await this.fetchScrapeStatus()
       } catch (e) {
         this.showToast('刮削请求失败，请检查服务状态', 'warn')
-      } finally {
         this.scrapeRunning = false
+        this.scrapeError = true
+        this.scrapeMessage = '刮削请求失败，请检查服务状态。'
       }
     }
   }
@@ -607,6 +629,10 @@ body {
   color: var(--muted-color);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.scrape-card p.scrape-error {
+  color: var(--danger-color);
 }
 
 .sidebar-action {

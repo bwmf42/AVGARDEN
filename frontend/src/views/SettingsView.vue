@@ -11,7 +11,7 @@
         <div class="section scrape-section">
             <div class="scrape-copy">
                 <h2>周推荐刮削</h2>
-                <p>{{ scrapeMessage }}</p>
+                <p :class="{ 'scrape-error': scrapeError }">{{ scrapeMessage }}</p>
             </div>
             <button class="scrape-btn" :disabled="scrapeRunning" @click="runWeeklyScrape">
                 {{ scrapeRunning ? '刮削中...' : '手动刮削' }}
@@ -124,6 +124,8 @@
 </template>
 
 <script>
+import { scrapeStatusMessage } from '../scrapeStatus'
+
 const ENDPOINTS = {
     actresses: '/api/block-actress/',
     genres: '/api/block-genre/',
@@ -142,7 +144,9 @@ export default {
             favs: [],
             keywords: [],
             scrapeRunning: false,
-            scrapeMessage: '手动更新每日推荐，适合错过当天自动刮削时使用。',
+            scrapeMessage: '正在读取刮削状态...',
+            scrapeError: false,
+            scrapeTimer: null,
             blockCode: '',
             blockCodeBusy: false,
             blockCodeMsg: '',
@@ -180,6 +184,11 @@ export default {
     async created() {
         await this.loadAll()
         await this.loadP115()
+        await this.fetchScrapeStatus()
+        this.scrapeTimer = setInterval(this.fetchScrapeStatus, 5000)
+    },
+    beforeUnmount() {
+        if (this.scrapeTimer) clearInterval(this.scrapeTimer)
     },
     methods: {
         async loadAll() {
@@ -312,20 +321,33 @@ export default {
         async runWeeklyScrape() {
             if (this.scrapeRunning) return
             this.scrapeRunning = true
-            this.scrapeMessage = '正在抓取并更新周推荐，完成前不要重复点击。'
+            this.scrapeError = false
+            this.scrapeMessage = '正在启动每日推荐刮削...'
             try {
                 const resp = await fetch('/api/weekly/scrape', { method: 'POST' })
                 const data = await resp.json().catch(() => ({}))
                 if (!resp.ok) {
                     this.scrapeMessage = data.message || '刮削失败，请稍后重试。'
+                    await this.fetchScrapeStatus()
                     return
                 }
-                this.scrapeMessage = data.message || '周推荐刮削完成。'
+                this.scrapeMessage = data.message || '周推荐刮削已开始。'
+                await this.fetchScrapeStatus()
             } catch (e) {
-                this.scrapeMessage = '刮削请求失败，请检查服务状态。'
-            } finally {
                 this.scrapeRunning = false
+                this.scrapeError = true
+                this.scrapeMessage = '刮削请求失败，请检查服务状态。'
             }
+        },
+        async fetchScrapeStatus() {
+            try {
+                const resp = await fetch('/api/scrape-status', { cache: 'no-store' })
+                if (!resp.ok) return
+                const status = await resp.json()
+                this.scrapeRunning = !!status.running
+                this.scrapeError = !status.running && !!status.last_error
+                this.scrapeMessage = scrapeStatusMessage(status)
+            } catch (e) { /* keep the last known state */ }
         },
         browseGenre(tag) {
             const name = String(tag || '').trim()
@@ -501,6 +523,10 @@ export default {
   color: var(--muted-color);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.scrape-copy p.scrape-error {
+  color: var(--danger-color);
 }
 
 .add-row {

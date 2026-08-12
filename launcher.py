@@ -12,6 +12,13 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from queue_store import append_unique
 from src.log_writer import write as log_write
+from src.scrape_pipeline import (
+    PHASE_WEEKLY,
+    begin_pipeline,
+    finish_pipeline,
+    interrupt_running_pipeline,
+    read_status as read_scrape_status,
+)
 
 WORKER_PY = "/app/worker.py"
 QUEUE_API_PY = "/app/queue_api.py"
@@ -91,7 +98,11 @@ def daily_update_completed_on(day):
         if os.path.exists(log_file):
             with open(log_file, "r") as f:
                 for line in f:
-                    if line.startswith(day) and "[DailyUpdater]" in line and "刮削完成" in line:
+                    if (
+                        line.startswith(day)
+                        and "[DailyUpdater]" in line
+                        and "刮削完成（含未看中文补链）" in line
+                    ):
                         return True
     except Exception:
         pass
@@ -546,6 +557,10 @@ def daily_updater():
             log(f"Daily updater: {run_day} already completed, skipping")
             time.sleep(60)
             continue
+        if not begin_pipeline(PHASE_WEEKLY, trigger="daily"):
+            log("Daily updater: another scrape pipeline is running; retry later")
+            time.sleep(3600)
+            continue
         log("Running weekly_updater...")
         scrape_ok = False
         try:
@@ -556,29 +571,50 @@ def daily_updater():
                 check=False,
             )
             if proc.returncode == 0:
-                log_write("DailyUpdater", "刮削完成 (weekly_updater)")
-                mark_daily_update_completed(run_day)
+                log_write("DailyUpdater", "每日推荐阶段完成 (weekly_updater)")
                 scrape_ok = True
             else:
                 msg = f"weekly_updater exit={proc.returncode}（详见 docker logs 中 WeeklyUpdater/Sources/ChineseForum）"
                 log(msg)
                 log_write("DailyUpdater", f"刮削失败: exit={proc.returncode} 见容器日志")
+                finish_pipeline(summary="每日推荐刮削未完成", error=msg)
         except subprocess.TimeoutExpired:
             log("weekly_updater timed out after 7200s")
             log_write("DailyUpdater", "刮削失败: 超时 7200s")
+            finish_pipeline(summary="每日推荐刮削未完成", error="weekly_updater 超时 7200s")
         except Exception as e:
             log(f"weekly_updater failed: {e}")
             log_write("DailyUpdater", f"刮削失败: {e}")
-        # 无论刮削成败都补译（偶发 DeepSeek 失败 / 中断后的缺口）
-        run_titlezh_retry("after-scrape" if scrape_ok else "after-scrape-fail")
+            finish_pipeline(summary="每日推荐刮削未完成", error=str(e))
         if not scrape_ok:
             time.sleep(3600)
             continue
-        log("Running replace_chinese...")
+        log("Running safe unwatched Chinese magnet follow-up...")
         try:
-            subprocess.run(["/app/venv/bin/python3", "/app/replace_chinese.py"], timeout=3600)
+            followup = subprocess.run(
+                ["/app/venv/bin/python3", "/app/run_scrape_followups.py"],
+                timeout=3900,
+                check=False,
+            )
+            if followup.returncode == 0:
+                mark_daily_update_completed(run_day)
+                log_write("DailyUpdater", "刮削完成（含未看中文补链）")
+            else:
+                log(f"unwatched Chinese follow-up failed: exit={followup.returncode}")
+                log_write("DailyUpdater", f"未看中文补链失败: exit={followup.returncode}")
+                status = read_scrape_status()
+                if status.get("running"):
+                    finish_pipeline(
+                        summary="每日推荐已更新，但未看中文补链未完成",
+                        error=str(status.get("last_error") or f"follow-up exit={followup.returncode}"),
+                        stats=status.get("stats") if isinstance(status.get("stats"), dict) else {},
+                    )
+        except subprocess.TimeoutExpired:
+            finish_pipeline(summary="每日推荐已更新", error="未看中文补链超时 3900s")
+            log("unwatched Chinese follow-up timed out after 3900s")
         except Exception as e:
-            log(f"replace_chinese failed: {e}")
+            finish_pipeline(summary="每日推荐已更新", error=f"未看中文补链异常: {e}")
+            log(f"unwatched Chinese follow-up failed: {e}")
         time.sleep(3600)
 
 
@@ -611,6 +647,10 @@ def main():
             log("no transient failures to recover")
     except Exception as e:
         log(f"recover_transient_failures: {e}")
+
+    if interrupt_running_pipeline():
+        log("cleared interrupted scrape pipeline state after Worker restart")
+        log_write("Launcher", "Worker 重启，上一轮刮削流程已标记为中断")
 
     log("Starting AV/GARDEN services...")
     

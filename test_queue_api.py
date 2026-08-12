@@ -41,6 +41,7 @@ class QueueAPITest(unittest.TestCase):
             "FAILED_QUEUE_JSON_PATH": os.path.join(root, "failed_queue.json"),
             "FAILED_QUEUE_PATH": os.path.join(root, "failed_queue.txt"),
             "RETRY_PATH": os.path.join(root, "retry_counts.json"),
+            "DOWNLOAD_TARGETS_PATH": os.path.join(root, "download_targets.json"),
         }.items():
             self.stack.enter_context(patch.object(queue_api, name, value))
 
@@ -69,6 +70,19 @@ class QueueAPITest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(len(payload), 3)
         self.assertEqual(qb_api.call_count, 1)
+
+    def test_scrape_status_is_read_only(self):
+        with patch.object(queue_api, "is_pipeline_running", return_value=True), patch.object(
+            queue_api, "read_scrape_status", return_value={
+                "running": True,
+                "phase": "unwatched_chinese",
+                "phase_label": "未看中文补链中",
+            },
+        ):
+            status, payload = self.request("/api/scrape-status")
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["running"])
+        self.assertEqual(payload["phase_label"], "未看中文补链中")
 
     def test_post_normalizes_compact_numeric_leading_code(self):
         with patch.object(queue_api, "qb_api", return_value=[]):

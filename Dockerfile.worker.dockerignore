@@ -23,6 +23,8 @@ cfg/configs.json
 !weekly_store.py
 !weekly_watched_store.py
 !weekly_updater.py
+!run_scrape_followups.py
+!unwatched_chinese_refill.py
 !plwt_art_backfill.py
 !plwt_genre_normalize.py
 !plwt_actress_fix.py

@@ -30,6 +30,13 @@ from video_id import (
     safe_video_dir,
 )
 from weekly_store import atomic_write_json, update_json as update_weekly_json, weekly_update_lock
+from src.scrape_pipeline import (
+    PHASE_WEEKLY,
+    begin_pipeline,
+    finish_pipeline,
+    is_pipeline_running,
+    read_status as read_scrape_status,
+)
 
 QUEUE_PATH = os.environ.get("QUEUE_PATH", "/db/download_queue.txt")
 STATE_PATH = os.environ.get("STATE_PATH", "/db/queue_state.json")
@@ -402,26 +409,54 @@ def is_weekly_scrape_running():
     if weekly_scrape_proc and weekly_scrape_proc.poll() is None:
         return True
     weekly_scrape_proc = None
-    return False
+    return is_pipeline_running()
 
 def _watch_weekly_scrape(proc):
-    """后台等待 weekly_updater 子进程结束，写完成/失败日志"""
+    """Wait for weekly_updater, then run the safe unwatched-CN follow-up."""
     try:
         proc.wait(timeout=7200)
         rc = proc.returncode
         if rc == 0:
             log("Manual weekly scrape finished successfully")
             log_write("ManualScrape", "刮削完成 (weekly_updater)")
+            followup = subprocess.run(
+                ["/app/venv/bin/python3", "/app/run_scrape_followups.py"],
+                timeout=3900,
+                check=False,
+            )
+            if followup.returncode == 0:
+                log("Manual scrape follow-up finished successfully")
+                log_write("ManualScrape", "未看中文补链完成")
+            else:
+                log(f"Manual scrape follow-up failed (exit {followup.returncode})")
+                log_write("ManualScrape", f"未看中文补链失败 (exit {followup.returncode})")
+                status = read_scrape_status()
+                if status.get("running"):
+                    finish_pipeline(
+                        summary="每日推荐已更新，但未看中文补链未完成",
+                        error=str(status.get("last_error") or f"follow-up exit={followup.returncode}"),
+                        stats=status.get("stats") if isinstance(status.get("stats"), dict) else {},
+                    )
         else:
             log(f"Manual weekly scrape failed (exit {rc})")
             log_write("ManualScrape", f"刮削失败 (exit {rc})")
+            finish_pipeline(
+                summary="每日推荐刮削未完成",
+                error=f"weekly_updater exit={rc}",
+            )
     except subprocess.TimeoutExpired:
-        proc.kill()
-        log("Manual weekly scrape timed out, killed")
-        log_write("ManualScrape", "刮削超时，已终止")
+        if proc.poll() is None:
+            proc.kill()
+            message = "每日推荐刮削超时，已终止"
+        else:
+            message = "未看中文补链超时，已终止"
+        finish_pipeline(summary="刮削流程未完成", error=message)
+        log(message)
+        log_write("ManualScrape", message)
     except Exception as e:
         log(f"Manual weekly scrape watcher error: {e}")
         log_write("ManualScrape", f"刮削异常: {e}")
+        finish_pipeline(summary="刮削流程未完成", error=str(e))
 
 
 def start_weekly_scrape():
@@ -429,12 +464,19 @@ def start_weekly_scrape():
     with weekly_scrape_lock:
         if is_weekly_scrape_running():
             return False
+        if not begin_pipeline(PHASE_WEEKLY, trigger="manual"):
+            return False
         log_write("ManualScrape", "刮削开始 (weekly_updater)")
-        weekly_scrape_proc = subprocess.Popen(
-            ["/app/venv/bin/python3", "/app/weekly_updater.py"],
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-        )
+        try:
+            weekly_scrape_proc = subprocess.Popen(
+                ["/app/venv/bin/python3", "/app/weekly_updater.py"],
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+            )
+        except Exception as e:
+            finish_pipeline(summary="每日推荐刮削未启动", error=str(e))
+            log_write("ManualScrape", f"刮削启动失败: {e}")
+            return False
         # 后台监控子进程，结束后写日志
         t = threading.Thread(target=_watch_weekly_scrape, args=(weekly_scrape_proc,), daemon=True)
         t.start()
@@ -1091,6 +1133,11 @@ class QueueHandler(BaseHTTPRequestHandler):
                 self._json({"ok": ok, "message": msg, **pub}, 200 if ok else 400)
             except Exception as e:
                 self._json({"ok": False, "message": str(e)}, 500)
+            return
+
+        if path == "/api/scrape-status":
+            is_pipeline_running()
+            self._json(read_scrape_status())
             return
 
         if path != "/api/queue":

@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Hardened media replacement and download state handling: single-file torrents can never delete the media root, completed output moves refuse overwrites, optional scraper fields no longer abort metadata generation, watched-state reads use the canonical locked store, and database/status/current-download failures no longer masquerade as missing media or lose concurrent updates.
+- Removed the built-in qBittorrent weak password fallback across Python, Go, health checks, and the example Compose file; deployments must provide `QBITTORRENT_PASSWORD` explicitly.
 - Online code search now uses the same MGS, DMM, javdatabase, and artwork fallback chain as Weekly details instead of failing immediately when JavBus has no page; metadata and artwork results survive temporary download-source lookup errors, and the route has enough time to finish the rate-limited source chain.
 - Unified Weekly, genre, search, and detail title display so incomplete `titleZh` values no longer hide the complete source title.
 - Fixed the Worker container entrypoint to use the bundled virtualenv Python, which contains the project's runtime dependencies; the system Python could fail at startup with missing modules such as `curl_cffi`.
@@ -31,6 +33,7 @@
 
 ### Changed
 
+- Manual and scheduled Weekly scrapes now share one observable pipeline: `weekly_updater.py` is followed only by exact 98堂 Chinese-magnet refill for unwatched entries, with shared 31/60-second search throttling and live phase/progress in the pink-white UI. This follow-up only updates approved fields in `weekly.json`; it does not create qB/115 tasks, run library replacement, or modify media files.
 - Removed an unused Go Feishu test handler and obsolete local deployment/test backup files; the existing Worker notification path remains the single Feishu integration.
 - Changed `deploy.sh` password handling: use `sshpass -e` (reads `SSHPASS` env var) instead of `-p` CLI argument to avoid exposing password in process lists.
 - Changed Docker build output: deployment now buffers build logs to temporary NAS file, printing only summary on success and tail on failure, avoiding long BuildKit output transmission.

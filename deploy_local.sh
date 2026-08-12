@@ -231,7 +231,8 @@ if [ "$DEPLOY_HOT" = "1" ] && [ "$HOT_WORKER" = "1" ]; then
   else
     for rel in \
       worker.py queue_api.py queue_store.py launcher.py heal_runner.py \
-      download_source.py requirements.txt \
+      download_source.py weekly_updater.py run_scrape_followups.py \
+      unwatched_chinese_refill.py requirements.txt \
       src/p115_offline.py src/log_writer.py
     do
       if [ -f "$ROOT/$rel" ]; then

@@ -332,7 +332,8 @@ if [ "$DEPLOY_HOT" = "1" ] && [ "${HOT_WORKER:-0}" = "1" ]; then
         # 把 NAS 现役目录里的 Python 源码拷进容器 /app（跳过镜像重建）
         for rel in \
             worker.py queue_api.py queue_store.py launcher.py heal_runner.py \
-            download_source.py weekly_updater.py plwt_translate_missing.py \
+            download_source.py weekly_updater.py run_scrape_followups.py \
+            unwatched_chinese_refill.py plwt_translate_missing.py \
             requirements.txt \
             src/p115_offline.py src/log_writer.py src/failure_recovery.py \
             tools/maintenance/link_115_aiwei_into_data_root.py \

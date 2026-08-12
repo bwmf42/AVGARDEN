@@ -36,7 +36,7 @@ var (
 	queueAPI             = getEnv("QUEUE_API_URL", "http://127.0.0.1:31473")
 	qbAPI                = getEnv("QBITTORRENT_URL", "http://127.0.0.1:8880")
 	qbUser               = getEnv("QBITTORRENT_USERNAME", "admin")
-	qbPass               = getEnv("QBITTORRENT_PASSWORD", "adminadmin")
+	qbPass               = getEnv("QBITTORRENT_PASSWORD", "")
 	blockedActressesFile = getEnv("BLOCKED_ACTRESSES_FILE", "/db/blocked_actresses.txt")
 	blockedGenresFile    = getEnv("BLOCKED_GENRES_FILE", "/db/blocked_genres.txt")
 	favActressesFile     = getEnv("FAV_ACTRESSES_FILE", "/db/favorite_actresses.txt")
@@ -530,6 +530,7 @@ func main() {
 	mux.HandleFunc("/api/queue-status", queueStatusHandler)
 	mux.HandleFunc("/api/version", versionHandler)
 	mux.HandleFunc("/api/status", statusHandler)
+	mux.HandleFunc("/api/scrape-status", scrapeStatusHandler)
 	mux.HandleFunc("/api/weekly/scrape", weeklyScrapeHandler)
 
 	// 前端静态文件 — 如果存在则 serve SPA (with Vue Router fallback)
