@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fill missing titleZh via DeepSeek; strip actress names from titleZh.
+"""Fill missing titleZh via the configured translation service; strip actress names.
 
 Safe to run on a schedule (uses weekly_update_lock).
 """

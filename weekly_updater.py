@@ -24,6 +24,11 @@ DS_MODEL = {
     "deepseek-chat": "deepseek-v4-flash",
     "deepseek-reasoner": "deepseek-v4-pro",
 }.get(_DS_MODEL_RAW, _DS_MODEL_RAW)
+# Prefer the configured OpenAI-compatible relay (for example Hermes/code77).
+# DeepSeek remains a compatibility fallback for installations without relay settings.
+TRANSLATE_API_BASE = os.environ.get("TRANSLATE_API_BASE", "").strip().rstrip("/")
+TRANSLATE_API_KEY = os.environ.get("TRANSLATE_API_KEY", "").strip()
+TRANSLATE_MODEL = (os.environ.get("TRANSLATE_MODEL") or "gpt-5.4").strip()
 # Per-title retries + exponential backoff on 429/5xx
 DS_TRANSLATE_RETRIES = int(os.environ.get("DS_TRANSLATE_RETRIES", "4"))
 DS_TRANSLATE_TIMEOUT = float(os.environ.get("DS_TRANSLATE_TIMEOUT", "45"))
@@ -41,19 +46,32 @@ def _http_status(exc):
     return None
 
 
-def _deepseek_chat(messages, temperature=0.3):
+def translation_provider():
+    """Return the provider name and model used by Weekly translation."""
+    if TRANSLATE_API_BASE and TRANSLATE_API_KEY:
+        return "relay", TRANSLATE_MODEL
+    if DS_API_KEY:
+        return "deepseek", DS_MODEL
+    return "", ""
+
+
+def _chat_endpoint(base):
+    return base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+
+
+def _chat_completion(base, api_key, model, messages, temperature=0.3):
     payload = json.dumps({
-        "model": DS_MODEL,
+        "model": model,
         "messages": messages,
         "max_tokens": 256,
         "temperature": temperature,
     }).encode()
     req = urllib.request.Request(
-        "https://api.deepseek.com/chat/completions",
+        _chat_endpoint(base),
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {DS_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
         },
     )
     with urllib.request.urlopen(req, timeout=DS_TRANSLATE_TIMEOUT) as resp:
@@ -61,10 +79,21 @@ def _deepseek_chat(messages, temperature=0.3):
     return ((result.get("choices") or [{}])[0].get("message", {}) or {}).get("content", "") or ""
 
 
+def _deepseek_chat(messages, temperature=0.3):
+    return _chat_completion(
+        "https://api.deepseek.com",
+        DS_API_KEY,
+        DS_MODEL,
+        messages,
+        temperature=temperature,
+    )
+
+
 def translate_title_once(avid, title, actresses=None):
-    """Call DeepSeek for one title body. Returns Chinese titleZh without actress names."""
-    if not DS_API_KEY:
-        raise RuntimeError("DEEPSEEK_API_KEY is not set")
+    """Translate one title. Returns Chinese titleZh without actress names."""
+    provider, model = translation_provider()
+    if not provider:
+        raise RuntimeError("translation API is not configured")
     from src.weekly import actresses as actress_util
 
     body, _names = actress_util.title_for_translate(title, actresses)
@@ -76,10 +105,20 @@ def translate_title_once(avid, title, actresses=None):
     ]
     last_empty = False
     for i, sys_p in enumerate(prompts):
-        zh = _deepseek_chat(
-            [{"role": "system", "content": sys_p}, {"role": "user", "content": text}],
-            temperature=0.3 if i == 0 else 0.2,
-        ).strip()
+        messages = [
+            {"role": "system", "content": sys_p},
+            {"role": "user", "content": text},
+        ]
+        if provider == "relay":
+            zh = _chat_completion(
+                TRANSLATE_API_BASE,
+                TRANSLATE_API_KEY,
+                model,
+                messages,
+                temperature=0.3 if i == 0 else 0.2,
+            ).strip()
+        else:
+            zh = _deepseek_chat(messages, temperature=0.3 if i == 0 else 0.2).strip()
         if zh:
             # Never append actress names into titleZh — they live in actresses[]
             return zh
@@ -238,9 +277,11 @@ def batch_translate(items, passes=None, checkpoint_path=None):
         if checkpoint_path:
             atomic_write_json(checkpoint_path, items)
 
-    if not DS_API_KEY:
-        log("Skip translate: DEEPSEEK_API_KEY not set")
+    provider, model = translation_provider()
+    if not provider:
+        log("Skip translate: no translation API configured")
         return 0, 0
+    log(f"Translate provider={provider} model={model}")
 
     # Always peel names off existing titleZh first
     stripped = strip_actresses_from_title_zh(eligible)

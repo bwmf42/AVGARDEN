@@ -1,4 +1,4 @@
-"""Status artifacts for AVGARDEN: DB backup, health.json, daily-report, DS usage."""
+"""Status artifacts for AVGARDEN: DB backup, health.json, daily-report, translation usage."""
 from __future__ import annotations
 
 import gzip
@@ -264,8 +264,11 @@ def build_health_from_diag(diag: Dict[str, Any]) -> Dict[str, Any]:
         checks[name] = {"ok": bool(ok), "msg": msg or "", "ts": ts}
 
     add("qb", diag.get("qb_ok"), str(diag.get("qb_msg") or ""))
-    if "deepseek_ok" in diag:
-        add("deepseek", diag.get("deepseek_ok"), str(diag.get("deepseek_msg") or ""))
+    if "translation_ok" in diag or "translation_msg" in diag:
+        add("translation", diag.get("translation_ok"), str(diag.get("translation_msg") or ""))
+    elif "deepseek_ok" in diag:
+        # Read old heal snapshots while workers roll forward to the new key.
+        add("translation", diag.get("deepseek_ok"), str(diag.get("deepseek_msg") or ""))
     if "plwt_ok" in diag:
         add("plwt", diag.get("plwt_ok"), str(diag.get("plwt_msg") or ""))
     mf = int(diag.get("missing_files") or 0)
@@ -289,8 +292,8 @@ def build_health_from_diag(diag: Dict[str, Any]) -> Dict[str, Any]:
 
     fails = [k for k, v in checks.items() if not v.get("ok")]
     # yellow: non-critical (version behind alone, or missing_files)
-    # red: qb/plwt/deepseek down or scrape stuck
-    critical = {"qb", "plwt", "deepseek", "scrape"}
+    # red: qB/plwt/translation down or scrape stuck
+    critical = {"qb", "plwt", "translation", "deepseek", "scrape"}
     crit_fails = [k for k in fails if k in critical]
     if crit_fails:
         overall = "red"
@@ -517,8 +520,8 @@ def run_morning_jobs() -> Dict[str, Any]:
             diag = {
                 "qb_ok": last.get("qb_ok"),
                 "qb_msg": "from heal_state",
-                "deepseek_ok": last.get("deepseek_ok"),
-                "deepseek_msg": "from heal_state",
+                "translation_ok": last.get("translation_ok", last.get("deepseek_ok")),
+                "translation_msg": last.get("translation_msg", last.get("deepseek_msg")) or "from heal_state",
                 "plwt_ok": last.get("plwt_ok"),
                 "plwt_msg": "from heal_state",
                 "missing_files": last.get("missing_files") or 0,

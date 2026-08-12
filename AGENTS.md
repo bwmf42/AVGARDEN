@@ -49,7 +49,7 @@
 - 出站刮削依赖 `PROXY`（mihomo mixed-port）；javdatabase / MGS / DMM 走固定 rules（日本组等）
 - mihomo：**订阅** `Clash_sub_v2.yaml` vs **固定** `config.yaml`（groups/rules）。98堂 `url-test` 组与 `kpqq4.com`/`plwt` 规则见 [`docs/mihomo-fixed-snippet.yaml`](docs/mihomo-fixed-snippet.yaml)；勿用订阅覆盖固定配置
 - 前台系统日志默认只读 `av-garden.log`（入队/开始/完成/失败）；明细在 loguru 日文件 / docker logs，`/api/logs?debug=1` 可看全量；日志保留约 **30 天**
-- **自愈** `heal_runner.py`（launcher 默认每 1h）：补缺 `titleZh`、队列/qB 状态对齐、qB/DeepSeek/98堂探活告警。**不**次日自动重刮、**不**自动删种。开关：`HEAL_ENABLE`、`HEAL_TITLEZH`、`HEAL_QUEUE_SYNC`、`HEAL_PROBE`、`HEAL_INTERVAL_H`
+- **自愈** `heal_runner.py`（launcher 默认每 1h）：补缺 `titleZh`、队列/qB 状态对齐、qB/翻译服务/98堂探活告警。翻译服务按 `TRANSLATE_*` 中继优先、DeepSeek 回退。**不**次日自动重刮、**不**自动删种。开关：`HEAL_ENABLE`、`HEAL_TITLEZH`、`HEAL_QUEUE_SYNC`、`HEAL_PROBE`、`HEAL_INTERVAL_H`
 - mihomo **98堂** url-test 候选含日本（暂时失败的节点会被测活跳过）
 - 一次性存储清理只能通过 `tools/maintenance/storage_cleanup.py` 的 dry-run manifest → apply 两阶段执行；日常 Weekly 图片清理使用 `weekly_cache_maintenance.py`，默认只处理不在当前 JSON 且超过 30 天的直接子目录。两者都必须保留 manifest/结果并在应用前重新验证签名和运行态。
 
@@ -100,7 +100,7 @@
   - 字段：演员、标签、发行日、时长、字幕、封面/预览、`titleZh`
   - 顺序：MGS 表字段；MGS 完全没有标签时才用 DMM 精确商品元数据补空字段；DMM 搜索与精确 CID 均没有商品时，最后使用 javdatabase 精确番号页的演员、标签、时长 → **artwork 下载图**（上表优先级）。JavBus 代码保留但当前不参与候选。
   - 标签经 `genre_zh.py`：静态表 + **`/db/genre_zh_memory.json` 持久记忆**（只在新键写入，不每次 AI）；最后 **对齐 `blocked_genres.txt` 原文拼写**（繁简折叠），避免同义标签要重新拉黑；enrich 结束统一 normalize；**NTR 保持 NTR**。批量：`plwt_genre_normalize.py`。
-  - 标题：`weekly_updater.batch_translate`（DeepSeek → `titleZh`）
+  - 标题：`weekly_updater.batch_translate`（`TRANSLATE_*` OpenAI 兼容中继优先，DeepSeek 回退 → `titleZh`）
 - 回退列表源：`WEEKLY_LIST_SOURCE=javbus`。
 - **回填范围**：默认只补前端 **未看**（`/api/weekly` 已滤屏蔽标签/演员 − 已看 − 队列 − 已下载）。脚本 `plwt_art_backfill.py`（`BACKFILL_UNWATCHED_ONLY=1`）；全量才设 `0`。元数据回填用 `weekly_backfill_details.py`（同 scope）。
 - **保留规则**：未看作品不按时间淘汰；手动已看从 `watched_at` 起保留 30 天，到期同时删除 Weekly 条目、图片目录和已看记录。

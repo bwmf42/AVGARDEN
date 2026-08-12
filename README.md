@@ -48,7 +48,7 @@ A/GARDEN 是一个面向 NAS、家庭服务器和个人媒体库的 Web 工具�
 - 一个可写的媒体保存目录
 - qBittorrent Web UI
 - 建议准备稳定代理
-- 可选：DeepSeek API key、飞书 webhook
+- 可选：OpenAI 兼容翻译中继或 DeepSeek API key、飞书 webhook
 
 ## 安装指南
 
@@ -143,6 +143,9 @@ QBITTORRENT_URL=http://host.docker.internal:8080
 QBITTORRENT_USERNAME=admin
 QBITTORRENT_PASSWORD=change_me
 PROXY=
+TRANSLATE_API_BASE=
+TRANSLATE_API_KEY=
+TRANSLATE_MODEL=gpt-5.4
 DEEPSEEK_API_KEY=
 FEISHU_WEBHOOK=
 ```
@@ -196,7 +199,7 @@ cfg/configs.json.example
 - qBittorrent Web UI 地址、用户名、密码是否正确。
 - qBittorrent 保存目录和 `AV_GARDEN_DATA_DIR` 是否指向同一份存储。
 - 是否需要代理。
-- 是否配置 DeepSeek 翻译和飞书通知。
+- 是否配置翻译服务和飞书通知；`TRANSLATE_*` 中继优先，未配置时回退 DeepSeek。
 - 不要读取、上传或提交真实 `.env`、`cfg/configs.json`、`db/`、`logs/` 和媒体目录。
 
 ## 常见问题

@@ -7,7 +7,7 @@
 - Docker 和 Docker Compose
 - 一个媒体保存目录，例如 `/volume1/media/library`
 - qBittorrent，并开启 Web UI
-- 可选：代理、DeepSeek API key、飞书 webhook
+- 可选：代理、OpenAI 兼容翻译中继或 DeepSeek API key、飞书 webhook
 
 最容易出错的地方只有一个：qBittorrent 的保存目录，必须和 A/GARDEN 的媒体目录指向同一份存储。
 
@@ -162,7 +162,15 @@ PROXY=http://127.0.0.1:7890
 
 ## 可选功能
 
-DeepSeek 翻译：
+标题翻译优先使用 OpenAI 兼容中继：
+
+```text
+TRANSLATE_API_BASE=https://example.com/v1
+TRANSLATE_API_KEY=你的key
+TRANSLATE_MODEL=gpt-5.4
+```
+
+未配置中继时可回退 DeepSeek：
 
 ```text
 DEEPSEEK_API_KEY=你的key

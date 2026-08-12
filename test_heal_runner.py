@@ -8,6 +8,26 @@ import heal_runner as h
 
 
 class TestHealRunner(unittest.TestCase):
+    def test_translation_probe_uses_relay_when_configured(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"pong"}}]}'
+
+        with mock.patch.object(h, "TRANSLATE_API_BASE", "https://relay.example/v1"), \
+             mock.patch.object(h, "TRANSLATE_API_KEY", "relay-key"), \
+             mock.patch.object(h, "TRANSLATE_MODEL", "gpt-5.4"), \
+             mock.patch.object(h.urllib.request, "urlopen", return_value=Response()) as urlopen:
+            ok, msg = h.probe_translation()
+        self.assertTrue(ok)
+        self.assertEqual(msg, "GPT 中继 · model=gpt-5.4")
+        self.assertIn("relay.example/v1/chat/completions", urlopen.call_args.args[0].full_url)
+
     def test_count_titlezh_gaps(self):
         items = [
             {"title": "source title", "titleZh": ""},

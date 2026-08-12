@@ -131,14 +131,29 @@ class Sracper:
 
 
     def translate_title(self, metadata: AVMetadata):
-        """使用 DeepSeek 将日文标题翻译为中文"""
+        """使用中继优先、DeepSeek 回退的翻译服务生成中文标题。"""
         if not metadata.title:
             return
         try:
             import urllib.request
-            api_key = os.environ["DEEPSEEK_API_KEY"]
+            relay_base = os.environ.get("TRANSLATE_API_BASE", "").strip().rstrip("/")
+            relay_key = os.environ.get("TRANSLATE_API_KEY", "").strip()
+            if relay_base and relay_key:
+                api_base = relay_base
+                api_key = relay_key
+                model = (os.environ.get("TRANSLATE_MODEL") or "gpt-5.4").strip()
+                provider = "relay"
+            else:
+                api_base = "https://api.deepseek.com"
+                api_key = os.environ["DEEPSEEK_API_KEY"]
+                raw_model = (os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash").strip()
+                model = {
+                    "deepseek-chat": "deepseek-v4-flash",
+                    "deepseek-reasoner": "deepseek-v4-pro",
+                }.get(raw_model, raw_model)
+                provider = "deepseek"
             payload = json.dumps({
-                "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+                "model": model,
                 "messages": [
                     {"role": "system", "content": "你是日语翻译助手。将日文成人影片标题翻译为简洁的中文，只输出翻译结果，不要任何解释。"},
                     {"role": "user", "content": metadata.title}
@@ -146,22 +161,24 @@ class Sracper:
                 "max_tokens": 128,
                 "temperature": 0.3
             }).encode()
+            endpoint = api_base if api_base.endswith("/chat/completions") else f"{api_base}/chat/completions"
             req = urllib.request.Request(
-                "https://api.deepseek.com/chat/completions",
+                endpoint,
                 data=payload,
                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
             )
             resp = urllib.request.urlopen(req, timeout=15)
             result = json.loads(resp.read().decode())
-            try:
-                from src.status_report import record_deepseek_usage
-                record_deepseek_usage(1)
-            except Exception:
-                pass
+            if provider == "deepseek":
+                try:
+                    from src.status_report import record_deepseek_usage
+                    record_deepseek_usage(1)
+                except Exception:
+                    pass
             zh = result["choices"][0]["message"]["content"].strip()
             if zh and zh != metadata.title:
                 metadata.title_zh = zh
-                logger.info(f"Translated: {metadata.title[:30]}... -> {zh}")
+                logger.info(f"Translated ({provider}/{model}): {metadata.title[:30]}... -> {zh}")
         except Exception as e:
             logger.warning(f"Translation failed: {e}")
 

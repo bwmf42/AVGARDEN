@@ -6,6 +6,20 @@ from src.weekly import merge
 
 
 class WeeklyUpdaterRetentionTest(unittest.TestCase):
+    def test_translation_provider_prefers_configured_relay(self):
+        with mock.patch.object(weekly_updater, "TRANSLATE_API_BASE", "https://relay.example/v1"), \
+             mock.patch.object(weekly_updater, "TRANSLATE_API_KEY", "relay-key"), \
+             mock.patch.object(weekly_updater, "TRANSLATE_MODEL", "gpt-5.4"), \
+             mock.patch.object(weekly_updater, "DS_API_KEY", "deepseek-key"):
+            self.assertEqual(weekly_updater.translation_provider(), ("relay", "gpt-5.4"))
+
+    def test_translation_provider_falls_back_to_deepseek_without_relay(self):
+        with mock.patch.object(weekly_updater, "TRANSLATE_API_BASE", ""), \
+             mock.patch.object(weekly_updater, "TRANSLATE_API_KEY", ""), \
+             mock.patch.object(weekly_updater, "DS_API_KEY", "deepseek-key"), \
+             mock.patch.object(weekly_updater, "DS_MODEL", "deepseek-v4-flash"):
+            self.assertEqual(weekly_updater.translation_provider(), ("deepseek", "deepseek-v4-flash"))
+
     def test_clear_untranslatable_title_zh(self):
         items = [
             {"id": "NLD-032", "title": "NLD-032", "titleZh": "NLD-032: NLD-032"},

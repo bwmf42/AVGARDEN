@@ -48,6 +48,9 @@ DS_MODEL = {
     "deepseek-chat": "deepseek-v4-flash",
     "deepseek-reasoner": "deepseek-v4-pro",
 }.get(_DS_RAW, _DS_RAW)
+TRANSLATE_API_BASE = os.environ.get("TRANSLATE_API_BASE", "").strip().rstrip("/")
+TRANSLATE_API_KEY = os.environ.get("TRANSLATE_API_KEY", "").strip()
+TRANSLATE_MODEL = (os.environ.get("TRANSLATE_MODEL") or "gpt-5.4").strip()
 
 _QB_DONE = frozenset({"queuedUP", "uploading", "stalledUP", "pausedUP", "stoppedUP", "forcedUP"})
 _QB_ACTIVE = frozenset({
@@ -264,11 +267,26 @@ def qb_login_and_list() -> Tuple[bool, str, Optional[list]]:
         return False, str(e)[:160], None
 
 
-def probe_deepseek() -> Tuple[bool, str]:
-    if not DS_API_KEY:
-        return False, "DEEPSEEK_API_KEY not set"
+def _chat_endpoint(base: str) -> str:
+    return base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+
+
+def probe_translation() -> Tuple[bool, str]:
+    """Probe the same translation provider that Weekly uses."""
+    if TRANSLATE_API_BASE and TRANSLATE_API_KEY:
+        provider = "GPT 中继"
+        base = TRANSLATE_API_BASE
+        key = TRANSLATE_API_KEY
+        model = TRANSLATE_MODEL
+    elif DS_API_KEY:
+        provider = "DeepSeek"
+        base = "https://api.deepseek.com"
+        key = DS_API_KEY
+        model = DS_MODEL
+    else:
+        return False, "未配置翻译 API"
     payload = json.dumps({
-        "model": DS_MODEL,
+        "model": model,
         "messages": [
             {"role": "user", "content": "ping"},
         ],
@@ -276,30 +294,36 @@ def probe_deepseek() -> Tuple[bool, str]:
         "temperature": 0,
     }).encode()
     req = urllib.request.Request(
-        "https://api.deepseek.com/chat/completions",
+        _chat_endpoint(base),
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {DS_API_KEY}",
+            "Authorization": f"Bearer {key}",
         },
     )
     try:
         with urllib.request.urlopen(req, timeout=25) as resp:
             data = json.loads(resp.read().decode())
-        try:
-            from src.status_report import record_deepseek_usage
-            record_deepseek_usage(1)
-        except Exception:
-            pass
+        if provider == "DeepSeek":
+            try:
+                from src.status_report import record_deepseek_usage
+                record_deepseek_usage(1)
+            except Exception:
+                pass
         content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
         if content is None:
             return False, "empty content"
-        return True, f"model={DS_MODEL}"
+        return True, f"{provider} · model={model}"
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")[:200]
         return False, f"HTTP {e.code}: {body}"
     except Exception as e:
         return False, str(e)[:160]
+
+
+def probe_deepseek() -> Tuple[bool, str]:
+    """Compatibility alias for older callers and persisted health data."""
+    return probe_translation()
 
 
 def probe_plwt() -> Tuple[bool, str]:
@@ -415,9 +439,12 @@ def diagnose() -> Dict[str, Any]:
         "weekly_items": len(items) if isinstance(items, list) else 0,
     }
     if HEAL_PROBE:
-        ds_ok, ds_msg = probe_deepseek()
-        d["deepseek_ok"] = ds_ok
-        d["deepseek_msg"] = ds_msg
+        translation_ok, translation_msg = probe_translation()
+        d["translation_ok"] = translation_ok
+        d["translation_msg"] = translation_msg
+        # Keep legacy fields so older status readers and heal state remain readable.
+        d["deepseek_ok"] = translation_ok
+        d["deepseek_msg"] = translation_msg
         plwt_ok, plwt_msg = probe_plwt()
         d["plwt_ok"] = plwt_ok
         d["plwt_msg"] = plwt_msg
@@ -527,9 +554,10 @@ def heal_probes_alert(state: dict, diag: dict) -> bool:
         report(f"qB API 不可用: {diag.get('qb_msg')}")
         mark_cooldown(state, "probe_qb")
         acted = True
-    if diag.get("deepseek_ok") is False and cooldown_ok(state, "probe_ds"):
-        report(f"DeepSeek 不可用: {diag.get('deepseek_msg')}")
-        mark_cooldown(state, "probe_ds")
+    translation_ok = diag.get("translation_ok", diag.get("deepseek_ok"))
+    if translation_ok is False and cooldown_ok(state, "probe_translation"):
+        report(f"翻译服务不可用: {diag.get('translation_msg') or diag.get('deepseek_msg')}")
+        mark_cooldown(state, "probe_translation")
         acted = True
     if diag.get("plwt_ok") is False and cooldown_ok(state, "probe_plwt"):
         report(f"98堂不可达: {diag.get('plwt_msg')}（不自动重刮）")
@@ -634,7 +662,7 @@ def run_once(do_heal: bool = True) -> dict:
         f"orphan={len(diag.get('orphan_queued') or [])} "
         f"done_queued={len(diag.get('done_but_queued') or [])} "
         f"qb_orphan={len(diag.get('qb_orphan') or [])} "
-        f"plwt={diag.get('plwt_ok')} ds={diag.get('deepseek_ok')} "
+        f"plwt={diag.get('plwt_ok')} translation={diag.get('translation_ok', diag.get('deepseek_ok'))} "
         f"scrape_h={diag.get('scrape_hours')}"
     )
 
@@ -665,7 +693,10 @@ def run_once(do_heal: bool = True) -> dict:
             "qb_ok",
             "missing_files",
             "plwt_ok",
+            "translation_ok",
+            "translation_msg",
             "deepseek_ok",
+            "deepseek_msg",
             "scrape_hours",
         )
     }

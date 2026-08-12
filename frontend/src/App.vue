@@ -122,7 +122,7 @@
                   class="system-check-row"
                   :class="check.ok ? 'ok' : 'bad'"
                 >
-                  <span>{{ name }}</span>
+                  <span>{{ checkLabel(name) }}</span>
                   <span>{{ check.ok ? '正常' : (check.msg || '异常') }}</span>
                 </div>
               </div>
@@ -329,12 +329,32 @@ export default {
     },
     async fetchSystemStatus() {
       try {
-        const resp = await fetch('/api/status')
+        const [resp, versionResp] = await Promise.all([
+          fetch('/api/status', { cache: 'no-store' }),
+          fetch('/api/version', { cache: 'no-store' }).catch(() => null)
+        ])
         if (!resp.ok) return
         const data = await resp.json()
         const health = data.health || {}
         const daily = data.daily || {}
-        const checks = health.checks || {}
+        const checks = { ...(health.checks || {}) }
+        let runtimeVersion = null
+        if (versionResp?.ok) {
+          runtimeVersion = await versionResp.json().catch(() => null)
+        }
+        if (runtimeVersion && (runtimeVersion.tree_hash_worker || runtimeVersion.tree_hash)) {
+          const workerHash = runtimeVersion.tree_hash_worker || runtimeVersion.tree_hash
+          checks.version = {
+            ...(checks.version || {}),
+            ok: true,
+            behind: false,
+            version: runtimeVersion.version || checks.version?.version || '',
+            tree_hash: workerHash,
+            msg: runtimeVersion.git_dirty
+              ? '运行中（构建时含未提交改动）'
+              : `运行中 · ${runtimeVersion.version || '已构建'}`
+          }
+        }
         const hasData = !!(health.overall || health.ts || Object.keys(checks).length)
         const disk = daily.disk || {}
         const diskLines = []
@@ -351,11 +371,19 @@ export default {
         } else if (q.error) {
           queueLine = `不可用: ${q.error}`
         }
+        const checkValues = Object.values(checks)
+        const criticalNames = new Set(['qb', 'plwt', 'translation', 'deepseek', 'scrape'])
+        const hasCriticalFailure = Object.entries(checks).some(([name, check]) =>
+          criticalNames.has(name) && check && check.ok === false
+        )
+        const hasWarning = checkValues.some(check => check && check.ok === false)
+        const overall = hasCriticalFailure ? 'red' : (hasWarning ? 'yellow' : 'green')
+        const versionCheck = checks.version || {}
         this.systemStatus = {
           ...this.systemStatus,
-          overall: health.overall || 'unknown',
-          ts: health.ts || daily.ts || '',
-          versionBehind: !!(health.version_behind || (checks.version && checks.version.behind)),
+          overall: checkValues.length ? overall : (health.overall || 'unknown'),
+          ts: runtimeVersion?.server_time || health.ts || daily.ts || '',
+          versionBehind: !!versionCheck.behind,
           checks,
           failEvents: Array.isArray(daily.fail_events) ? daily.fail_events : [],
           diskLines,
@@ -363,6 +391,14 @@ export default {
           hasData
         }
       } catch (e) {}
+    },
+    checkLabel(name) {
+      return {
+        translation: '翻译服务',
+        deepseek: '翻译服务',
+        missing_files: 'qB 文件',
+        version: '版本'
+      }[name] || name
     },
     applyVisibleStatusItems(items) {
       this.statusBar.items = items
