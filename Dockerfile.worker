@@ -15,4 +15,4 @@ RUN /app/venv/bin/pip install --no-cache-dir -r requirements.txt
 RUN mkdir -p /data /db /cfg /logs
 COPY . /app/
 EXPOSE 31473
-ENTRYPOINT /usr/bin/python3 -u /app/launcher.py
+ENTRYPOINT /app/venv/bin/python3 -u /app/launcher.py

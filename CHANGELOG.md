@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed the Worker container entrypoint to use the bundled virtualenv Python, which contains the project's runtime dependencies; the system Python could fail at startup with missing modules such as `curl_cffi`.
 - Fixed title translation routing and status reporting: configured OpenAI-compatible GPT relays now take priority over DeepSeek for Weekly and NFO titles, health probes check the active provider, and the dashboard refreshes version identity from `/api/version` instead of showing a stale health snapshot as "version behind".
 - Fixed Worker hot deployments so Weekly translation scripts are copied into the running container before restart.
 - Fixed slow dashboard loading: added gzip compression middleware to Go server, reducing 240KB JS payload to ~60KB and improving frontend load time from 3.4s to under 1s on local network.
