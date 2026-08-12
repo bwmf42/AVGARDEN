@@ -1432,6 +1432,11 @@ func onlineSearchHandler(w http.ResponseWriter, r *http.Request) {
 		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if r.Method == http.MethodGet {
+		_ = http.NewResponseController(w).SetWriteDeadline(
+			time.Now().Add(onlineSearchWriteTimeout),
+		)
+	}
 
 	targetURL := strings.TrimRight(queueAPI, "/") + r.URL.Path
 	if r.URL.RawQuery != "" {

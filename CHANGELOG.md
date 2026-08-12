@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Online code search now uses the same MGS, DMM, javdatabase, and artwork fallback chain as Weekly details instead of failing immediately when JavBus has no page; metadata and artwork results also survive temporary download-source lookup errors.
+- Online code search now uses the same MGS, DMM, javdatabase, and artwork fallback chain as Weekly details instead of failing immediately when JavBus has no page; metadata and artwork results survive temporary download-source lookup errors, and the route has enough time to finish the rate-limited source chain.
 - Unified Weekly, genre, search, and detail title display so incomplete `titleZh` values no longer hide the complete source title.
 - Fixed the Worker container entrypoint to use the bundled virtualenv Python, which contains the project's runtime dependencies; the system Python could fail at startup with missing modules such as `curl_cffi`.
 - Fixed title translation routing and status reporting: configured OpenAI-compatible GPT relays now take priority over DeepSeek for Weekly and NFO titles, health probes check the active provider, and the dashboard refreshes version identity from `/api/version` instead of showing a stale health snapshot as "version behind".

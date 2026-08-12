@@ -584,11 +584,12 @@ func main() {
 }
 
 const (
-	serverReadTimeout       = 30 * time.Second
-	serverReadHeaderTimeout = 10 * time.Second
-	serverWriteTimeout      = 30 * time.Second
-	serverIdleTimeout       = 2 * time.Minute
-	mediaWriteTimeout       = 6 * time.Hour
+	serverReadTimeout        = 30 * time.Second
+	serverReadHeaderTimeout  = 10 * time.Second
+	serverWriteTimeout       = 30 * time.Second
+	serverIdleTimeout        = 2 * time.Minute
+	mediaWriteTimeout        = 6 * time.Hour
+	onlineSearchWriteTimeout = 2 * time.Minute
 )
 
 func configuredHTTPServer(handler http.Handler) *http.Server {
