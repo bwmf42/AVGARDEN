@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed title translation routing and status reporting: configured OpenAI-compatible GPT relays now take priority over DeepSeek for Weekly and NFO titles, health probes check the active provider, and the dashboard refreshes version identity from `/api/version` instead of showing a stale health snapshot as "version behind".
+- Fixed Worker hot deployments so Weekly translation scripts are copied into the running container before restart.
 - Fixed slow dashboard loading: added gzip compression middleware to Go server, reducing 240KB JS payload to ~60KB and improving frontend load time from 3.4s to under 1s on local network.
 - Fixed undefined `scrapeStatusHandler` route that caused server build failures after gzip optimization was added.
 - Fixed duplicate Chinese downloads in `replace_chinese.py`: now checks queue and qBittorrent for any version of the video ID (not just Chinese-marked tasks) before adding Chinese replacements. When a video ID already exists in the system, its Weekly entry magnet is updated if unwatched, preventing redundant downloads while keeping the recommendation list current.
