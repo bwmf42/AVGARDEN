@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from process_control import clear_cancel_request, request_cancel, run_tracked
-from queue_store import append_unique, pop_first, read_queue
+from queue_store import append_unique, clear_if_matches, pop_first, read_queue, write_queue
 
 
 class RuntimeControlTest(unittest.TestCase):
@@ -44,6 +44,16 @@ class RuntimeControlTest(unittest.TestCase):
             self.assertEqual(len(read_queue(queue_path)), 20)
             self.assertEqual(pop_first(queue_path), "ABC-000")
             self.assertEqual(len(read_queue(queue_path)), 19)
+
+    def test_compare_and_clear_preserves_a_new_current_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            current_path = os.path.join(directory, "current.txt")
+            write_queue(current_path, ["OLD-001"])
+            write_queue(current_path, ["NEW-002"])
+            self.assertFalse(clear_if_matches(current_path, "OLD-001"))
+            self.assertEqual(read_queue(current_path), ["NEW-002"])
+            self.assertTrue(clear_if_matches(current_path, "NEW-002"))
+            self.assertEqual(read_queue(current_path), [])
 
 
 if __name__ == "__main__":

@@ -52,7 +52,9 @@ logger.info(f"scraper domain: {scraperDomain}")
 qb_config = configs.get("QBittorrent", {})
 qb_url = os.environ.get("QBITTORRENT_URL", qb_config.get("url", "http://127.0.0.1:8080"))
 qb_username = os.environ.get("QBITTORRENT_USERNAME", qb_config.get("username", "admin"))
-qb_password = os.environ.get("QBITTORRENT_PASSWORD", qb_config.get("password", "adminadmin"))
+qb_password = os.environ.get("QBITTORRENT_PASSWORD", qb_config.get("password", ""))
+if not qb_password:
+    logger.error("QBITTORRENT_PASSWORD is not configured")
 logger.info(f"qBittorrent url: {qb_url}")
 
 

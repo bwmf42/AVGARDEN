@@ -33,8 +33,8 @@ class AVMetadata:
     description: str = ""
     duration: str = ""
     release_date: str = ""
-    keywords = [],
-    fanarts = []
+    keywords: List[str] = field(default_factory=list)
+    fanarts: List[str] = field(default_factory=list)
 
     def __str__(self):
         # 格式化演员信息
@@ -185,47 +185,33 @@ class Sracper:
     def _extract(self, html: str) -> Optional[AVMetadata]:
         try:
             metadata = AVMetadata()
-            # 0. 提取avid
-            pattern = r'<title>((\d|[A-Z])+-\d+)'
-            avid = re.search(pattern, html).group(1)
-            if not avid:
+            avid_match = re.search(r'<title>\s*([A-Z0-9]+-\d+[A-Z]?)', html, re.I)
+            title_match = re.search(r'<title>(.*?) - JavBus</title>', html, re.I | re.S)
+            cover_match = re.search(
+                r'<a class="bigImage" href="([^"]+)"[^>]*>\s*<img[^>]+src="([^"]+)"',
+                html,
+                re.I,
+            )
+            if not avid_match or not title_match or not cover_match:
+                logger.error("JavBus page is missing required id, title, or cover fields")
                 return None
+            avid = avid_match.group(1).upper()
             logger.debug(avid)
-            # 1. 提取标题
-            title_pattern = r'<title>(.*?) - JavBus</title>'
-            title = re.search(title_pattern, html).group(1)
-            if not title:
-                return None
+            title = title_match.group(1).strip()
             logger.debug(title)
-            # 2. 提取封面图
-            cover_pattern = r'<a class="bigImage" href="([^"]+)"><img src="([^"]+)"'
-            cover = re.search(cover_pattern, html).group(1)
-            if not cover:
-                return None
+            cover = cover_match.group(1).strip()
             logger.debug(cover)
-            # 3. 提取描述
-            desc_pattern = r'<meta name="description" content="([^"]+)">'
-            desc = re.search(desc_pattern, html).group(1)
-            if not desc:
-                return None
+            desc_match = re.search(r'<meta name="description" content="([^"]*)">', html, re.I)
+            desc = desc_match.group(1).strip() if desc_match else ""
             logger.debug(desc)
-            # 4. 提取关键字
-            keywords_pattern = r'<meta name="keywords" content="([^"]+)">'
-            keywords = re.search(keywords_pattern, html).group(1).split(',')
-            if not keywords:
-                return None
+            keywords_match = re.search(r'<meta name="keywords" content="([^"]*)">', html, re.I)
+            keywords = [value.strip() for value in keywords_match.group(1).split(',') if value.strip()] if keywords_match else []
             logger.debug(keywords)
-            # 5. 提取发行日期
-            date_pattern = r'<span class="header">發行日期:</span> ([^<]+)'
-            date = re.search(date_pattern, html).group(1).strip()
-            if not date:
-                return None
+            date_match = re.search(r'<span class="header">發行日期:</span>\s*([^<]+)', html, re.I)
+            date = date_match.group(1).strip() if date_match else ""
             logger.debug(date)
-            # 6. 提取时长
-            duration_pattern = r'<span class="header">長度:</span> ([^<]+)'
-            duration = re.search(duration_pattern, html).group(1).strip()
-            if not duration:
-                return None
+            duration_match = re.search(r'<span class="header">長度:</span>\s*([^<]+)', html, re.I)
+            duration = duration_match.group(1).strip() if duration_match else ""
             logger.debug(duration)
             # 7. 提取演员及头像
             actors_pattern = r'<a class="avatar-box" href="[^"]+">\s*<div class="photo-frame">\s*<img src="([^"]+)"[^>]+>\s*</div>\s*<span>([^<]+)</span>'
@@ -234,9 +220,6 @@ class Sracper:
             # 匹配样品图像
             fanart_pattern = r'<a class="sample-box" href="(.*?\.jpg)">'
             fanarts = re.findall(fanart_pattern, html)
-            if not fanarts:
-                fanarts = []
-
             metadata.avid = avid
             metadata.title = title
             if is_complete_url(cover):
@@ -256,8 +239,8 @@ class Sracper:
 
             return metadata
         
-        except:
-            logger.error("您進入的網址有誤")
+        except Exception as exc:
+            logger.exception(f"JavBus metadata parse failed: {exc}")
             return None
     
     def _output_path(self, avid, *paths):
@@ -320,8 +303,8 @@ class Sracper:
             ET.SubElement(root, "runtime").text = mins
         
         # 海报
+        art = ET.SubElement(root, "art") if metadata.cover or metadata.fanarts else None
         if metadata.cover:
-            art = ET.SubElement(root, "art")
             ET.SubElement(art, "poster").text = prefix+"poster.jpg"
         
         # 预览
@@ -351,7 +334,7 @@ class Sracper:
         """通用下载方法，下载到指定位置"""
         logger.debug(f"download {url} to {os.path.join(self.path, filename)}")
         try:
-            newHeader = headers
+            newHeader = dict(headers)
             if referer:
                 newHeader["Referer"] = referer
             response = requests.get(url, stream=True, impersonate="chrome110", proxies=self.proxies,\
@@ -369,7 +352,7 @@ class Sracper:
     
     def _fetch_html(self, url: str, referer: str = "") -> Optional[str]:
         try:
-            newHeader = headers
+            newHeader = dict(headers)
             if referer:
                 newHeader["Referer"] = referer
             response = requests.get(

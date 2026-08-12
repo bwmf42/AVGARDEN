@@ -349,7 +349,11 @@ def _main_locked():
     artwork.set_proxy(PROXY)
     enrich.set_proxy(PROXY)
 
-    existing = json.load(open(WEEKLY_JSON)) if os.path.exists(WEEKLY_JSON) else []
+    if os.path.exists(WEEKLY_JSON):
+        with open(WEEKLY_JSON, encoding="utf-8") as handle:
+            existing = json.load(handle)
+    else:
+        existing = []
     if not existing:
         existing = []
     existing_ids = {i["id"].upper() for i in existing if i.get("id")}

@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -121,6 +122,21 @@ class TestDeepseekUsage(unittest.TestCase):
                 self.assertEqual(saved["count"], 2)
         finally:
             tmp.cleanup()
+
+    def test_concurrent_increments_are_not_lost(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "ds_usage.json")
+            with mock.patch.object(sr, "DS_USAGE_PATH", path), mock.patch.object(
+                sr, "DEEPSEEK_DAILY_ALERT_LIMIT", 1000
+            ):
+                threads = [threading.Thread(target=sr.record_deepseek_usage) for _ in range(20)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+            with open(path, encoding="utf-8") as handle:
+                saved = json.load(handle)
+            self.assertEqual(saved["count"], 20)
 
 
 class TestAtomicWrite(unittest.TestCase):

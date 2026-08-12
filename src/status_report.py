@@ -8,11 +8,16 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+
+from queue_store import read_json as locked_read_json
+from queue_store import update_json as locked_update_json
+from queue_store import write_json as locked_write_json
 
 STATUS_DIR = os.environ.get("STATUS_DIR", "/db/status")
 HEALTH_PATH = os.environ.get("HEALTH_PATH", os.path.join(STATUS_DIR, "health.json"))
@@ -40,22 +45,12 @@ def _log(msg: str) -> None:
 
 
 def atomic_write_json(path: str, data: Any) -> None:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    os.replace(tmp, path)
+    locked_write_json(path, data)
 
 
 def read_json(path: str, default: Any = None) -> Any:
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        _log(f"read {path}: {e}")
-    return default if default is not None else {}
+    fallback = default if default is not None else {}
+    return locked_read_json(path, fallback)
 
 
 def du_bytes(path: str) -> int:
@@ -129,8 +124,10 @@ def backup_sqlite(
     day = datetime.now().strftime("%Y%m%d")
     raw_path = os.path.join(backups_dir, f"downloaded-{day}.db")
     gz_path = raw_path + ".gz"
-    tmp_raw = raw_path + ".tmp"
-    tmp_gz = gz_path + ".tmp"
+    raw_fd, tmp_raw = tempfile.mkstemp(prefix=f"downloaded-{day}.", suffix=".db.tmp", dir=backups_dir)
+    os.close(raw_fd)
+    gz_fd, tmp_gz = tempfile.mkstemp(prefix=f"downloaded-{day}.", suffix=".db.gz.tmp", dir=backups_dir)
+    os.close(gz_fd)
 
     try:
         src = sqlite3.connect(db_path, timeout=30)
@@ -184,13 +181,14 @@ def backup_sqlite(
     except Exception as e:
         result["msg"] = f"backup failed: {e}"
         _log(result["msg"])
+        return result
+    finally:
         for p in (tmp_raw, tmp_gz):
             try:
                 if os.path.exists(p):
                     os.unlink(p)
             except OSError:
                 pass
-        return result
 
 
 def apply_sqlite_pragmas(conn: sqlite3.Connection) -> None:
@@ -471,15 +469,22 @@ def write_daily_report(path: str = DAILY_REPORT_PATH) -> Dict[str, Any]:
 def record_deepseek_usage(n: int = 1) -> Dict[str, Any]:
     """Increment daily DeepSeek call counter; alert via log_write if over limit."""
     today = datetime.now().strftime("%Y-%m-%d")
-    data = read_json(DS_USAGE_PATH, {})
-    if not isinstance(data, dict) or data.get("date") != today:
-        data = {"date": today, "count": 0, "limit": DEEPSEEK_DAILY_ALERT_LIMIT, "alerted": False}
-    data["count"] = int(data.get("count") or 0) + max(0, int(n))
-    data["limit"] = DEEPSEEK_DAILY_ALERT_LIMIT
-    data["updated_at"] = _now_ts()
-    over = data["count"] >= data["limit"]
-    if over and not data.get("alerted"):
-        data["alerted"] = True
+    should_alert = False
+
+    def increment(data):
+        nonlocal should_alert
+        if not isinstance(data, dict) or data.get("date") != today:
+            data = {"date": today, "count": 0, "limit": DEEPSEEK_DAILY_ALERT_LIMIT, "alerted": False}
+        data["count"] = int(data.get("count") or 0) + max(0, int(n))
+        data["limit"] = DEEPSEEK_DAILY_ALERT_LIMIT
+        data["updated_at"] = _now_ts()
+        if data["count"] >= data["limit"] and not data.get("alerted"):
+            data["alerted"] = True
+            should_alert = True
+        return data
+
+    data = locked_update_json(DS_USAGE_PATH, {}, increment)
+    if should_alert:
         msg = f"DeepSeek 日用量超限: {data['count']}/{data['limit']}"
         _log(msg)
         try:
@@ -488,7 +493,6 @@ def record_deepseek_usage(n: int = 1) -> Dict[str, Any]:
             log_write("DeepSeek", msg)
         except Exception:
             pass
-    atomic_write_json(DS_USAGE_PATH, data)
     return data
 
 

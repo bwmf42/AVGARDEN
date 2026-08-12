@@ -205,6 +205,19 @@ def remove_code(path, code):
         return True
 
 
+def clear_if_matches(path, item):
+    """Atomically clear a single-value queue only if it still matches item."""
+    expected = str(item or "").strip().upper()
+    if not expected:
+        return False
+    with _locked(path):
+        items = _read_unlocked(path)
+        if not items or items[0].upper() != expected:
+            return False
+        _write_unlocked(path, [])
+        return True
+
+
 def pop_first(path):
     with _locked(path):
         items = _read_unlocked(path)

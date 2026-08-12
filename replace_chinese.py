@@ -17,15 +17,19 @@ from main_video import (
 from qb_file_selection import select_strict_largest_video, strict_priority_plan
 from qb_task_guard import matching_qb_tasks
 from video_id import normalize_local_video_id
+from weekly_watched_store import load_records as load_watched_records
+from weekly_store import atomic_write_json as atomic_write_weekly_json
 from weekly_store import update_json as update_weekly_json
+from weekly_store import weekly_update_lock
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 PROXY = os.environ.get("PROXY", "") or None
 MAX_AGE = int(os.environ.get("REPLACE_MAX_AGE", "30"))  # 保留兼容，主路径不再用 mtime 截断
 QB_URL = os.environ.get("QBITTORRENT_URL", "http://127.0.0.1:8080")
 QB_USER = os.environ.get("QBITTORRENT_USERNAME", "admin")
-QB_PASS = os.environ.get("QBITTORRENT_PASSWORD", "adminadmin")
+QB_PASS = os.environ.get("QBITTORRENT_PASSWORD", "")
 PENDING_FILE = os.environ.get("CHINESE_PENDING_FILE", "/db/chinese_pending.json")
+WEEKLY_WATCHED_FILE = os.environ.get("WEEKLY_WATCHED_FILE", "/db/weekly_watched.json")
 MEDIA_PROVENANCE_FILE = ".av_garden_media.json"
 BACKFILL = os.environ.get("CHINESE_FORUM_BACKFILL", "").strip().lower() in ("1", "true", "yes", "on")
 DAILY_PAGES = int(os.environ.get("CHINESE_FORUM_DAILY_PAGES", "2"))
@@ -209,6 +213,42 @@ def delete_exact_torrent_files(torrent, files, keep_paths=None, save_path=None):
     return deleted, failed
 
 
+def remove_unprotected_torrent_directory(
+    content_path,
+    target_dir,
+    protected_dirs=None,
+    save_path=None,
+):
+    """Remove only an explicit torrent directory strictly below the media root."""
+    configured_root = os.path.abspath(save_path or SAVE_PATH)
+    root = os.path.realpath(configured_root)
+    lexical_candidate = os.path.abspath(str(content_path or ""))
+    candidate = os.path.realpath(lexical_candidate)
+    target = os.path.realpath(target_dir)
+    protected = {os.path.realpath(path) for path in (protected_dirs or ())}
+    try:
+        lexical_relative = os.path.relpath(lexical_candidate, configured_root)
+    except ValueError:
+        return False
+    expected_candidate = os.path.normpath(os.path.join(root, lexical_relative))
+    if not candidate or expected_candidate != candidate or os.path.islink(content_path) or not os.path.isdir(candidate):
+        return False
+    if candidate == root:
+        return False
+    try:
+        if os.path.commonpath((root, candidate)) != root:
+            return False
+        if os.path.commonpath((target, candidate)) in (target, candidate):
+            return False
+        for protected_dir in protected:
+            if os.path.commonpath((protected_dir, candidate)) in (protected_dir, candidate):
+                return False
+    except ValueError:
+        return False
+    shutil.rmtree(candidate)
+    return True
+
+
 def resolve_qb_file_path(torrent, selected_file):
     """Resolve a qB file-list entry without guessing from file timestamps."""
     save_path = os.path.realpath(str(torrent.get("save_path") or SAVE_PATH))
@@ -335,6 +375,8 @@ def qb_protected_media_dirs(torrents, save_path=None, exclude_hashes=None):
 
 def qb_login():
     import urllib.request, http.cookiejar
+    if not QB_PASS:
+        raise RuntimeError("QBITTORRENT_PASSWORD is required")
     cookie_jar = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
     login_data = f"username={urllib.parse.quote(QB_USER)}&password={urllib.parse.quote(QB_PASS)}".encode()
@@ -386,12 +428,8 @@ def torrent_is_known_chinese(torrent, pending=None, avid=""):
 
 def qb_has_cn_avid(avid):
     """检查 qB 里是否已有该番号的种子（只跳过已有中文字幕版的）"""
-    import urllib.request, http.cookiejar
     try:
-        cookie_jar = http.cookiejar.CookieJar()
-        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
-        login_data = f"username={urllib.parse.quote(QB_USER)}&password={urllib.parse.quote(QB_PASS)}".encode()
-        opener.open(urllib.request.Request(f"{QB_URL}/api/v2/auth/login", data=login_data), timeout=5)
+        opener = qb_login()
         resp = opener.open(urllib.request.Request(f"{QB_URL}/api/v2/torrents/info"), timeout=10)
         torrents = json.loads(resp.read().decode())
         pending = load_pending()
@@ -399,7 +437,8 @@ def qb_has_cn_avid(avid):
             if torrent_is_known_chinese(torrent, pending, avid):
                 return True
         return False
-    except:
+    except Exception as exc:
+        log(f"  qB lookup failed for {avid}: {exc}")
         return False
 
 
@@ -448,49 +487,33 @@ def update_weekly_magnet_if_unwatched(avid, magnet):
     if not os.path.exists(weekly_path):
         return False, "weekly.json not found"
 
-    watched_path = os.path.join(SAVE_PATH, "__weekly__", "watched.json")
-    watched_ids = set()
     try:
-        if os.path.exists(watched_path):
-            with open(watched_path) as f:
-                watched = json.load(f)
-                watched_ids = {item.get("id", "").upper() for item in watched}
+        watched_ids = set(load_watched_records(WEEKLY_WATCHED_FILE))
     except Exception as exc:
-        log(f"  Warning: could not load watched.json: {exc}")
+        log(f"  Warning: could not load watched state: {exc}")
+        return False, f"watched state unavailable: {exc}"
 
     avid_upper = avid.upper()
 
     try:
-        with open(weekly_path) as f:
-            weekly = json.load(f)
-
-        updated = False
-        for item in weekly:
-            item_id = (item.get("id") or "").upper()
-            if item_id == avid_upper:
-                # 检查是否已看
+        with weekly_update_lock(weekly_path):
+            with open(weekly_path, encoding="utf-8") as handle:
+                weekly = json.load(handle)
+            for item in weekly if isinstance(weekly, list) else []:
+                item_id = (item.get("id") or "").upper()
+                if item_id != avid_upper:
+                    continue
                 if item_id in watched_ids:
                     return False, "already watched"
-
-                # 更新磁链
-                old_magnet = item.get("magnet", "")
-                if old_magnet == magnet:
+                if item.get("magnet", "") == magnet:
                     return False, "magnet unchanged"
-
                 item["magnet"] = magnet
                 item["isChinese"] = True
                 item["chineseUpdatedAt"] = datetime.now().astimezone().isoformat()
-                updated = True
-
+                atomic_write_weekly_json(weekly_path, weekly)
                 log(f"  Updated weekly magnet for {avid} (unwatched)")
-                break
-
-        if updated:
-            with open(weekly_path, "w") as f:
-                json.dump(weekly, f, ensure_ascii=False, indent=2)
-            return True, "updated"
-        else:
-            return False, "not in weekly"
+                return True, "updated"
+        return False, "not in weekly"
 
     except Exception as exc:
         log(f"  Warning: could not update weekly for {avid}: {exc}")
@@ -868,18 +891,18 @@ def merge_completed_chinese():
                 elif deleted:
                     log(f"  {avid}: removed {len(deleted)} unselected Chinese torrent file(s)")
 
-                # 删除种子下载目录（如果不是目标目录且不被保护）
+                # 只删除 qB 明确报告的独立目录；单文件任务绝不删除其父目录。
                 content_path = str(t_info.get("content_path") or "")
                 if content_path:
-                    torrent_dir = os.path.dirname(os.path.realpath(content_path)) if os.path.isfile(content_path) else os.path.realpath(content_path)
-                    target_dir_real = os.path.realpath(target_dir)
-                    if torrent_dir != target_dir_real and torrent_dir not in protected_dirs:
-                        try:
-                            if os.path.isdir(torrent_dir) and os.path.commonpath([SAVE_PATH, torrent_dir]) == os.path.realpath(SAVE_PATH):
-                                shutil.rmtree(torrent_dir)
-                                log(f"  {avid}: removed Chinese torrent directory {os.path.basename(torrent_dir)}")
-                        except Exception as exc:
-                            log(f"  {avid}: failed to remove torrent directory {os.path.basename(torrent_dir)}: {exc}")
+                    try:
+                        if remove_unprotected_torrent_directory(
+                            content_path,
+                            target_dir,
+                            protected_dirs=protected_dirs,
+                        ):
+                            log(f"  {avid}: removed Chinese torrent directory {os.path.basename(content_path)}")
+                    except Exception as exc:
+                        log(f"  {avid}: failed to remove torrent directory {os.path.basename(content_path)}: {exc}")
             except Exception as e:
                 log(f"  qB record removal failed for {avid}: {e}; provenance retained")
                 continue

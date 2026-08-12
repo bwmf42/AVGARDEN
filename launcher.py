@@ -10,7 +10,7 @@ AV/GARDEN Container Launcher — 统一管理 worker + queue_api 生命周期
 import os, sys, signal, subprocess, time, json, random, threading
 from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from queue_store import append_unique
+from queue_store import append_unique, clear_if_matches, read_queue, write_json as atomic_write_json
 from src.log_writer import write as log_write
 from src.scrape_pipeline import (
     PHASE_WEEKLY,
@@ -79,11 +79,7 @@ def read_json(path, default):
 
 def write_json(path, data):
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp_path = path + ".tmp"
-        with open(tmp_path, "w") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, path)
+        atomic_write_json(path, data)
     except Exception as e:
         log(f"Failed to write {path}: {e}")
 
@@ -247,25 +243,19 @@ def next_merge_target(now):
 
 def save_current_back_to_queue():
     """停止前将当前下载任务放回队列"""
-    current = None
-    try:
-        with open(CURRENT_PATH, "r") as f:
-            current = f.read().strip()
-    except:
-        pass
+    current_items = read_queue(CURRENT_PATH)
+    current = current_items[0] if current_items else None
     
     if current:
+        saved = False
         try:
             if append_unique(QUEUE_PATH, current):
                 log(f"Saved current download back to queue: {current}")
+            saved = True
         except Exception as e:
             log(f"Failed to save to queue: {e}")
-        
-        # 清理当前下载标记
-        try:
-            os.remove(CURRENT_PATH)
-        except:
-            pass
+        if saved:
+            clear_if_matches(CURRENT_PATH, current)
     
     # 释放锁
     try:

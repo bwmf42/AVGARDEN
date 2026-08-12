@@ -10,6 +10,7 @@ import sys
 import time
 import json
 import signal
+import shutil
 import subprocess
 import re
 import urllib.request
@@ -24,10 +25,12 @@ from qb_file_selection import strict_priority_plan
 from qb_task_guard import has_matching_qb_task
 from queue_store import (
     append_unique,
+    clear_if_matches,
     clear_download_target,
     get_download_target,
     pop_first,
     read_json,
+    read_queue,
     update_json,
     write_queue,
 )
@@ -103,14 +106,7 @@ def set_current_download(avid):
 
 
 def clear_current_download(avid):
-    current = ""
-    try:
-        with open(current_download_path, encoding="utf-8") as handle:
-            current = handle.read().strip()
-    except OSError:
-        pass
-    if current.upper() == str(avid or "").upper():
-        write_queue(current_download_path, [])
+    clear_if_matches(current_download_path, avid)
 
 
 def is_locked():
@@ -374,6 +370,9 @@ def qbittorrent_api(method, endpoint, data=None):
     from src.comm import qb_url, qb_username, qb_password
     import http.cookiejar
 
+    if not qb_password:
+        logger.error("[QBittorrent] QBITTORRENT_PASSWORD is not configured")
+        return None
     cookie_jar = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
 
@@ -569,9 +568,19 @@ def find_and_rename_output(save_dir, avid, qb_content_path=None):
         return None
     os.makedirs(save_dir, exist_ok=True)
     dst = os.path.join(save_dir, f"{avid}.mp4")
-    if src != dst:
+    src_real = os.path.realpath(src)
+    dst_real = os.path.realpath(dst)
+    if src_real != dst_real:
+        if os.path.exists(dst):
+            try:
+                if os.path.samefile(src, dst):
+                    return dst
+            except OSError:
+                pass
+            logger.error(f"[Magnet] Refusing to overwrite existing output: {dst}")
+            return None
         logger.info(f"[Magnet] Move {os.path.basename(src)} -> {avid}.mp4")
-        os.rename(src, dst)
+        shutil.move(src, dst)
     return dst
 
 
@@ -830,12 +839,27 @@ def download_video(avid):
     logger.info(f"[Worker] 开始下载: {avid}")
 
     # 检查是否已在数据库
-    data.initialize_db(downloaded_path, "MissAV")
     existing_main_video = find_main_video(os.path.join(save_path, avid))
-    if data.find_in_db(avid, downloaded_path, "MissAV") and existing_main_video:
-        logger.info(f"[Worker] {avid} 已在数据库中，跳过")
+    try:
+        data.initialize_db(downloaded_path, "MissAV")
+        in_database = data.find_in_db(avid, downloaded_path, "MissAV")
+    except Exception as exc:
+        logger.error(f"[Worker] {avid} 数据库查询失败，任务重新排队: {exc}")
+        log_write("Worker", f"{avid} 数据库暂时不可用，已保留任务等待重试")
+        append_unique(queue_path, avid)
+        return False
+    if existing_main_video:
+        if not in_database:
+            if not data.batch_insert_bvids([avid], downloaded_path, "MissAV"):
+                logger.error(f"[Worker] {avid} 正片存在但数据库记录修复失败，任务重新排队")
+                append_unique(queue_path, avid)
+                return False
+            logger.info(f"[Worker] {avid} 正片已存在，已补数据库记录")
+            log_write("Worker", f"{avid} 正片已存在，已修复媒体库记录")
+        else:
+            logger.info(f"[Worker] {avid} 已在数据库中，跳过")
         return True
-    if data.find_in_db(avid, downloaded_path, "MissAV"):
+    if in_database:
         logger.warning(f"[Worker] {avid} 数据库有记录但磁盘无有效正片，继续恢复下载")
 
     # qB 可能由旧版本、手动任务或其他分类接管。即使 weekly 暂时没有磁链，

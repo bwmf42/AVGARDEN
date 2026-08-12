@@ -41,7 +41,7 @@ STUCK_SCRAPE_H = float(os.environ.get("HEAL_STUCK_SCRAPE_H", "8") or "8")
 
 QB_URL = os.environ.get("QBITTORRENT_URL", "http://127.0.0.1:8080")
 QB_USERNAME = os.environ.get("QBITTORRENT_USERNAME", "admin")
-QB_PASSWORD = os.environ.get("QBITTORRENT_PASSWORD", "adminadmin")
+QB_PASSWORD = os.environ.get("QBITTORRENT_PASSWORD", "")
 DS_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 _DS_RAW = (os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash").strip()
 DS_MODEL = {
@@ -245,6 +245,8 @@ def scrape_process_etime_hours() -> Optional[float]:
 def qb_login_and_list() -> Tuple[bool, str, Optional[list]]:
     import http.cookiejar
 
+    if not QB_PASSWORD:
+        return False, "QBITTORRENT_PASSWORD is not configured", None
     try:
         jar = http.cookiejar.CookieJar()
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))

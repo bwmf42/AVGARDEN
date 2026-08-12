@@ -2,6 +2,14 @@ import sqlite3
 from typing import List
 from .comm import *
 
+_ALLOWED_TABLES = frozenset({"MissAV"})
+
+
+def _validated_table(table_name: str) -> str:
+    if table_name not in _ALLOWED_TABLES:
+        raise ValueError(f"unsupported database table: {table_name}")
+    return table_name
+
 def _connect(db_path: str) -> sqlite3.Connection:
     """Open SQLite with WAL + busy_timeout (P0-2 concurrent safety)."""
     conn = sqlite3.connect(db_path, timeout=30)
@@ -15,19 +23,18 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 def initialize_db(db_path: str, table_name: str):
     logger.debug(f"db_path: {db_path}, table_name: {table_name}")
+    table_name = _validated_table(table_name)
 
     """初始化数据库，创建表"""
     conn = _connect(db_path)
-    cursor = conn.cursor()
-    
-    # 创建表（如果不存在）
-    cursor.execute(f'''
-    CREATE TABLE IF NOT EXISTS {table_name} (
-        bvid TEXT PRIMARY KEY
-    )
-    ''')
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f'''
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            bvid TEXT PRIMARY KEY
+        )
+        ''')
 
-    if table_name == "MissAV":
         cursor.execute(f"PRAGMA table_info({table_name})")
         existing = {row[1] for row in cursor.fetchall()}
         columns = {
@@ -44,12 +51,13 @@ def initialize_db(db_path: str, table_name: str):
         for name, column_type in columns.items():
             if name not in existing:
                 cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {name} {column_type}")
-    
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
 def batch_insert_bvids(bvid_list: list[str], db_path: str, table_name: str):
     """批量插入BVID，自动忽略已存在的"""
+    table_name = _validated_table(table_name)
     conn = _connect(db_path)
     cursor = conn.cursor()
     
@@ -61,30 +69,29 @@ def batch_insert_bvids(bvid_list: list[str], db_path: str, table_name: str):
         )
         conn.commit()
         logger.info(f"成功插入 {cursor.rowcount}")
+        return True
     except sqlite3.Error as e:
         logger.error(f"插入BVID时出错: {e}")
         conn.rollback()
+        return False
     finally:
         conn.close()
 
 def find_in_db(bvid: str, db_path: str, table_name: str) -> bool:
+    """Return membership; database errors propagate so callers cannot infer a miss."""
+    table_name = _validated_table(table_name)
+    conn = None
     try:
-        # 连接到 SQLite 数据库
         conn = _connect(db_path)
         cursor = conn.cursor()
-        # 执行查询
         query = f"SELECT 1 FROM {table_name} WHERE bvid = ? LIMIT 1"
         cursor.execute(query, (bvid,))
         result = cursor.fetchone()
-        # 关闭连接
         cursor.close()
-        conn.close()
-        
         return result is not None
-        
     except sqlite3.Error as e:
-        print(f"数据库错误: {e}")
-        return False
-    except Exception as e:
-        print(f"发生错误: {e}")
-        return False
+        logger.error(f"database lookup failed for {bvid}: {e}")
+        raise
+    finally:
+        if conn is not None:
+            conn.close()

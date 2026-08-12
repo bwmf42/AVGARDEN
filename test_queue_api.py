@@ -5,6 +5,7 @@ import threading
 import unittest
 import urllib.request
 import time
+import sqlite3
 from contextlib import ExitStack
 from unittest.mock import patch
 
@@ -83,6 +84,20 @@ class QueueAPITest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload["running"])
         self.assertEqual(payload["phase_label"], "未看中文补链中")
+
+    def test_current_download_helpers_use_atomic_queue_store(self):
+        self.assertIsNone(queue_api.read_current_download())
+        queue_api.write_current_download("SSIS-951")
+        self.assertEqual(queue_api.read_current_download(), "SSIS-951")
+        queue_api.clear_current_download()
+        self.assertIsNone(queue_api.read_current_download())
+
+    def test_database_connection_closes_after_write_error(self):
+        connection = unittest.mock.Mock()
+        connection.execute.side_effect = [None, None, sqlite3.OperationalError("locked")]
+        with patch("sqlite3.connect", return_value=connection):
+            self.assertFalse(queue_api.write_to_missav_db("SSIS-951"))
+        connection.close.assert_called_once_with()
 
     def test_post_normalizes_compact_numeric_leading_code(self):
         with patch.object(queue_api, "qb_api", return_value=[]):

@@ -157,7 +157,7 @@ class Downloader(ABC):
     def _fetch_html(self, url: str, referer: str = "") -> Optional[str]:
         logger.debug(f"fetch url: {url}")
         try:
-            newHeader = headers
+            newHeader = dict(headers)
             if referer:
                 newHeader["Referer"] = referer
             response = requests.get(

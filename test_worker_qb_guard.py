@@ -1,5 +1,6 @@
 import unittest
 import os
+import shutil
 import tempfile
 from unittest import mock
 
@@ -83,6 +84,69 @@ class WorkerQBGuardTest(unittest.TestCase):
         ):
             self.assertFalse(worker.download_video("HUNTC-583"))
         downloader_manager.assert_not_called()
+
+    @unittest.skipUnless(worker is not None, "requires the Worker container runtime")
+    def test_database_error_requeues_without_starting_download(self):
+        with mock.patch.object(worker.data, "initialize_db", side_effect=RuntimeError("locked")), mock.patch.object(
+            worker, "find_main_video", return_value=None
+        ), mock.patch.object(worker, "append_unique", return_value=True) as append, mock.patch.object(
+            worker, "log_write"
+        ), mock.patch.object(worker.downloaderMgr, "DownloaderMgr") as downloader_manager:
+            self.assertFalse(worker.download_video("HUNTC-583"))
+        append.assert_called_once_with(worker.queue_path, "HUNTC-583")
+        downloader_manager.assert_not_called()
+
+    @unittest.skipUnless(worker is not None, "requires the Worker container runtime")
+    def test_existing_video_repairs_missing_db_record_without_download(self):
+        with mock.patch.object(worker.data, "initialize_db"), mock.patch.object(
+            worker.data, "find_in_db", return_value=False
+        ), mock.patch.object(worker.data, "batch_insert_bvids", return_value=True) as insert, mock.patch.object(
+            worker, "find_main_video", return_value="/data/HUNTC-583/main.mp4"
+        ), mock.patch.object(worker, "log_write"), mock.patch.object(
+            worker.downloaderMgr, "DownloaderMgr"
+        ) as downloader_manager:
+            self.assertTrue(worker.download_video("HUNTC-583"))
+        insert.assert_called_once_with(["HUNTC-583"], worker.downloaded_path, "MissAV")
+        downloader_manager.assert_not_called()
+
+    @unittest.skipUnless(worker is not None, "requires the Worker container runtime")
+    def test_find_and_rename_uses_cross_filesystem_safe_move(self):
+        with tempfile.TemporaryDirectory() as root:
+            source_dir = os.path.join(root, "torrent")
+            save_dir = os.path.join(root, "ABF-123")
+            source = os.path.join(source_dir, "source.mp4")
+            os.makedirs(source_dir)
+            with open(source, "wb") as handle:
+                handle.write(b"video")
+            with mock.patch.object(worker, "find_main_video", return_value=source), mock.patch.object(
+                worker.shutil, "move", wraps=shutil.move
+            ) as move:
+                result = worker.find_and_rename_output(save_dir, "ABF-123", source_dir)
+            self.assertEqual(result, os.path.join(save_dir, "ABF-123.mp4"))
+            move.assert_called_once()
+            self.assertTrue(os.path.exists(result))
+
+    @unittest.skipUnless(worker is not None, "requires the Worker container runtime")
+    def test_find_and_rename_refuses_to_overwrite_existing_output(self):
+        with tempfile.TemporaryDirectory() as root:
+            source_dir = os.path.join(root, "torrent")
+            save_dir = os.path.join(root, "ABF-123")
+            source = os.path.join(source_dir, "source.mp4")
+            destination = os.path.join(save_dir, "ABF-123.mp4")
+            os.makedirs(source_dir)
+            os.makedirs(save_dir)
+            with open(source, "wb") as handle:
+                handle.write(b"new")
+            with open(destination, "wb") as handle:
+                handle.write(b"existing")
+            with mock.patch.object(worker, "find_main_video", return_value=source), mock.patch.object(
+                worker.shutil, "move"
+            ) as move:
+                result = worker.find_and_rename_output(save_dir, "ABF-123", source_dir)
+            self.assertIsNone(result)
+            move.assert_not_called()
+            with open(destination, "rb") as handle:
+                self.assertEqual(handle.read(), b"existing")
 
     @unittest.skipUnless(worker is not None, "requires the Worker container runtime")
     def test_worker_marks_current_before_starting_download(self):

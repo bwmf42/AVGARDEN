@@ -13,6 +13,7 @@ from main_video import find_main_video
 from queue_store import (
     append_many_unique,
     append_unique,
+    clear_if_matches,
     clear_download_target,
     normalize_download_target,
     read_json,
@@ -21,6 +22,7 @@ from queue_store import (
     set_download_target,
     update_json,
     write_json,
+    write_queue,
 )
 from video_id import (
     local_video_id_aliases,
@@ -174,7 +176,7 @@ _SPEED_CACHE_MAX_SIZE = 10000  # 最多缓存 10000 个番号的速度记录
 # qBittorrent 配置
 QB_URL = os.environ.get("QBITTORRENT_URL", "http://127.0.0.1:8080")
 QB_USERNAME = os.environ.get("QBITTORRENT_USERNAME", "admin")
-QB_PASSWORD = os.environ.get("QBITTORRENT_PASSWORD", "adminadmin")
+QB_PASSWORD = os.environ.get("QBITTORRENT_PASSWORD", "")
 
 def log(msg):
     print(f"[QueueAPI] {msg}", flush=True)
@@ -200,6 +202,9 @@ def qb_request(endpoint, data=None):
     import urllib.parse
     import urllib.request
 
+    if not QB_PASSWORD:
+        log("QBITTORRENT_PASSWORD is not configured")
+        return None
     try:
         cookie_jar = http.cookiejar.CookieJar()
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
@@ -542,23 +547,17 @@ def get_lock():
         return False
 
 def read_current_download():
-    if not os.path.exists(CURRENT_PATH):
-        return None
-    try:
-        with open(CURRENT_PATH, "r") as f:
-            return f.read().strip()
-    except:
-        return None
+    items = read_queue(CURRENT_PATH)
+    return items[0] if items else None
 
 def write_current_download(code):
-    with open(CURRENT_PATH, "w") as f:
-        f.write(code)
+    write_queue(CURRENT_PATH, [code])
 
-def clear_current_download():
-    try:
-        os.remove(CURRENT_PATH)
-    except:
-        pass
+def clear_current_download(expected=None):
+    if expected:
+        return clear_if_matches(CURRENT_PATH, expected)
+    write_queue(CURRENT_PATH, [])
+    return True
 
 def get_code_dir(code):
     try:
@@ -704,6 +703,7 @@ def update_weekly_json_downloaded(code):
 
 def write_to_missav_db(code):
     """Write to AV/GARDEN SQLite MissAV table so it shows on homepage"""
+    conn = None
     try:
         import sqlite3
         conn = sqlite3.connect(DB_PATH, timeout=30)
@@ -717,7 +717,6 @@ def write_to_missav_db(code):
         cur = conn.execute("SELECT bvid FROM MissAV WHERE bvid = ?", (code,))
         if cur.fetchone():
             log(f"{code} already in MissAV table")
-            conn.close()
             return True
         
         # Get metadata from weekly.json
@@ -745,7 +744,6 @@ def write_to_missav_db(code):
         act_list = json.loads(actresses) if isinstance(actresses, str) else actresses
         if any(_actress_is_blocked(a) for a in (act_list or [])):
             log(f"Blocked: {code} (actress in blocklist)")
-            conn.close()
             return False
 
         # Insert into MissAV table
@@ -756,12 +754,14 @@ def write_to_missav_db(code):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (code, title, title_jp, actresses, genres, release_date, duration, "weekly_queue", now, now))
         conn.commit()
-        conn.close()
         log(f"Wrote {code} to MissAV DB → homepage visible!")
         return True
     except Exception as e:
         log(f"Failed to write to MissAV DB: {e}")
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 def get_download_info(code):
     """Returns {size, speed, progress_pct}"""
@@ -1172,7 +1172,7 @@ class QueueHandler(BaseHTTPRequestHandler):
                 if current_code.upper() in failed_codes:
                     clear_failure_record(current_code)
                     failed_codes.discard(current_code.upper())
-                clear_current_download()
+                clear_current_download(current_code)
                 log(f"Cleaned stale current_download {current_code} (already done)")
             else:
                 info = get_download_info(current_code)
@@ -1534,8 +1534,7 @@ class QueueHandler(BaseHTTPRequestHandler):
         remove_code(QUEUE_PATH, code)
         clear_download_target(DOWNLOAD_TARGETS_PATH, code)
 
-        if read_current_download() == code:
-            clear_current_download()
+        clear_current_download(code)
         
         # 默认只移出队列/状态；显式 delete_files=1 才删除磁盘文件。
         files_deleted = False
@@ -1665,7 +1664,7 @@ def startup_recovery():
     
     # 4. 清理 current_download.txt（等 worker 重新拾取）
     if current and not is_locked:
-        clear_current_download()
+        clear_current_download(current)
         log("  Cleared stale current_download")
     
     log(f"=== Recovery complete: {len(recovered)} re-queued ===")
