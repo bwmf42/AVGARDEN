@@ -123,7 +123,7 @@
                   :class="check.ok ? 'ok' : 'bad'"
                 >
                   <span>{{ checkLabel(name) }}</span>
-                  <span>{{ check.ok ? '正常' : (check.msg || '异常') }}</span>
+                  <span>{{ checkStatusText(name, check) }}</span>
                 </div>
               </div>
               <div v-if="systemStatus.failEvents.length" class="system-status-fails">
@@ -399,6 +399,13 @@ export default {
         missing_files: 'qB 文件',
         version: '版本'
       }[name] || name
+    },
+    checkStatusText(name, check) {
+      if (!check?.ok) return check?.msg || '异常'
+      if ((name === 'translation' || name === 'deepseek') && check.msg) {
+        return check.msg.replace('model=', '')
+      }
+      return '正常'
     },
     applyVisibleStatusItems(items) {
       this.statusBar.items = items
