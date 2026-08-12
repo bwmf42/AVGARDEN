@@ -29,6 +29,7 @@
 
 ### Changed
 
+- Removed an unused Go Feishu test handler and obsolete local deployment/test backup files; the existing Worker notification path remains the single Feishu integration.
 - Changed `deploy.sh` password handling: use `sshpass -e` (reads `SSHPASS` env var) instead of `-p` CLI argument to avoid exposing password in process lists.
 - Changed Docker build output: deployment now buffers build logs to temporary NAS file, printing only summary on success and tail on failure, avoiding long BuildKit output transmission.
 
