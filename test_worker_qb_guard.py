@@ -78,6 +78,7 @@ class WorkerQBGuardTest(unittest.TestCase):
         with (
             mock.patch.object(worker.data, "initialize_db"),
             mock.patch.object(worker.data, "find_in_db", return_value=False),
+            mock.patch.object(worker, "find_main_video", return_value=None),
             mock.patch.object(worker, "has_active_qb_task", return_value=True),
             mock.patch.object(worker, "log_write"),
             mock.patch.object(worker.downloaderMgr, "DownloaderMgr") as downloader_manager,
