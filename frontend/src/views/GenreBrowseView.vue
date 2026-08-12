@@ -54,6 +54,7 @@ import {
     syncWatchedIDs,
     writeWatchedOrderIDs
 } from '../api/weeklyWatched'
+import { displayTitle as formatDisplayTitle } from '../utils/displayTitle'
 
 function normalizeID(id) {
     return String(id || '').trim().toUpperCase()
@@ -202,14 +203,7 @@ export default {
             this.loading = false
         },
         displayTitle(video) {
-            let t = video.titleZh || video.title
-            const avid = video.id || ''
-            if (avid && t.toUpperCase().startsWith(avid.toUpperCase())) {
-                // title already has code
-            } else {
-                t = avid + ' ' + t
-            }
-            return t.length > 50 ? t.slice(0, 50) + '...' : t
+            return formatDisplayTitle(video, { withCode: true, maxLen: 50 })
         },
         getDmmFallback(video) {
             const c = (video.id || '').toLowerCase().replace('-', '')

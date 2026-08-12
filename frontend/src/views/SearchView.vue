@@ -73,6 +73,7 @@
 <script>
 import videosApi from '../api/videos'
 import { normalizeVideoId } from '../utils/videoId'
+import { displayTitle as formatDisplayTitle } from '../utils/displayTitle'
 
 function normalizeText(value) {
     return String(value || '').trim().toUpperCase()
@@ -234,12 +235,7 @@ export default {
             )
         },
         displayTitle(video) {
-            let title = video.titleZh || video.title || video.id
-            const id = video.id || ''
-            if (id && !normalizeText(title).startsWith(normalizeText(id))) {
-                title = `${id} ${title}`
-            }
-            return title
+            return formatDisplayTitle(video, { withCode: true })
         },
         getDmmFallback(video) {
             const c = (video.id || '').toLowerCase().replace('-', '')

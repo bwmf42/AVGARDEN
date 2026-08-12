@@ -37,7 +37,7 @@
                         </div>
                     </div>
 
-                    <h1 class="title">{{ video.titleZh || video.title }}</h1>
+                    <h1 class="title">{{ displayTitleText }}</h1>
                     <div class="title-meta">
                         <div class="code">{{ video.id }}</div>
                         <div v-if="markedVisible" class="marked-badge">已标记为已看</div>
@@ -209,6 +209,7 @@ import {
     saveWatchedIDs,
     syncWatchedIDs
 } from '../api/weeklyWatched'
+import { displayTitle as formatDisplayTitle } from '../utils/displayTitle'
 
 const BROWSE_STATE_KEY = 'weekly_detail_browse_state'
 const QUEUE_FAILED_GRACE_MS = 120000
@@ -272,6 +273,9 @@ export default {
         },
         genreBrowseTag() {
             return String(this.$route.query.tag || '').trim()
+        },
+        displayTitleText() {
+            return formatDisplayTitle(this.video || {})
         },
         fanartList() {
             return this.video?.fanarts || []
