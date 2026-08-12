@@ -21,6 +21,7 @@
 - Fixed 98堂 search rate-limit handling: when forum search detects "30秒" throttle message, mark rate-limited state and extend next search slot interval to 60s to avoid consecutive limit hits.
 - Fixed verbose logging: made `queue_api.py` history list details conditional on `DEBUG=1` environment variable; default mode now logs only item count, not full code arrays.
 - Fixed javdatabase artwork access and low-resolution MGS covers: route `javdatabase.com` through the mihomo Japan group, reject MGS covers below 300x400, and fall through to DMM for a clearer candidate.
+- Fixed preview lightbox image context menus: right-clicking a preview now targets the image itself, restoring the browser's native copy and save image actions.
 - Fixed Chinese subtitle merge cleanup: now remove the torrent download directory (e.g., `MNGS-071-U`) after merging to target directory (e.g., `MNGS-071`), preventing duplicate folder remnants with metadata but no video files.
 
 ### Changed

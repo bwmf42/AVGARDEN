@@ -1738,9 +1738,8 @@ export default {
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.24);
   box-shadow: 0 18px 42px rgba(53, 36, 44, 0.34);
-  user-select: none;
-  -webkit-user-select: none;
-  pointer-events: none;
+  /* Keep the native image target so the browser can offer copy/save actions. */
+  pointer-events: auto;
 }
 
 .lightbox-close,

@@ -197,6 +197,7 @@ export default {
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.24);
   box-shadow: 0 18px 42px rgba(53, 36, 44, 0.34);
+  pointer-events: auto;
 }
 
 .close-btn {
