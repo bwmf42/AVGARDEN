@@ -38,6 +38,27 @@ HEAL_QUEUE_SYNC = os.environ.get("HEAL_QUEUE_SYNC", "1").strip().lower() in ("1"
 HEAL_PROBE = os.environ.get("HEAL_PROBE", "1").strip().lower() in ("1", "true", "yes", "on")
 HEAL_COOLDOWN_M = max(5, int(os.environ.get("HEAL_COOLDOWN_M", "60") or "60"))
 STUCK_SCRAPE_H = float(os.environ.get("HEAL_STUCK_SCRAPE_H", "8") or "8")
+# Heal 默认 1h 一轮；单次安全门/SSL 闪断不进系统日志、不把 98堂标红。
+PLWT_ALERT_STREAK = 3
+_PLWT_TRANSIENT_MARKERS = (
+    "安全门",
+    "连不上",
+    "ssl",
+    "tls",
+    "timeout",
+    "timed out",
+    "timedout",
+    "connection reset",
+    "connection aborted",
+    "connection refused",
+    "eof occurred",
+    "handshake",
+    "certificate",
+    "proxy error",
+    "temporarily",
+    "max retries",
+    "unreachable",
+)
 
 QB_URL = os.environ.get("QBITTORRENT_URL", "http://127.0.0.1:8080")
 QB_USERNAME = os.environ.get("QBITTORRENT_USERNAME", "admin")
@@ -328,6 +349,55 @@ def probe_deepseek() -> Tuple[bool, str]:
     return probe_translation()
 
 
+def plwt_fail_is_transient(msg: str) -> bool:
+    """True for safe-gate / TLS / proxy blips, not a real empty board."""
+    text = str(msg or "")
+    low = text.lower()
+    return any(marker in text or marker in low for marker in _PLWT_TRANSIENT_MARKERS)
+
+
+def update_plwt_streak(state: dict, plwt_ok: Any) -> int:
+    """Track consecutive probe misses. Returns the current fail streak."""
+    if plwt_ok is True:
+        state["plwt_fail_streak"] = 0
+        return 0
+    if plwt_ok is False:
+        n = int(state.get("plwt_fail_streak") or 0) + 1
+        state["plwt_fail_streak"] = n
+        return n
+    return int(state.get("plwt_fail_streak") or 0)
+
+
+def note_plwt_probe(state: dict, diag: dict) -> None:
+    """Update streak + last-good snapshot after diagnose()."""
+    if "plwt_ok" not in diag:
+        return
+    if diag.get("plwt_ok") is True:
+        msg = str(diag.get("plwt_msg") or "").strip()
+        if msg:
+            state["plwt_last_ok_msg"] = msg
+    update_plwt_streak(state, diag.get("plwt_ok"))
+
+
+def plwt_health_view(diag: dict, state: dict) -> dict:
+    """Keep health green across a short burst of 98堂 TLS/safe-gate misses."""
+    out = dict(diag)
+    if out.get("plwt_ok") is not False:
+        return out
+    msg = str(out.get("plwt_msg") or "")
+    streak = int(state.get("plwt_fail_streak") or 0)
+    if not plwt_fail_is_transient(msg) or streak >= PLWT_ALERT_STREAK:
+        return out
+    last = str(state.get("plwt_last_ok_msg") or "").strip()
+    if last:
+        out["plwt_ok"] = True
+        out["plwt_msg"] = last
+        return out
+    out.pop("plwt_ok", None)
+    out.pop("plwt_msg", None)
+    return out
+
+
 def probe_plwt() -> Tuple[bool, str]:
     """Read-only: safe gate + at least one list item."""
     try:
@@ -336,12 +406,86 @@ def probe_plwt() -> Tuple[bool, str]:
         proxy = os.environ.get("PROXY") or None
         sources.set_proxy(proxy)
         chinese_forum.set_proxy(proxy)
-        items = chinese_forum.get_weekly_list(max_pages=1, fid="37")
+        client = chinese_forum.ForumClient(fid="37")
+        if not client.ensure_safe():
+            return False, "安全门/连不上"
+        items = chinese_forum.get_list_until(
+            max_pages=1, fid="37", purpose="weekly", client=client
+        )
         if items:
             return True, f"list={len(items)}"
         return False, "empty list"
     except Exception as e:
         return False, str(e)[:160]
+
+
+def probe_115() -> Tuple[Optional[bool], str]:
+    """Probe 115 Cookie usability via p115_offline.
+
+    Returns (None, msg) when 115 is unused (no cookie and not enabled).
+    """
+    try:
+        from src import p115_offline as p115
+
+        cfg = p115.load_config()
+        cookies = (cfg.get("cookies") or "").strip()
+        enabled = bool(cfg.get("enabled"))
+        if not cookies:
+            if enabled:
+                return False, "已启用但未配置 Cookie"
+            return None, "未配置"
+        probe = getattr(p115, "probe_cached", None)
+        if callable(probe):
+            ok, msg = probe(force=True)
+        else:
+            ok, msg = p115.test_connection()
+        if ok and not enabled:
+            return True, f"{msg}（按钮未启用）"
+        return bool(ok), str(msg or "")[:200]
+    except Exception as e:
+        return False, str(e)[:160]
+
+
+def classify_queue_drift(
+    state_items: List[Any],
+    queue_codes: set,
+    qb_codes_active: set,
+    qb_codes_done: set,
+) -> Dict[str, List[str]]:
+    """Split queue_state vs qB into orphan / done / reverse-orphan / stale processing."""
+    orphan_queued: List[str] = []
+    done_but_queued: List[str] = []
+    stale_processing: List[str] = []
+    state_codes = set()
+    for it in state_items:
+        if not isinstance(it, dict):
+            continue
+        code = str(it.get("code") or "").upper()
+        if not code:
+            continue
+        state_codes.add(code)
+        st = str(it.get("status") or "")
+        recovered = bool(it.get("_heal_recovered"))
+        post_done = bool(it.get("_post_done"))
+        if st == "processing" and code not in qb_codes_active:
+            stale_processing.append(code)
+            continue
+        if recovered and post_done and st not in ("queued", "downloading") and code not in qb_codes_active:
+            stale_processing.append(code)
+            continue
+        if st != "queued":
+            continue
+        if code in qb_codes_done:
+            done_but_queued.append(code)
+        elif code not in queue_codes and code not in qb_codes_active and code not in qb_codes_done:
+            orphan_queued.append(code)
+    qb_orphan = [code for code in sorted(qb_codes_active) if code not in state_codes]
+    return {
+        "orphan_queued": orphan_queued,
+        "done_but_queued": done_but_queued,
+        "qb_orphan": qb_orphan,
+        "stale_processing": stale_processing,
+    }
 
 
 def code_from_torrent(t: dict) -> str:
@@ -400,31 +544,7 @@ def diagnose() -> Dict[str, Any]:
     except Exception:
         pass
 
-    orphan_queued = []
-    done_but_queued = []
-    state_codes = set()
-    for it in state_items:
-        if not isinstance(it, dict):
-            continue
-        code = str(it.get("code") or "").upper()
-        if not code:
-            continue
-        state_codes.add(code)
-        st = str(it.get("status") or "")
-        if st != "queued":
-            continue
-        if code in qb_codes_done:
-            done_but_queued.append(code)
-        elif code not in queue_codes and code not in qb_codes_active and code not in qb_codes_done:
-            # not in text queue and not active in qB
-            orphan_queued.append(code)
-
-    # 反向孤儿：qB 中活跃但 queue_state 没记录
-    qb_orphan = []
-    all_qb_codes = qb_codes_active | qb_codes_done
-    for code in all_qb_codes:
-        if code not in state_codes:
-            qb_orphan.append(code)
+    drift = classify_queue_drift(state_items, queue_codes, qb_codes_active, qb_codes_done)
 
     d = {
         "titlezh_gaps": gaps,
@@ -435,9 +555,11 @@ def diagnose() -> Dict[str, Any]:
         "qb_ok": qb_ok,
         "qb_msg": qb_msg,
         "missing_files": missing_files,
-        "orphan_queued": orphan_queued,
-        "done_but_queued": done_but_queued,
-        "qb_orphan": qb_orphan,
+        "orphan_queued": drift["orphan_queued"],
+        "done_but_queued": drift["done_but_queued"],
+        "qb_orphan": drift["qb_orphan"],
+        "stale_processing": drift["stale_processing"],
+        "qb_active": sorted(qb_codes_active),
         "weekly_items": len(items) if isinstance(items, list) else 0,
     }
     if HEAL_PROBE:
@@ -450,6 +572,10 @@ def diagnose() -> Dict[str, Any]:
         plwt_ok, plwt_msg = probe_plwt()
         d["plwt_ok"] = plwt_ok
         d["plwt_msg"] = plwt_msg
+        p115_ok, p115_msg = probe_115()
+        if p115_ok is not None:
+            d["p115_ok"] = p115_ok
+            d["p115_msg"] = p115_msg
     return d
 
 
@@ -506,13 +632,16 @@ def heal_queue_sync(state: dict, diag: dict) -> bool:
     orphan = list(diag.get("orphan_queued") or [])
     done = list(diag.get("done_but_queued") or [])
     qb_orphan = list(diag.get("qb_orphan") or [])
-    if not orphan and not done and not qb_orphan:
+    stale = list(diag.get("stale_processing") or [])
+    qb_active = set(diag.get("qb_active") or [])
+    if not orphan and not done and not qb_orphan and not stale:
         return False
     items = load_json(STATE_PATH, [])
     if not isinstance(items, list):
         return False
     orphan_set = set(orphan)
     done_set = set(done)
+    stale_set = set(stale)
     new_items = []
     removed = 0
     marked = 0
@@ -521,20 +650,28 @@ def heal_queue_sync(state: dict, diag: dict) -> bool:
         if not isinstance(it, dict):
             continue
         code = str(it.get("code") or "").upper()
-        if code in orphan_set and str(it.get("status") or "") == "queued":
+        st = str(it.get("status") or "")
+        if code in stale_set:
             removed += 1
             continue
-        if code in done_set and str(it.get("status") or "") == "queued":
+        if code in orphan_set and st == "queued":
+            removed += 1
+            continue
+        if code in done_set and st == "queued":
             it = dict(it)
             it["status"] = "done"
             it["_post_done"] = True
             marked += 1
+        elif st == "processing" and code in qb_active:
+            it = dict(it)
+            it["status"] = "queued"
+            marked += 1
         new_items.append(it)
-    # 补登记 qB 反向孤儿（qB 有但 queue_state 没有）
+    # 只补登记仍在下载的 qB 反向孤儿，不要把做种完成项写成 processing
     for code in qb_orphan:
         new_items.append({
             "code": code,
-            "status": "processing",
+            "status": "queued",
             "source": "unknown",
             "added_at": int(time.time()),
             "_heal_recovered": True
@@ -561,9 +698,21 @@ def heal_probes_alert(state: dict, diag: dict) -> bool:
         report(f"翻译服务不可用: {diag.get('translation_msg') or diag.get('deepseek_msg')}")
         mark_cooldown(state, "probe_translation")
         acted = True
-    if diag.get("plwt_ok") is False and cooldown_ok(state, "probe_plwt"):
-        report(f"98堂不可达: {diag.get('plwt_msg')}（不自动重刮）")
-        mark_cooldown(state, "probe_plwt")
+    if diag.get("plwt_ok") is False:
+        msg = str(diag.get("plwt_msg") or "")
+        streak = int(state.get("plwt_fail_streak") or 0)
+        if plwt_fail_is_transient(msg) and streak < PLWT_ALERT_STREAK:
+            log(f"plwt probe miss {streak}/{PLWT_ALERT_STREAK}: {msg}")
+        elif cooldown_ok(state, "probe_plwt"):
+            if plwt_fail_is_transient(msg):
+                report(f"98堂探活连续 {streak} 次未过: {msg}（不自动重刮）")
+            else:
+                report(f"98堂列表异常: {msg}（不自动重刮）")
+            mark_cooldown(state, "probe_plwt")
+            acted = True
+    if diag.get("p115_ok") is False and cooldown_ok(state, "probe_p115"):
+        report(f"115 Cookie 不可用: {diag.get('p115_msg')}")
+        mark_cooldown(state, "probe_p115")
         acted = True
     mf = int(diag.get("missing_files") or 0)
     if mf > 0 and cooldown_ok(state, "probe_missing"):
@@ -658,13 +807,16 @@ def run_once(do_heal: bool = True) -> dict:
 
     log("diagnose…")
     diag = diagnose()
+    note_plwt_probe(state, diag)
+    health_diag = plwt_health_view(diag, state)
     log(
         f"gaps={diag.get('titlezh_gaps')} lock_held={diag.get('lock_held')} "
         f"qb={diag.get('qb_ok')} missingFiles={diag.get('missing_files')} "
         f"orphan={len(diag.get('orphan_queued') or [])} "
         f"done_queued={len(diag.get('done_but_queued') or [])} "
         f"qb_orphan={len(diag.get('qb_orphan') or [])} "
-        f"plwt={diag.get('plwt_ok')} translation={diag.get('translation_ok', diag.get('deepseek_ok'))} "
+        f"plwt={diag.get('plwt_ok')} plwt_streak={state.get('plwt_fail_streak') or 0} "
+        f"translation={diag.get('translation_ok', diag.get('deepseek_ok'))} "
         f"scrape_h={diag.get('scrape_hours')}"
     )
 
@@ -689,7 +841,7 @@ def run_once(do_heal: bool = True) -> dict:
 
     state["last_run"] = datetime.now().isoformat(timespec="seconds")
     state["last_diag"] = {
-        k: diag.get(k)
+        k: health_diag.get(k)
         for k in (
             "titlezh_gaps",
             "qb_ok",
@@ -709,7 +861,7 @@ def run_once(do_heal: bool = True) -> dict:
     try:
         from src.status_report import write_health_json
 
-        health_payload = write_health_json(diag)
+        health_payload = write_health_json(health_diag)
         log(f"health.json overall={health_payload.get('overall')}")
     except Exception as e:
         log(f"write health.json: {e}")

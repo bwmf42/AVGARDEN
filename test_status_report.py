@@ -73,8 +73,8 @@ class TestHealthPayload(unittest.TestCase):
                 "scrape_hours": None,
             }
         )
-        # version may force yellow if tree unknown
-        self.assertIn(green["overall"], ("green", "yellow"))
+        self.assertEqual(green["overall"], "green")
+        self.assertFalse(green["checks"]["version"]["behind"])
 
         red = sr.build_health_from_diag(
             {
@@ -101,6 +101,44 @@ class TestHealthPayload(unittest.TestCase):
             }
         )
         self.assertEqual(yellow["overall"], "yellow")
+
+        p115_yellow = sr.build_health_from_diag(
+            {
+                "qb_ok": True,
+                "qb_msg": "ok",
+                "deepseek_ok": True,
+                "deepseek_msg": "ok",
+                "plwt_ok": True,
+                "plwt_msg": "ok",
+                "p115_ok": False,
+                "p115_msg": "登录失效，请重新复制 Cookie",
+                "missing_files": 0,
+            }
+        )
+        self.assertEqual(p115_yellow["overall"], "yellow")
+        self.assertFalse(p115_yellow["checks"]["p115"]["ok"])
+        self.assertIn("登录失效", p115_yellow["checks"]["p115"]["msg"])
+
+        unused = sr.build_health_from_diag(
+            {
+                "qb_ok": True,
+                "qb_msg": "ok",
+                "deepseek_ok": True,
+                "deepseek_msg": "ok",
+                "plwt_ok": True,
+                "plwt_msg": "ok",
+                "p115_ok": None,
+                "p115_msg": "未配置",
+                "missing_files": 0,
+            }
+        )
+        self.assertNotIn("p115", unused["checks"])
+
+    def test_missing_tree_hash_is_not_behind(self):
+        with mock.patch.object(sr.os, "environ", {"AVGARDEN_EXPECTED_TREE_HASH": ""}):
+            info = sr.version_status()
+        self.assertFalse(info["behind"])
+        self.assertTrue(info["ok"])
 
 
 class TestDeepseekUsage(unittest.TestCase):

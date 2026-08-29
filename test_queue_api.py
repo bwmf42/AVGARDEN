@@ -128,6 +128,23 @@ class QueueAPITest(unittest.TestCase):
         self.assertEqual(payload[0]["code"], "MNGS-071")
         self.assertEqual(payload[0]["status"], "queued")
 
+    def test_heal_processing_ghost_is_removed_from_queue_status(self):
+        write_json(self.state_path, [{
+            "code": "DLDSS-488",
+            "status": "processing",
+            "source": "unknown",
+            "_heal_recovered": True,
+            "_post_done": True,
+            "added_at": 1785404860,
+        }])
+        with patch.object(queue_api, "qb_api", return_value=[]):
+            status, payload = self.request("/api/queue/")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, [])
+        with open(self.state_path, encoding="utf-8") as handle:
+            leftover = json.load(handle)
+        self.assertEqual(leftover, [])
+
     def test_recent_registration_stays_visible_after_worker_pops_queue(self):
         write_json(self.state_path, [{
             "code": "SSIS-951",
@@ -241,6 +258,32 @@ class QueueAPITest(unittest.TestCase):
         ):
             self.assertTrue(queue_api.cleanup_online_detail("SSIS-951"))
         self.assertIsNotNone(download_source.get_cached_source("SSIS-951", path=source_path))
+
+
+class TestP115ProbeCompat(unittest.TestCase):
+    def test_probe_uses_cached_when_present(self):
+        fake = unittest.mock.Mock()
+        fake.probe_cached.return_value = (True, "cached")
+        ok, msg = queue_api._p115_probe(fake)
+        self.assertTrue(ok)
+        self.assertEqual(msg, "cached")
+        fake.test_connection.assert_not_called()
+
+    def test_probe_falls_back_when_cached_missing(self):
+        fake = unittest.mock.Mock(spec=["test_connection", "public_config"])
+        fake.test_connection.return_value = (True, "ok")
+        ok, msg = queue_api._p115_probe(fake)
+        self.assertTrue(ok)
+        self.assertEqual(msg, "ok")
+        fake.test_connection.assert_called_once()
+
+    def test_public_config_without_refresh_kw(self):
+        class Old:
+            def public_config(self):
+                return {"available": True}
+
+        pub = queue_api._p115_public_config(Old(), refresh=True)
+        self.assertTrue(pub["available"])
 
 
 if __name__ == "__main__":

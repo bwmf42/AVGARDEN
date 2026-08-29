@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,6 +27,9 @@ _UA = (
 )
 
 
+PROBE_TTL_SECONDS = max(30, int(os.environ.get("P115_PROBE_TTL", "120") or "120"))
+
+
 def load_config() -> dict:
     cfg = {
         "enabled": False,
@@ -33,6 +37,9 @@ def load_config() -> dict:
         "cookies": "",
         # 仅测试连接成功后为 True；改 Cookie/路径后清零
         "verified": False,
+        "verified_at": 0.0,
+        "last_error": "",
+        "last_msg": "",
     }
     try:
         if os.path.isfile(CONFIG_PATH):
@@ -65,6 +72,9 @@ def _persist_store(cur: dict) -> None:
         "enabled": bool(cur.get("enabled")),
         "save_path": cur.get("save_path") or "/艾薇",
         "verified": bool(cur.get("verified")),
+        "verified_at": float(cur.get("verified_at") or 0),
+        "last_error": str(cur.get("last_error") or ""),
+        "last_msg": str(cur.get("last_msg") or ""),
         "cookies_file": COOKIES_PATH,
         "has_cookies": bool(cur.get("cookies")),
     }
@@ -217,19 +227,32 @@ def save_config(data: dict) -> dict:
 
     if cookies_changed or path_changed or not cur.get("cookies"):
         cur["verified"] = False
+        cur["verified_at"] = 0.0
+        cur["last_error"] = "" if cur.get("cookies") else "未配置 Cookie"
+        cur["last_msg"] = ""
 
     _persist_store(cur)
     return public_config()
 
 
-def set_verified(ok: bool) -> dict:
+def set_verified(ok: bool, msg: str = "") -> dict:
     cur = load_config()
     cur["verified"] = bool(ok) and bool(cur.get("cookies"))
+    cur["verified_at"] = time.time()
+    text = str(msg or "").strip()[:200]
+    if cur["verified"]:
+        cur["last_error"] = ""
+        cur["last_msg"] = text
+    else:
+        cur["last_error"] = text or ("未配置 Cookie" if not cur.get("cookies") else "Cookie 已失效")
+        cur["last_msg"] = ""
     _persist_store(cur)
     return public_config()
 
 
-def public_config() -> dict:
+def public_config(*, refresh: bool = False) -> dict:
+    if refresh:
+        probe_cached()
     cfg = load_config()
     ck = cfg.get("cookies") or ""
     masked = ""
@@ -239,6 +262,13 @@ def public_config() -> dict:
         masked = uid
     verified = bool(cfg.get("verified")) and bool(ck)
     enabled = bool(cfg.get("enabled"))
+    message = ""
+    if not ck:
+        message = "未配置 Cookie"
+    elif not verified:
+        message = str(cfg.get("last_error") or "Cookie 已失效，请到设置重新测试连接")
+    elif cfg.get("last_msg"):
+        message = str(cfg.get("last_msg"))
     return {
         "enabled": enabled,
         "save_path": cfg.get("save_path") or "/艾薇",
@@ -247,7 +277,56 @@ def public_config() -> dict:
         "cookies_hint": masked,
         "cookies_path": COOKIES_PATH,
         "available": enabled and bool(ck) and verified,
+        "message": message,
+        "verified_at": float(cfg.get("verified_at") or 0),
     }
+
+
+def probe_cached(ttl: Optional[int] = None, force: bool = False) -> Tuple[bool, str]:
+    """Reuse last test_connection() result within ttl seconds."""
+    cfg = load_config()
+    cookies = (cfg.get("cookies") or "").strip()
+    if not cookies:
+        set_verified(False, "未配置 Cookie")
+        return False, "未配置 Cookie"
+    wait = PROBE_TTL_SECONDS if ttl is None else max(0, int(ttl))
+    last = float(cfg.get("verified_at") or 0)
+    if not force and last > 0 and (time.time() - last) < wait:
+        if cfg.get("verified"):
+            return True, str(cfg.get("last_msg") or "cached ok")
+        return False, str(cfg.get("last_error") or "Cookie 已失效")
+    return test_connection()
+
+
+def _auth_failure_message(body: Optional[dict], fallback: str = "") -> str:
+    parts = [fallback or ""]
+    errno = None
+    if isinstance(body, dict):
+        parts.extend(
+            [
+                str(body.get("error") or ""),
+                str(body.get("msg") or ""),
+                str(body.get("message") or ""),
+                str(body.get("errormsg") or ""),
+            ]
+        )
+        errno = body.get("errno") if body.get("errno") is not None else body.get("errNo")
+        if errno is None:
+            errno = body.get("code")
+        if body.get("state") is False and errno in (99, "99", 401, "401", 911, "911"):
+            return str(body.get("error") or body.get("msg") or "登录失效，请重新复制 Cookie")[:160]
+    text = " ".join(p for p in parts if p).strip()
+    low = text.lower()
+    needles = ("请先登录", "登录失效", "未登录", "login", "cookie", "过期", "重新登录", "重新复制")
+    if any(n.lower() in low for n in needles):
+        return (text or "登录失效，请重新复制 Cookie")[:160]
+    return ""
+
+
+def _note_auth_failure(body: Optional[dict], fallback: str = "") -> None:
+    msg = _auth_failure_message(body, fallback)
+    if msg:
+        set_verified(False, msg)
 
 
 def _cookie_headers(cookies: str) -> dict:
@@ -389,6 +468,7 @@ def submit_magnet(
         if ok:
             return True, msg, body
         raw_err = msg
+        _note_auth_failure(body if isinstance(body, dict) else {}, raw_err)
     except Exception as e:
         raw_err = str(e)
         body = {}
@@ -400,6 +480,7 @@ def submit_magnet(
         client = P115Client(cookies)
         pid, dir_err = resolve_dir_id_raw(cookies, save_path)
         if pid is None and save_path not in ("/", ""):
+            _note_auth_failure(body if isinstance(body, dict) else {}, dir_err or "")
             return False, dir_err or f"目录无效: {save_path}", body if isinstance(body, dict) else {}
 
         payload: dict[str, Any] = {"url": magnet}
@@ -429,13 +510,16 @@ def submit_magnet(
                 # check_response 失败但 body 可能已成功
                 if _is_ok_body(resp):
                     return True, f"已提交 115 云下载 → {save_path}", resp
+                _note_auth_failure(resp, str(e))
                 return False, f"115 拒绝: {e}; raw: {raw_err[:80]}", resp
     except ImportError:
         pass
     except Exception as e:
         raw_err = f"{raw_err}; p115client: {e}"[:200]
 
-    return False, f"115 云下载失败: {raw_err}"[:220], body if isinstance(body, dict) else {}
+    fail_body = body if isinstance(body, dict) else {}
+    _note_auth_failure(fail_body, raw_err)
+    return False, f"115 云下载失败: {raw_err}"[:220], fail_body
 
 
 def _coerce_dict(resp: Any) -> dict:
@@ -506,7 +590,7 @@ def test_connection() -> Tuple[bool, str]:
     cfg = load_config()
     cookies = (cfg.get("cookies") or "").strip()
     if not cookies:
-        set_verified(False)
+        set_verified(False, "未配置 Cookie")
         return False, "未配置 Cookie"
     path = cfg.get("save_path") or "/艾薇"
 
@@ -518,17 +602,19 @@ def test_connection() -> Tuple[bool, str]:
             timeout=20,
         )
     except Exception as e:
-        set_verified(False)
+        set_verified(False, f"连接失败: {e}"[:160])
         return False, f"连接失败: {e}"[:160]
 
     if root.get("state") is False:
-        set_verified(False)
-        return False, str(root.get("error") or root.get("msg") or "登录失效，请重新复制 Cookie")[:160]
+        msg = str(root.get("error") or root.get("msg") or "登录失效，请重新复制 Cookie")[:160]
+        set_verified(False, msg)
+        return False, msg
 
     cid, err = resolve_dir_id_raw(cookies, path)
     if cid is None and path not in ("/", ""):
-        set_verified(False)
-        return False, err or f"Cookie 有效，但目录 {path} 未找到（请先在 115 创建）"
+        msg = err or f"Cookie 有效，但目录 {path} 未找到（请先在 115 创建）"
+        set_verified(False, msg)
+        return False, msg
 
     # 可选：云下载配额
     quota_hint = ""
@@ -546,5 +632,6 @@ def test_connection() -> Tuple[bool, str]:
     except Exception:
         pass
 
-    set_verified(True)
-    return True, f"测试通过：Cookie 有效，目标目录 {path} cid={cid}{quota_hint}"
+    ok_msg = f"测试通过：Cookie 有效，目标目录 {path} cid={cid}{quota_hint}"
+    set_verified(True, ok_msg)
+    return True, ok_msg

@@ -21,6 +21,12 @@ class OnlineSearchFallbackTest(unittest.TestCase):
         self.proxy_patch = patch.object(queue_api, "ONLINE_PROXY", None)
         self.proxy_patch.start()
         self.addCleanup(self.proxy_patch.stop)
+        self.translate_patch = patch.object(queue_api, "translate_online_title_zh", return_value=False)
+        self.translate_patch.start()
+        self.addCleanup(self.translate_patch.stop)
+        self.javbus_page = patch("src.weekly.javbus.fetch_page", return_value=None)
+        self.javbus_page.start()
+        self.addCleanup(self.javbus_page.stop)
 
     def test_uses_current_mgs_metadata_chain_without_javbus(self):
         mgs_meta = {
@@ -148,6 +154,44 @@ class OnlineSearchFallbackTest(unittest.TestCase):
 
         self.assertIsNone(item)
         self.assertEqual(error, "detail not found")
+
+    def test_fills_title_from_magnet_listing_when_enrich_left_the_code(self):
+        with patch("src.weekly.enrich.enrich_item"), \
+                patch("src.weekly.javbus.fetch_page", return_value=None), \
+                patch(
+                    "download_source.resolve_download_source",
+                    return_value=source_result(
+                        kind="magnet",
+                        source="plwt_chinese",
+                        magnet="magnet:?xt=urn:btih:test",
+                        title="SNOS-334 最強ビジュOLさん、出張先で相部屋",
+                    ),
+                ):
+            item, error = queue_api.build_online_detail("SNOS-334")
+        self.assertEqual(error, "")
+        self.assertEqual(item["title"], "SNOS-334 最強ビジュOLさん、出張先で相部屋")
+        self.assertTrue(item["hasChinese"])
+
+    def test_fills_title_from_javbus_when_listing_title_is_the_code(self):
+        with patch("src.weekly.enrich.enrich_item"), \
+                patch("src.weekly.javbus.set_proxy"), \
+                patch("src.weekly.javbus.fetch_page", return_value="<html>"), \
+                patch(
+                    "src.weekly.javbus.parse_page",
+                    return_value={"title": "最強ビジュOLさん、出張先で死ぬほど嫌いな中年上司と相部屋"},
+                ), \
+                patch(
+                    "download_source.resolve_download_source",
+                    return_value=source_result(
+                        kind="magnet",
+                        source="plwt_chinese",
+                        magnet="magnet:?xt=urn:btih:test",
+                        title="SNOS-334",
+                    ),
+                ):
+            item, error = queue_api.build_online_detail("SNOS-334")
+        self.assertEqual(error, "")
+        self.assertEqual(item["title"], "最強ビジュOLさん、出張先で死ぬほど嫌いな中年上司と相部屋")
 
 
 if __name__ == "__main__":

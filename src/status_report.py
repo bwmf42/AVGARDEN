@@ -232,15 +232,16 @@ def version_status() -> Dict[str, Any]:
     expected = (os.environ.get("AVGARDEN_EXPECTED_TREE_HASH") or "").strip()
     behind = False
     msgs = []
-    if not tree or tree in ("unknown", "dev", ""):
-        behind = True
-        msgs.append("tree_hash missing/unknown")
-    if git_dirty:
-        behind = True
-        msgs.append("git_dirty")
     if expected and tree and expected != tree:
         behind = True
         msgs.append(f"expected {expected[:12]} got {tree[:12]}")
+    elif expected and (not tree or tree in ("unknown", "dev")):
+        behind = True
+        msgs.append("tree_hash missing/unknown")
+    elif git_dirty:
+        msgs.append("运行中（含未提交改动）")
+    elif not tree or tree in ("unknown", "dev"):
+        msgs.append("运行中")
     info["behind"] = behind
     info["ok"] = not behind
     info["msg"] = "; ".join(msgs) if msgs else "ok"
@@ -269,6 +270,9 @@ def build_health_from_diag(diag: Dict[str, Any]) -> Dict[str, Any]:
         add("translation", diag.get("deepseek_ok"), str(diag.get("deepseek_msg") or ""))
     if "plwt_ok" in diag:
         add("plwt", diag.get("plwt_ok"), str(diag.get("plwt_msg") or ""))
+    # 未配置时 p115_ok 不在 diag 里；失效只黄不红
+    if diag.get("p115_ok") is not None:
+        add("p115", diag.get("p115_ok"), str(diag.get("p115_msg") or ""))
     mf = int(diag.get("missing_files") or 0)
     add("missing_files", mf == 0, f"count={mf}" if mf else "ok")
     scrape_h = diag.get("scrape_hours")
@@ -289,7 +293,7 @@ def build_health_from_diag(diag: Dict[str, Any]) -> Dict[str, Any]:
     }
 
     fails = [k for k, v in checks.items() if not v.get("ok")]
-    # yellow: non-critical (version behind alone, or missing_files)
+    # yellow: non-critical (version behind, missing_files, p115 cookie)
     # red: qB/plwt/translation down or scrape stuck
     critical = {"qb", "plwt", "translation", "deepseek", "scrape"}
     crit_fails = [k for k in fails if k in critical]

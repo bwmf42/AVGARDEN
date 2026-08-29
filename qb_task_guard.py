@@ -12,6 +12,19 @@ DONE_QB_STATES = frozenset({
 })
 
 
+def magnet_watch_interrupt(cancel_requested, worker_running):
+    """How the qB watch loop should stop.
+
+    cancel = user asked to drop the torrent.
+    leave = worker is shutting down; qB must keep the torrent.
+    """
+    if cancel_requested:
+        return "cancel"
+    if not worker_running:
+        return "leave"
+    return ""
+
+
 def torrent_matches_video_id(torrent, video_id):
     """Match a torrent to a canonical video ID, including source suffixes."""
     target = normalize_video_id(video_id) or str(video_id or "").upper().strip()

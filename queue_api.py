@@ -76,6 +76,21 @@ DEBUG = os.environ.get("DEBUG", "0") == "1"
 QUEUE_REGISTRATION_GRACE_SECONDS = int(os.environ.get("QUEUE_REGISTRATION_GRACE_SECONDS", "120"))
 
 
+def _p115_probe(p115, force=False):
+    """Use probe_cached when present; old images only have test_connection."""
+    probe = getattr(p115, "probe_cached", None)
+    if callable(probe):
+        return probe(force=True) if force else probe()
+    return p115.test_connection()
+
+
+def _p115_public_config(p115, refresh=False):
+    try:
+        return p115.public_config(refresh=refresh)
+    except TypeError:
+        return p115.public_config()
+
+
 def _actress_is_blocked(name: str) -> bool:
     """Match blocked actresses with fold (空白/尾标点/常见繁简), same as Go."""
     raw = (name or "").strip()
@@ -348,6 +363,33 @@ def load_state():
 def save_state(items):
     """Save queue state with file lock protection."""
     write_json(STATE_PATH, items)
+
+
+def is_stale_heal_ghost(item, *, qb_codes, is_locked, current_code) -> bool:
+    """Heal-recovered processing rows with no lock/files/qB should not stay visible."""
+    if not isinstance(item, dict):
+        return False
+    code = item.get("code")
+    if not code:
+        return False
+    if is_locked and code == current_code:
+        return False
+    if code in qb_codes:
+        return False
+    status = str(item.get("status") or "")
+    recovered = bool(item.get("_heal_recovered"))
+    post_done = bool(item.get("_post_done"))
+    if status != "processing" and not (
+        recovered and post_done and status not in ("queued", "downloading", "done")
+    ):
+        return False
+    if find_mp4_path(code) is not None or find_ts_path(code) is not None:
+        return False
+    code_dir = get_code_dir(code)
+    if os.path.isdir(code_dir) and get_dir_size(code_dir) > 0:
+        return False
+    return True
+
 
 def update_state(updater):
     """Update queue state atomically with file lock protection."""
@@ -915,6 +957,61 @@ def online_cleanup_loop(stop_event=None):
             log(f"Download source TTL cleanup failed: {e}")
 
 
+def _usable_online_title(text, code):
+    title = str(text or "").strip()
+    if not title:
+        return False
+    if title.upper() == str(code or "").upper():
+        return False
+    studio = str(code or "").split("-", 1)[0]
+    if studio and title.upper() == studio.upper():
+        return False
+    return True
+
+
+def fill_online_missing_title(item, code, source=None):
+    """When enrich left title as the code, use magnet listing or JavBus."""
+    if _usable_online_title(item.get("title"), code):
+        return False
+    src_title = str((source or {}).get("title") or "").strip()
+    if _usable_online_title(src_title, code):
+        item["title"] = src_title
+        return True
+    try:
+        from src.weekly import javbus
+
+        javbus.set_proxy(ONLINE_PROXY)
+        html = javbus.fetch_page(code)
+        detail = javbus.parse_page(html) if html else {}
+        official = str(detail.get("title") or "").strip()
+        if _usable_online_title(official, code):
+            item["title"] = official
+            return True
+    except Exception as e:
+        log(f"Online JavBus title fallback failed for {code}: {e}")
+    return False
+
+
+def translate_online_title_zh(item, code):
+    """One-shot Chinese title for online search details."""
+    try:
+        from src.weekly import actresses as actress_util
+
+        if not actress_util.item_needs_title_zh(item):
+            return False
+        from weekly_updater import translate_title_once
+
+        zh = translate_title_once(code, item.get("title"), item.get("actresses"))
+        if not zh:
+            return False
+        item["titleZh"] = zh
+        actress_util.finalize_title_zh(item)
+        return bool(str(item.get("titleZh") or "").strip())
+    except Exception as e:
+        log(f"Online title translate failed for {code}: {e}")
+        return False
+
+
 def build_online_detail(raw_code):
     code = normalize_online_code(raw_code)
     if not code:
@@ -958,6 +1055,8 @@ def build_online_detail(raw_code):
             "plwt_chinese",
             "sukebei_chinese",
         )
+        fill_online_missing_title(item, code, source)
+        # Do not translate here: Grok/relay timeouts made /search sit on 加载中 for minutes.
 
         metadata_found = any((
             item.get("title") and item.get("title") != code,
@@ -1119,7 +1218,7 @@ class QueueHandler(BaseHTTPRequestHandler):
             try:
                 from src import p115_offline as p115
 
-                self._json(p115.public_config())
+                self._json(_p115_public_config(p115, refresh=True))
             except Exception as e:
                 self._json({"error": str(e)}, 500)
             return
@@ -1271,6 +1370,14 @@ class QueueHandler(BaseHTTPRequestHandler):
             if c in result:
                 continue  # Already in result from queue.txt or qB
 
+            if is_stale_heal_ghost(
+                item, qb_codes=qb_codes, is_locked=is_locked, current_code=current_code
+            ):
+                log(f"Removing stale heal ghost: {c} (status={item.get('status')})")
+                state = [s for s in state if s["code"] != c]
+                save_state(state)
+                continue
+
             mp4 = find_mp4_path(c)
             if mp4:
                 total = get_file_size(mp4)
@@ -1278,6 +1385,9 @@ class QueueHandler(BaseHTTPRequestHandler):
                 if c.upper() in failed_codes:
                     clear_failure_record(c)
                     failed_codes.discard(c.upper())
+                if item.get("status") != "done":
+                    item["status"] = "done"
+                    save_state(state)
             elif item.get("status") == "downloading" and not is_locked:
                 # Stale download: no mp4, no active lock, not in qB → clean
                 has_ts = find_ts_path(c) is not None
@@ -1320,8 +1430,13 @@ class QueueHandler(BaseHTTPRequestHandler):
                 info = get_download_info(c)
                 result[c] = {"code": c, "status": "queued", **info}
             else:
+                visible_status = item.get("status", "queued")
+                if visible_status == "processing":
+                    visible_status = "queued"
+                if visible_status not in ("queued", "downloading", "done"):
+                    continue
                 info = get_download_info(c)
-                result[c] = {"code": c, "status": item.get("status", "queued"), **info}
+                result[c] = {"code": c, "status": visible_status, **info}
         
         # Check for newly completed items → trigger post-download actions
         for c in list(result.keys()):
@@ -1338,6 +1453,10 @@ class QueueHandler(BaseHTTPRequestHandler):
                     # Save to permanent history
                     append_history(c, result[c].get("size", 0))
                     state_item["_post_done"] = True
+                    state_item["status"] = "done"
+                    save_state(state)
+                elif state_item and state_item.get("status") != "done":
+                    state_item["status"] = "done"
                     save_state(state)
         
         # Merge history into result (persistent done items)
@@ -1426,12 +1545,22 @@ class QueueHandler(BaseHTTPRequestHandler):
             try:
                 from src import p115_offline as p115
 
-                pub = p115.public_config()
+                ok, msg = _p115_probe(p115)
+                pub = _p115_public_config(p115)
                 if not pub.get("available"):
                     self._json(
                         {
                             "error": "115 未就绪",
-                            "message": "请先在设置启用 115 并配置 Cookie",
+                            "message": msg or pub.get("message") or "请先在设置启用 115 并配置 Cookie",
+                        },
+                        400,
+                    )
+                    return
+                if not ok:
+                    self._json(
+                        {
+                            "error": "115 Cookie 已失效",
+                            "message": msg or "请到设置重新测试连接",
                         },
                         400,
                     )

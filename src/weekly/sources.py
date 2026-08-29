@@ -57,26 +57,39 @@ def _card_freshness(body, markers):
     return ""
 
 
+def _plwt_list_item(it, fid):
+    return {
+        "id": it.get("id", "").upper(),
+        "title": it.get("title") or it.get("id", ""),
+        "cover": it.get("cover") or "",
+        "releaseDate": it.get("releaseDate") or it.get("postDate") or "",
+        "freshness": it.get("freshness") or f"forum-{fid}",
+        "source": it.get("source") or f"plwt-{fid}",
+        "forumUrl": it.get("forumUrl") or "",
+        "postDate": it.get("postDate") or "",
+    }
+
+
 def get_recent_plwt(max_pages=3):
     """98堂 forum-37 列表（每日推荐默认源）。"""
     fid = os.environ.get("WEEKLY_FORUM_FID", WEEKLY_FID)
     pages = max(1, int(max_pages or 3))
     print(f"[Sources] plwt forum-{fid} pages={pages}", flush=True)
     items = chinese_forum.get_weekly_list(max_pages=pages, fid=fid)
-    # 对齐 weekly_updater 最小字段
-    out = []
-    for it in items:
-        out.append({
-            "id": it.get("id", "").upper(),
-            "title": it.get("title") or it.get("id", ""),
-            "cover": it.get("cover") or "",
-            "releaseDate": it.get("releaseDate") or it.get("postDate") or "",
-            "freshness": it.get("freshness") or f"forum-{fid}",
-            "source": it.get("source") or f"plwt-{fid}",
-            "forumUrl": it.get("forumUrl") or "",
-            "postDate": it.get("postDate") or "",
-        })
-    return out
+    return [_plwt_list_item(it, fid) for it in items]
+
+
+def get_recent_plwt_until(stop_date, max_pages=0):
+    """forum-37 从第 1 页翻到发帖日早于 stop_date（YYYY-MM-DD）。"""
+    fid = os.environ.get("WEEKLY_FORUM_FID", WEEKLY_FID)
+    print(f"[Sources] plwt forum-{fid} until {stop_date}", flush=True)
+    items = chinese_forum.get_list_until(
+        stop_date=stop_date,
+        max_pages=max_pages,
+        fid=fid,
+        purpose="weekly",
+    )
+    return [_plwt_list_item(it, fid) for it in items]
 
 
 def get_recent_javbus(max_pages=1):

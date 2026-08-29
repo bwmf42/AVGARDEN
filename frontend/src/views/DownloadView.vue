@@ -77,7 +77,7 @@ export default {
     },
     computed: {
         activeItems() {
-            return this.items.filter(i => i.status !== 'done')
+            return this.items.filter(i => i.status === 'queued' || i.status === 'downloading')
         },
         doneItems() {
             return this.items.filter(i => i.status === 'done')

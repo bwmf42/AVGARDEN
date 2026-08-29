@@ -22,7 +22,7 @@ from src.log_writer import write as log_write
 from main_video import find_main_video
 from process_control import clear_cancel_request, is_cancel_requested, terminate_active_process
 from qb_file_selection import strict_priority_plan
-from qb_task_guard import has_matching_qb_task
+from qb_task_guard import has_matching_qb_task, magnet_watch_interrupt
 from queue_store import (
     append_unique,
     clear_if_matches,
@@ -615,6 +615,7 @@ def try_magnet_download(avid, save_dir, magnet=None, target="qb"):
         try:
             from src import p115_offline as p115
 
+            ok, probe_msg = p115.probe_cached()
             pub = p115.public_config()
             p115_cfg = p115.load_config()
             if not p115_cfg.get("cookies"):
@@ -625,9 +626,9 @@ def try_magnet_download(avid, save_dir, magnet=None, target="qb"):
                 _last_magnet_reason = "115 离线未启用（设置页）"
                 logger.warning(f"[Magnet] {avid} 115: not enabled")
                 return (MAGNET_FAILED, None)
-            if not pub.get("verified"):
-                _last_magnet_reason = "115 未通过测试连接（设置页）"
-                logger.warning(f"[Magnet] {avid} 115: not verified")
+            if not ok or not pub.get("verified"):
+                _last_magnet_reason = probe_msg or "115 Cookie 已失效（设置页重新测试）"
+                logger.warning(f"[Magnet] {avid} 115: not verified ({_last_magnet_reason})")
                 return (MAGNET_FAILED, None)
             save_to = p115_cfg.get("save_path") or "/艾薇"
             logger.info(f"[Magnet] {avid} 115 offline → {save_to}")
@@ -687,7 +688,8 @@ def try_magnet_download(avid, save_dir, magnet=None, target="qb"):
     pending_reason = "已交 qB 后台继续下载"
 
     while True:
-        if is_cancel_requested(avid) or not running:
+        interrupt = magnet_watch_interrupt(is_cancel_requested(avid), running)
+        if interrupt == "cancel":
             logger.info(f"[Magnet] {avid} cancelled")
             if torrent_hash:
                 qbittorrent_post("/api/v2/torrents/delete", {"hashes": torrent_hash, "deleteFiles": "false"})
@@ -695,6 +697,11 @@ def try_magnet_download(avid, save_dir, magnet=None, target="qb"):
                 cancel_qb_tasks(avid)
             _last_magnet_reason = "已取消"
             return (MAGNET_CANCELLED, torrent_hash)
+        if interrupt == "leave":
+            # docker restart / SIGTERM：qB 自己继续下，不要当成用户取消去删种
+            logger.info(f"[Magnet] {avid} worker stopping, leave qB torrent running")
+            _last_magnet_reason = "worker 重启，qB 继续下载"
+            return (MAGNET_PENDING, torrent_hash)
         elapsed = time.time() - start
 
         # 查询所有 torrent 状态
@@ -892,7 +899,19 @@ def download_video(avid):
             return True
         if retries >= MAX_RETRIES and magnet:
             logger.info(f"[Worker] {avid} 已失败 {retries} 次，但找到磁链，尝试 qB")
-        download_target = get_download_target(download_targets_path, avid, default="qb")
+        state_target = ""
+        try:
+            from queue_store import read_json as _read_json
+
+            for item in _read_json(os.environ.get("STATE_PATH", "/db/queue_state.json"), []):
+                if isinstance(item, dict) and str(item.get("code") or "").upper() == avid.upper():
+                    state_target = str(item.get("target") or "")
+                    break
+        except Exception:
+            state_target = ""
+        download_target = get_download_target(
+            download_targets_path, avid, default=state_target or "qb"
+        )
         if magnet:
             magnet_status, torrent_hash = try_magnet_download(
                 avid, save_dir, magnet, target=download_target
@@ -930,7 +949,8 @@ def download_video(avid):
                 return False
 
             _handle_magnet_unavailable(avid, _last_magnet_reason or "磁链下载失败")
-            clear_download_target(download_targets_path, avid)
+            if download_target != "115":
+                clear_download_target(download_targets_path, avid)
             release_lock()
             return False
 

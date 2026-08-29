@@ -7,9 +7,11 @@
 
         <div v-if="loading" class="loading">加载中...</div>
         <div v-else-if="!query" class="empty">请输入搜索内容</div>
-        <div v-else-if="results.length === 0" class="empty">没有找到相关影片</div>
+        <div v-else-if="onlineSearching && results.length === 0" class="loading">正在在线查找 {{ onlineCodeQuery }}…</div>
+        <div v-else-if="results.length === 0" class="empty">{{ emptyMessage }}</div>
 
         <div v-else class="result-sections">
+            <div v-if="onlineSearching" class="loading online-pending">正在在线查找 {{ onlineCodeQuery }}…</div>
             <div v-if="onlineResults.length" class="section">
                 <h2>在线作品 ({{ onlineResults.length }})</h2>
                 <div class="video-grid">
@@ -92,6 +94,7 @@ export default {
     data() {
         return {
             loading: true,
+            onlineSearching: false,
             localItems: [],
             weeklyItems: [],
             onlineResult: null,
@@ -151,6 +154,12 @@ export default {
         },
         results() {
             return [...this.onlineResults, ...this.localResults, ...this.weeklyResults]
+        },
+        emptyMessage() {
+            if (this.onlineError === 'online-not-found') return '本地没有，在线也未找到该番号'
+            if (this.onlineError === 'online-error') return '在线查找失败，请稍后重试'
+            if (this.onlineCodeQuery) return '本地没有该番号，在线也未找到'
+            return '没有找到相关影片'
         }
     },
     async created() {
@@ -173,6 +182,7 @@ export default {
     methods: {
         async loadData() {
             this.loading = true
+            this.onlineSearching = false
             this.onlineResult = null
             this.onlineError = ''
             try {
@@ -182,18 +192,25 @@ export default {
                 ])
                 this.localItems = Array.isArray(local) ? local : []
                 this.weeklyItems = weeklyResp.ok ? await weeklyResp.json() : []
-                if (this.onlineCodeQuery && !this.hasExactLocalOrWeeklyResult) {
-                    await this.loadOnlineResult(this.onlineCodeQuery)
-                }
             } catch (e) {
                 console.error(e)
             } finally {
                 this.loading = false
             }
+            if (this.onlineCodeQuery && !this.hasExactLocalOrWeeklyResult) {
+                this.onlineSearching = true
+                try {
+                    await this.loadOnlineResult(this.onlineCodeQuery)
+                } finally {
+                    this.onlineSearching = false
+                }
+            }
         },
         async loadOnlineResult(code) {
+            const ac = new AbortController()
+            const timer = setTimeout(() => ac.abort(), 100000)
             try {
-                const resp = await fetch('/api/online-search/' + encodeURIComponent(code))
+                const resp = await fetch('/api/online-search/' + encodeURIComponent(code), { signal: ac.signal })
                 if (!resp.ok) {
                     this.onlineError = 'online-not-found'
                     return
@@ -205,6 +222,8 @@ export default {
             } catch (e) {
                 console.error(e)
                 this.onlineError = 'online-error'
+            } finally {
+                clearTimeout(timer)
             }
         },
         async cleanupOnlineResult() {
@@ -309,6 +328,11 @@ h1::after {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
+}
+
+.online-pending {
+  padding: 16px;
+  margin-bottom: 16px;
 }
 
 .section {

@@ -222,15 +222,27 @@ else
 fi
 
 echo ""
-echo "=== 2. HOT worker python inject ==="
+echo "=== 2. recreate services ==="
+if [ "${#RECREATE_SERVICES[@]}" -gt 0 ]; then
+  dc up -d --no-deps "${RECREATE_SERVICES[@]}"
+else
+  echo "skip recreate"
+fi
+
+echo ""
+echo "=== 3. HOT worker python inject ==="
+# After recreate so compose up cannot wipe docker-cp'd Python.
 if [ "$DEPLOY_HOT" = "1" ] && [ "$HOT_WORKER" = "1" ]; then
   cid="$(dc ps -q worker 2>/dev/null || true)"
   if [ -z "$cid" ]; then
     echo "worker not running; full recreate worker"
     dc up -d --no-deps --build worker
-  else
+    cid="$(dc ps -q worker 2>/dev/null || true)"
+  fi
+  if [ -n "$cid" ]; then
     for rel in \
       worker.py queue_api.py queue_store.py launcher.py heal_runner.py \
+      qb_task_guard.py qb_file_selection.py \
       download_source.py weekly_updater.py run_scrape_followups.py \
       unwatched_chinese_refill.py requirements.txt \
       src/p115_offline.py src/log_writer.py
@@ -258,14 +270,6 @@ if [ "$DEPLOY_HOT" = "1" ] && [ "$HOT_WORKER" = "1" ]; then
   fi
 else
   echo "skip HOT worker"
-fi
-
-echo ""
-echo "=== 3. recreate services ==="
-if [ "${#RECREATE_SERVICES[@]}" -gt 0 ]; then
-  dc up -d --no-deps "${RECREATE_SERVICES[@]}"
-else
-  echo "skip recreate"
 fi
 
 echo ""

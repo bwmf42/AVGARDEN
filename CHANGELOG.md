@@ -14,6 +14,8 @@
 - Unified Weekly, genre, search, and detail title display so incomplete `titleZh` values no longer hide the complete source title.
 - Fixed the Worker container entrypoint to use the bundled virtualenv Python, which contains the project's runtime dependencies; the system Python could fail at startup with missing modules such as `curl_cffi`.
 - Fixed title translation routing and status reporting: configured OpenAI-compatible GPT relays now take priority over DeepSeek for Weekly and NFO titles, health probes check the active provider, and the dashboard refreshes version identity from `/api/version` instead of showing a stale health snapshot as "version behind".
+- Fixed runtime health and queue drift handling: transient 98堂 probe failures no longer alert immediately, stale recovered processing rows are removed, active qB tasks are re-registered, 115 Cookie probes use a short cache and invalidate failed credentials, and the UI now shows concise actionable status messages.
+- Fixed online search and deployment edge cases: missing online titles can fall back to source listings, searches have a bounded wait, qB tasks survive Worker shutdowns, and hot-patched Worker files are injected after service recreation.
 - Fixed Worker hot deployments so Weekly translation scripts are copied into the running container before restart.
 - Fixed slow dashboard loading: added gzip compression middleware to Go server, reducing 240KB JS payload to ~60KB and improving frontend load time from 3.4s to under 1s on local network.
 - Fixed undefined `scrapeStatusHandler` route that caused server build failures after gzip optimization was added.

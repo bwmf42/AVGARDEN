@@ -122,14 +122,14 @@
                   class="system-check-row"
                   :class="check.ok ? 'ok' : 'bad'"
                 >
-                  <span>{{ checkLabel(name) }}</span>
-                  <span>{{ checkStatusText(name, check) }}</span>
+                  <span class="system-check-name">{{ checkLabel(name) }}</span>
+                  <span class="system-check-msg" :title="check.msg || ''">{{ checkStatusText(name, check) }}</span>
                 </div>
               </div>
               <div v-if="systemStatus.failEvents.length" class="system-status-fails">
                 <strong>24h 失败</strong>
-                <p v-for="(ev, idx) in systemStatus.failEvents.slice(0, 6)" :key="idx" class="fail-line">
-                  {{ ev.ts }} [{{ ev.tag }}] {{ ev.msg }}
+                <p v-for="(ev, idx) in systemStatus.failEvents.slice(0, 6)" :key="idx" class="fail-line" :title="ev.msg || ''">
+                  {{ ev.ts }} [{{ ev.tag }}] {{ summarizeCheckMessage(ev.msg) }}
                 </p>
               </div>
               <div v-if="systemStatus.diskLines.length" class="system-status-disk">
@@ -187,6 +187,7 @@
 <script>
 import { normalizeVideoId } from './utils/videoId'
 import { scrapeStatusMessage } from './scrapeStatus'
+import { summarizeCheckMessage } from './utils/statusMessage'
 
 function normalizeStatusID(id) {
   return String(id || '').trim().toUpperCase()
@@ -328,7 +329,8 @@ export default {
         const resp = await fetch('/api/queue-status')
         if (!resp.ok) return
         const data = await resp.json()
-        const items = [...data.active, ...data.failed].filter(item => item.status !== 'done')
+        const visible = new Set(['queued', 'downloading', 'failed'])
+        const items = [...data.active, ...data.failed].filter(item => visible.has(item.status))
         window.avGardenQueueStatus = items
         window.dispatchEvent(new CustomEvent('av-garden-status', { detail: { items } }))
         this.applyVisibleStatusItems(items)
@@ -349,8 +351,8 @@ export default {
         if (versionResp?.ok) {
           runtimeVersion = await versionResp.json().catch(() => null)
         }
-        if (runtimeVersion && (runtimeVersion.tree_hash_worker || runtimeVersion.tree_hash)) {
-          const workerHash = runtimeVersion.tree_hash_worker || runtimeVersion.tree_hash
+        if (runtimeVersion) {
+          const workerHash = runtimeVersion.tree_hash_worker || runtimeVersion.tree_hash || ''
           checks.version = {
             ...(checks.version || {}),
             ok: true,
@@ -359,7 +361,9 @@ export default {
             tree_hash: workerHash,
             msg: runtimeVersion.git_dirty
               ? '运行中（构建时含未提交改动）'
-              : `运行中 · ${runtimeVersion.version || '已构建'}`
+              : (workerHash
+                ? `运行中 · ${runtimeVersion.version || '已构建'}`
+                : '运行中')
           }
         }
         const hasData = !!(health.overall || health.ts || Object.keys(checks).length)
@@ -397,6 +401,37 @@ export default {
           queueLine,
           hasData
         }
+        this.refreshP115Check()
+      } catch (e) {}
+    },
+    applySystemChecks(checks) {
+      const criticalNames = new Set(['qb', 'plwt', 'translation', 'deepseek', 'scrape'])
+      const hasCriticalFailure = Object.entries(checks).some(([name, check]) =>
+        criticalNames.has(name) && check && check.ok === false
+      )
+      const hasWarning = Object.values(checks).some(check => check && check.ok === false)
+      this.systemStatus = {
+        ...this.systemStatus,
+        checks,
+        overall: Object.keys(checks).length ? (hasCriticalFailure ? 'red' : (hasWarning ? 'yellow' : 'green')) : this.systemStatus.overall
+      }
+    },
+    async refreshP115Check() {
+      try {
+        const resp = await fetch('/api/p115/config', { cache: 'no-store' })
+        if (!resp.ok) return
+        const p115 = await resp.json()
+        if (!p115 || !(p115.enabled || p115.has_cookies)) return
+        const checks = {
+          ...this.systemStatus.checks,
+          p115: {
+            ok: !!p115.available,
+            msg: p115.available
+              ? (p115.message || '')
+              : (p115.message || 'Cookie 已失效，请到设置重新测试连接')
+          }
+        }
+        this.applySystemChecks(checks)
       } catch (e) {}
     },
     async fetchScrapeStatus() {
@@ -411,19 +446,25 @@ export default {
     },
     checkLabel(name) {
       return {
+        qb: 'qB',
         translation: '翻译服务',
         deepseek: '翻译服务',
+        plwt: '98堂',
+        p115: '115 Cookie',
         missing_files: 'qB 文件',
+        scrape: '刮削',
         version: '版本'
       }[name] || name
     },
     checkStatusText(name, check) {
-      if (!check?.ok) return check?.msg || '异常'
+      if (!check?.ok) return summarizeCheckMessage(check?.msg)
       if ((name === 'translation' || name === 'deepseek') && check.msg) {
-        return check.msg.replace('model=', '')
+        const text = String(check.msg).replace('model=', '').trim()
+        return text.length > 28 ? `${text.slice(0, 26)}…` : text
       }
       return '正常'
     },
+    summarizeCheckMessage,
     applyVisibleStatusItems(items) {
       this.statusBar.items = items
       this.statusBar.visible = items.length > 0
@@ -749,10 +790,12 @@ body {
   position: sticky;
   top: 0;
   height: 100vh;
+  min-width: 0;
   padding: 18px;
   border-left: 1px solid var(--rose-line);
   background: rgba(255, 251, 253, 0.94);
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .activity-head {
@@ -777,6 +820,8 @@ body {
 .activity-card {
   margin-bottom: 12px;
   padding: 14px;
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
@@ -851,17 +896,33 @@ body {
   border-top: 1px solid var(--line);
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 
 .system-check-row {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
   gap: 8px;
   font-size: 12px;
+  min-width: 0;
 }
 
-.system-check-row.ok span:last-child { color: var(--success-color); }
-.system-check-row.bad span:last-child { color: var(--danger-color); }
+.system-check-name {
+  color: var(--muted-color);
+  white-space: nowrap;
+}
+
+.system-check-msg {
+  min-width: 0;
+  text-align: right;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.system-check-row.ok .system-check-msg { color: var(--success-color); }
+.system-check-row.bad .system-check-msg { color: var(--danger-color); }
 
 .system-status-fails .fail-line,
 .system-status-disk p,
@@ -871,6 +932,7 @@ body {
   font-size: 11px;
   color: var(--muted-color);
   line-height: 1.45;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 

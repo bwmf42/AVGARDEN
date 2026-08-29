@@ -2763,7 +2763,10 @@ func queueStatusHandler(w http.ResponseWriter, r *http.Request) {
 		for _, item := range queueItems {
 			code := strings.ToUpper(strings.TrimSpace(item.Code))
 			status := strings.ToLower(strings.TrimSpace(item.Status))
-			if code == "" || status == "" || status == "done" || seen[code] {
+			if code == "" || status == "" || seen[code] {
+				continue
+			}
+			if status != "queued" && status != "downloading" {
 				continue
 			}
 			seen[code] = true

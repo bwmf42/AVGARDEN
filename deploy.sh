@@ -319,7 +319,17 @@ else
 fi
 
 echo ""
-echo "=== 4b. HOT worker 热补丁（docker cp） ==="
+echo "=== 5. 定向重启服务 ==="
+if [ "${#RECREATE_SERVICES[@]}" -gt 0 ]; then
+    SERVICE_ARGS="${RECREATE_SERVICES[*]}"
+    remote_ssh \
+        "echo '$NAS_PASS' | sudo -S -p '' docker compose -f '$NAS_DIR/docker-compose.yml' up -d --no-deps $SERVICE_ARGS 2>&1"
+else
+    echo "运行配置未变化，跳过容器重启"
+fi
+
+echo ""
+echo "=== 5b. HOT worker 热补丁（docker cp） ==="
 if [ "$DEPLOY_HOT" = "1" ] && [ "${HOT_WORKER:-0}" = "1" ]; then
     remote_ssh "
         set -e
@@ -332,6 +342,7 @@ if [ "$DEPLOY_HOT" = "1" ] && [ "${HOT_WORKER:-0}" = "1" ]; then
         # 把 NAS 现役目录里的 Python 源码拷进容器 /app（跳过镜像重建）
         for rel in \
             worker.py queue_api.py queue_store.py launcher.py heal_runner.py \
+            qb_task_guard.py qb_file_selection.py \
             download_source.py weekly_updater.py run_scrape_followups.py \
             unwatched_chinese_refill.py plwt_translate_missing.py \
             requirements.txt \
@@ -367,17 +378,7 @@ else
 fi
 
 echo ""
-echo "=== 5. 定向重启服务 ==="
-if [ "${#RECREATE_SERVICES[@]}" -gt 0 ]; then
-    SERVICE_ARGS="${RECREATE_SERVICES[*]}"
-    remote_ssh \
-        "echo '$NAS_PASS' | sudo -S -p '' docker compose -f '$NAS_DIR/docker-compose.yml' up -d --no-deps $SERVICE_ARGS 2>&1"
-else
-    echo "运行配置未变化，跳过容器重启"
-fi
-
-echo ""
-echo "=== 5b. 热更新 BUILD_INFO 到运行中 server（无需重建镜像） ==="
+echo "=== 5c. 热更新 BUILD_INFO 到运行中 server（无需重建镜像） ==="
 remote_ssh "
     set -e
     if [ ! -f '$NAS_DIR/BUILD_INFO.json' ]; then

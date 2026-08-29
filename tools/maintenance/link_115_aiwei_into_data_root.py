@@ -96,12 +96,67 @@ def sync_links(
     return result
 
 
+def remove_reverse_links(
+    data_root: Optional[str] = None,
+    source_rel: Optional[str] = None,
+    *,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Unlink 艾薇 placeholders that point back into the library.
+
+    Only deletes symlinks. Real directories and files are left untouched.
+    """
+    root = os.path.realpath(
+        data_root
+        or os.environ.get("SAVE_PATH")
+        or os.environ.get("DATA_ROOT")
+        or "/data"
+    )
+    source_rel = (
+        source_rel
+        or os.environ.get("LINK115_SOURCE_REL")
+        or "115生活备份/艾薇"
+    )
+    src = os.path.join(root, source_rel)
+    result: Dict[str, Any] = {
+        "root": root,
+        "source_rel": source_rel,
+        "removed": 0,
+        "kept_real": 0,
+        "kept_other": 0,
+        "missing_source": False,
+        "names": [],
+    }
+    if not os.path.isdir(src):
+        result["missing_source"] = True
+        return result
+
+    for name in sorted(os.listdir(src)):
+        path = os.path.join(src, name)
+        if not os.path.islink(path):
+            if os.path.exists(path):
+                result["kept_real"] += 1
+            continue
+        target = os.readlink(path)
+        # reverse placeholders look like ../../CODE or an absolute path outside 艾薇
+        abs_target = target if os.path.isabs(target) else os.path.normpath(os.path.join(src, target))
+        inside_src = os.path.commonpath([os.path.realpath(src), os.path.realpath(os.path.dirname(abs_target) or src)]) == os.path.realpath(src)
+        if inside_src and not target.startswith(".."):
+            result["kept_other"] += 1
+            continue
+        if not dry_run:
+            os.unlink(path)
+        result["removed"] += 1
+        result["names"].append(name)
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--data-root",
         default=os.environ.get("SAVE_PATH") or os.environ.get("DATA_ROOT") or "/data",
-        help="媒体根目录（容器内通常是 /data，对应 NAS 的 …/data2/2）",
+        help="媒体根目录（容器内通常是 /data，对应 NAS 的 …/data2/115生活备份）",
     )
     parser.add_argument(
         "--source-rel",
@@ -114,7 +169,27 @@ def main() -> int:
         action="store_true",
         help="保留 data-root/艾薇 软链（默认会删掉）",
     )
+    parser.add_argument(
+        "--remove-reverse",
+        action="store_true",
+        help="只删除 艾薇 下指回片库的占位软链，不动真目录",
+    )
     args = parser.parse_args()
+
+    if args.remove_reverse:
+        stats = remove_reverse_links(
+            data_root=args.data_root,
+            source_rel=args.source_rel,
+            dry_run=args.dry_run,
+        )
+        if stats.get("missing_source"):
+            print(f"source missing: {stats['root']}/{stats['source_rel']}", file=sys.stderr)
+            return 1
+        print(
+            f"remove-reverse removed={stats['removed']} kept_real={stats['kept_real']} "
+            f"kept_other={stats['kept_other']} root={stats['root']}"
+        )
+        return 0
 
     stats = sync_links(
         data_root=args.data_root,

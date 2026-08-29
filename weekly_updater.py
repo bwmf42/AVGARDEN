@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """周推荐自动更新 — 98堂 forum-37 列表 + 个体页/图源补充细节"""
 import json, os, re, sys, time, random, urllib.error, urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.weekly import actresses as actress_util, sources, javbus, sukebei, merge, artwork, enrich, chinese_forum, blocking
@@ -16,6 +16,7 @@ PROXY = os.environ.get("PROXY", "") or None
 MAX_NEW = int(os.environ.get("WEEKLY_MAX_NEW", "20"))
 MAX_AGE = int(os.environ.get("WEEKLY_MAX_AGE", "30"))
 MAX_PAGES = int(os.environ.get("WEEKLY_MAX_PAGES", "3"))
+BACKFILL_DAYS = int(os.environ.get("WEEKLY_BACKFILL_DAYS", "0") or "0")
 LIST_ONLY = os.environ.get("WEEKLY_LIST_ONLY", "").strip().lower() in ("1", "true", "yes", "on")
 DS_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 # DeepSeek retired deepseek-chat; map legacy name so old compose env still works.
@@ -381,7 +382,13 @@ def _main_locked():
     # 2. 列表：默认 98堂 forum-37，失败重试 + 回退 JavBus（见 sources.get_recent）
     recent = []
     try:
-        recent = sources.get_recent(MAX_PAGES) or []
+        if BACKFILL_DAYS > 0:
+            stop = (datetime.now() - timedelta(days=BACKFILL_DAYS)).strftime("%Y-%m-%d")
+            backfill_pages = max(1, int(os.environ.get("WEEKLY_BACKFILL_MAX_PAGES", "40") or "40"))
+            log(f"List backfill: forum-37 until {stop} (days={BACKFILL_DAYS}, max_pages={backfill_pages})")
+            recent = sources.get_recent_plwt_until(stop, max_pages=backfill_pages) or []
+        else:
+            recent = sources.get_recent(MAX_PAGES) or []
     except Exception as e:
         log(f"List source crashed (continuing without new items): {e}")
         recent = []
@@ -390,6 +397,28 @@ def _main_locked():
     for item in recent:
         marker = item.get("freshness") or item.get("source") or "unknown"
         freshness_counts[marker] = freshness_counts.get(marker, 0) + 1
+    extra_codes = [
+        c.strip().upper()
+        for c in (os.environ.get("WEEKLY_BACKFILL_CODES") or "").split(",")
+        if c.strip()
+    ]
+    if extra_codes:
+        extra_set = set(extra_codes)
+        stubs = []
+        for code in extra_codes:
+            stubs.append({
+                "id": code,
+                "title": code,
+                "cover": "",
+                "releaseDate": "",
+                "freshness": "backfill-code",
+                "source": "plwt-37",
+                "forumUrl": "",
+                "postDate": "",
+            })
+            log(f"Backfill extra code: {code}")
+        recent = stubs + [r for r in recent if str(r.get("id") or "").upper() not in extra_set]
+
     if recent:
         log(f"Weekly list items: {len(recent)} ({freshness_counts})")
     else:
@@ -424,6 +453,10 @@ def _main_locked():
                 item.setdefault(k, [])
         item.setdefault("hasChinese", False)
         item.setdefault("downloaded", False)
+
+        if BACKFILL_DAYS > 0 and not merge.is_recent(item, MAX_AGE):
+            log(f"  skip {avid}: release {item.get('releaseDate') or 'unknown'} older than {MAX_AGE}d")
+            continue
 
         new_items.append(item)
         log(f"  + {avid}: {item.get('title','')[:50]} ({item.get('releaseDate','')})")

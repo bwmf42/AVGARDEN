@@ -4,7 +4,7 @@ import shutil
 import tempfile
 from unittest import mock
 
-from qb_task_guard import has_matching_qb_task, matching_qb_tasks
+from qb_task_guard import has_matching_qb_task, magnet_watch_interrupt, matching_qb_tasks
 
 try:
     import worker
@@ -13,6 +13,12 @@ except (ImportError, OSError):
 
 
 class WorkerQBGuardTest(unittest.TestCase):
+    def test_shutdown_leaves_qb_torrent_user_cancel_still_drops(self):
+        self.assertEqual(magnet_watch_interrupt(False, True), "")
+        self.assertEqual(magnet_watch_interrupt(True, True), "cancel")
+        self.assertEqual(magnet_watch_interrupt(True, False), "cancel")
+        self.assertEqual(magnet_watch_interrupt(False, False), "leave")
+
     def test_finds_matching_task_across_all_categories(self):
         torrents = [{
             "state": "queuedDL",

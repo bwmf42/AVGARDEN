@@ -120,7 +120,7 @@
                                         :class="{ error: queueState === 'error', disabled: !p115Available }"
                                         @click="addToQueue('115')"
                                         :disabled="queueBusy || !p115Available"
-                                        :title="p115Available ? '提交 115 云端离线' : '请先在设置配置并启用 115 Cookie'">
+                                        :title="p115Available ? '提交 115 云端离线' : '115 Cookie 已失效，请到设置重新测试连接'">
                                         {{ queueState === 'error' ? '重试 115' : '加入 115' }}
                                     </button>
                                 </template>
@@ -1058,7 +1058,7 @@ export default {
 
             const channel = downloadTarget === '115' ? '115' : 'qb'
             if (channel === '115' && !this.p115Available) {
-                this.showToast('请先在设置配置并启用 115 Cookie', 'warn')
+                this.showToast('115 Cookie 已失效，请到设置重新测试连接', 'warn')
                 return
             }
 
