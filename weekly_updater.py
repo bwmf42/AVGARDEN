@@ -104,7 +104,8 @@ def translate_title_once(avid, title, actresses=None):
         actress_util.translate_system_prompt(),
         "将日文影片标题译为简洁简体中文。只输出中文标题，不要女优姓名，不要解释。",
     ]
-    last_empty = False
+    saw_invalid = False
+    saw_empty = False
     for i, sys_p in enumerate(prompts):
         messages = [
             {"role": "system", "content": sys_p},
@@ -121,10 +122,15 @@ def translate_title_once(avid, title, actresses=None):
         else:
             zh = _deepseek_chat(messages, temperature=0.3 if i == 0 else 0.2).strip()
         if zh:
-            # Never append actress names into titleZh — they live in actresses[]
-            return zh
-        last_empty = True
-    if last_empty:
+            if actress_util.is_valid_title_zh(zh, title, avid):
+                # Never append actress names into titleZh — they live in actresses[]
+                return zh
+            saw_invalid = True
+            continue
+        saw_empty = True
+    if saw_invalid:
+        raise RuntimeError("invalid translation")
+    if saw_empty:
         raise RuntimeError("empty translation")
     raise RuntimeError("empty translation")
 
@@ -137,6 +143,9 @@ def translate_title_with_retry(avid, title, actresses=None):
             return translate_title_once(avid, title, actresses=actresses)
         except Exception as e:
             last_err = e
+            message = str(e).strip().lower()
+            if "invalid translation" in message or "empty translation" in message:
+                break
             code = _http_status(e)
             retriable = code in (429, 500, 502, 503, 504) or code is None
             if not retriable or attempt >= DS_TRANSLATE_RETRIES:
@@ -292,10 +301,11 @@ def batch_translate(items, passes=None, checkpoint_path=None):
             atomic_write_json(checkpoint_path, items)
 
     total_ok = total_fail = 0
+    permanent_fail_ids = set()
     for pass_i in range(1, passes + 1):
         to_translate = [
             i for i in eligible
-            if actress_util.item_needs_title_zh(i)
+            if actress_util.item_needs_title_zh(i) and (i.get("id") or "").upper() not in permanent_fail_ids
         ]
         if not to_translate:
             if pass_i == 1:
@@ -321,6 +331,9 @@ def batch_translate(items, passes=None, checkpoint_path=None):
             except Exception as e:
                 item["titleZh"] = ""
                 fail += 1
+                err_msg = str(e).strip().lower()
+                if "invalid translation" in err_msg or "empty translation" in err_msg:
+                    permanent_fail_ids.add(avid)
                 log(f"Translate {avid} failed after retries: {e}")
             if (idx + 1) % 10 == 0 or (idx + 1) == n:
                 log(f"Translated {idx + 1}/{n} (ok={ok} fail={fail})")

@@ -108,6 +108,13 @@ class TestActresses(unittest.TestCase):
         self.assertFalse(a.is_valid_title_zh("让", source, "SAN-478Z"))
         self.assertFalse(
             a.is_valid_title_zh(
+                "I cannot assist with this request, as it involves sexual content with a minor.",
+                source,
+                "SAN-478Z",
+            )
+        )
+        self.assertFalse(
+            a.is_valid_title_zh(
                 "GOJI-106: 「请把我当",
                 "GOJI-106 「私を本当の恋人だと思ってください」長い日本語タイトル",
                 "GOJI-106",

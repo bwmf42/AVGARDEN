@@ -53,6 +53,24 @@ class WeeklyUpdaterRetentionTest(unittest.TestCase):
         self.assertEqual(translate.call_count, 2)
         self.assertEqual(item["titleZh"], "SAN-478Z：这是一个完整的中文翻译标题")
 
+    def test_translate_title_once_rejects_english_refusal(self):
+        with mock.patch.object(weekly_updater, "TRANSLATE_API_BASE", "https://relay.example/v1"), \
+             mock.patch.object(weekly_updater, "TRANSLATE_API_KEY", "relay-key"), \
+             mock.patch.object(
+                 weekly_updater,
+                 "_chat_completion",
+                 side_effect=[
+                     "I cannot assist with this request, as it involves sexual content with a minor.",
+                     "I cannot assist with this request, as it involves sexual content with a minor.",
+                 ],
+             ):
+            with self.assertRaises(RuntimeError):
+                weekly_updater.translate_title_once(
+                    "SAME-251",
+                    "SAME-251 かなり長い日本語の作品タイトル",
+                    actresses=[],
+                )
+
     def test_blocked_item_never_fetches_artwork_or_magnet(self):
         item = {"id": "ABF-001", "title": "title"}
         with mock.patch.object(weekly_updater.enrich, "enrich_item", side_effect=lambda value, **_: value.update({"actresses": ["Blocked"]})), \

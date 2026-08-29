@@ -48,6 +48,7 @@ export function isUsableTitleZh(titleZh, sourceTitle = '', videoId = '') {
   }
   if (source.length >= 30 && body.length < 4) return false
   if (source.length >= 60 && body.length < 8 && body.length * 8 < source.length) return false
+  if (!HAN_RE.test(body)) return false
   return true
 }
 

@@ -9,7 +9,7 @@ import (
 
 func TestValidTranslatedTitleRejectsTruncatedResults(t *testing.T) {
 	source := "SAN-478Z とても長い日本語の作品タイトルで翻訳結果に十分な本文が必要です"
-	for _, translated := range []string{"", "SAN-478Z", "让", "GOJI-106: 「请把我当"} {
+	for _, translated := range []string{"", "SAN-478Z", "让", "GOJI-106: 「请把我当", "I cannot assist with this request, as it involves sexual content with a minor."} {
 		if validTranslatedTitle(translated, source, "SAN-478Z") {
 			t.Fatalf("translated title %q should be rejected", translated)
 		}

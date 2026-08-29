@@ -24,6 +24,7 @@ DS_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DS_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 CODE_RE = re.compile(r"([A-Z]{2,}\d*)-(\d+)", re.I)
 JAPANESE_KANA_RE = re.compile(r"[\u3040-\u30ff]")
+HAN_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
 def clean_avid(name):
@@ -96,7 +97,7 @@ def translate_title(avid, title):
         result = json.loads(resp.read().decode("utf-8"))
     translated = normalize_title(result["choices"][0]["message"]["content"])
     translated = remove_code_prefix(translated, avid)
-    if not translated:
+    if not translated or not HAN_RE.search(translated):
         return ""
     return f"{clean_avid(avid)} {translated}"
 

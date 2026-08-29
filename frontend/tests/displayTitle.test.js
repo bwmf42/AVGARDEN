@@ -33,6 +33,17 @@ test('falls back when titleZh still contains Japanese kana', () => {
   assert.equal(displayTitle(video), video.title)
 })
 
+test('falls back when titleZh is an English refusal', () => {
+  const video = {
+    id: 'SAME-251',
+    title: 'SAME-251 Japanese source title',
+    titleZh: 'I cannot assist with this request, as it involves sexual content with a minor.'
+  }
+
+  assert.equal(isUsableTitleZh(video.titleZh, video.title, video.id), false)
+  assert.equal(displayTitle(video), video.title)
+})
+
 test('keeps list formatting stable when fields are missing', () => {
   assert.equal(displayTitle({ id: 'ABC-123' }, { withCode: true, maxLen: 50 }), 'ABC-123')
   assert.equal(

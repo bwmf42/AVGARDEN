@@ -1057,6 +1057,9 @@ func validTranslatedTitle(translated, source, videoID string) bool {
 	if bodyLength <= 1 || !hasBalancedTitleBrackets(body) {
 		return false
 	}
+	if !hasHanText(body) {
+		return false
+	}
 	sourceBody := stripTranslatedTitleCode(source, videoID)
 	sourceLength := effectiveTitleLength(sourceBody)
 	if sourceLength >= 30 && bodyLength < 4 {
@@ -1066,6 +1069,15 @@ func validTranslatedTitle(translated, source, videoID string) bool {
 		return false
 	}
 	return true
+}
+
+func hasHanText(value string) bool {
+	for _, r := range value {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // listVideosHandler 获取视频列表（触发异步缓存刷新）

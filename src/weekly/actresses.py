@@ -103,6 +103,7 @@ _TITLE_BRACKETS = {
     "[": "]",
 }
 _TITLE_BRACKET_CLOSE = {close: open_ for open_, close in _TITLE_BRACKETS.items()}
+_HAN_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
 def _strip_name_alias(name: str) -> str:
@@ -446,6 +447,10 @@ def _effective_title_length(value: str) -> int:
     return sum(1 for char in value if char.isalnum())
 
 
+def _has_han_text(value: str) -> bool:
+    return bool(_HAN_RE.search(value or ""))
+
+
 def _has_balanced_title_brackets(value: str) -> bool:
     stack = []
     for char in value:
@@ -479,6 +484,8 @@ def is_valid_title_zh(title_zh: str, source_title: str = "", video_id: str = "")
         ).strip()
     body_len = _effective_title_length(body)
     if body_len <= 1 or not _has_balanced_title_brackets(body):
+        return False
+    if not _has_han_text(body):
         return False
 
     source_body = _CODE_PREFIX.sub("", str(source_title or "").strip(), count=1)

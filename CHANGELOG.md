@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Rejected translation-service refusal text and other non-Chinese `titleZh` values across Weekly, online search, local media scrape, and display filtering, so English safety replies now fall back to the source title instead of being shown as a Chinese translation.
 - Hardened media replacement and download state handling: single-file torrents can never delete the media root, completed output moves refuse overwrites, optional scraper fields no longer abort metadata generation, watched-state reads use the canonical locked store, and database/status/current-download failures no longer masquerade as missing media or lose concurrent updates.
 - Removed the built-in qBittorrent weak password fallback across Python, Go, health checks, and the example Compose file; deployments must provide `QBITTORRENT_PASSWORD` explicitly.
 - Online code search now uses the same MGS, DMM, javdatabase, and artwork fallback chain as Weekly details instead of failing immediately when JavBus has no page; metadata and artwork results survive temporary download-source lookup errors, and the route has enough time to finish the rate-limited source chain.

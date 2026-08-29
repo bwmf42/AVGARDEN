@@ -136,6 +136,7 @@ class Sracper:
             return
         try:
             import urllib.request
+            from .weekly import actresses as actress_util
             relay_base = os.environ.get("TRANSLATE_API_BASE", "").strip().rstrip("/")
             relay_key = os.environ.get("TRANSLATE_API_KEY", "").strip()
             if relay_base and relay_key:
@@ -176,9 +177,11 @@ class Sracper:
                 except Exception:
                     pass
             zh = result["choices"][0]["message"]["content"].strip()
-            if zh and zh != metadata.title:
+            if zh and zh != metadata.title and actress_util.is_valid_title_zh(zh, metadata.title, metadata.avid):
                 metadata.title_zh = zh
                 logger.info(f"Translated ({provider}/{model}): {metadata.title[:30]}... -> {zh}")
+            elif zh:
+                logger.warning(f"Rejected translated title ({provider}/{model}): {metadata.avid or metadata.title} -> {zh}")
         except Exception as e:
             logger.warning(f"Translation failed: {e}")
 
