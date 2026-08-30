@@ -1,5 +1,6 @@
 import unittest
 from unittest import mock
+import urllib.error
 
 import weekly_updater
 from src.weekly import merge
@@ -70,6 +71,24 @@ class WeeklyUpdaterRetentionTest(unittest.TestCase):
                     "SAME-251 かなり長い日本語の作品タイトル",
                     actresses=[],
                 )
+
+    def test_translate_title_once_falls_back_to_deepseek_on_relay_403(self):
+        def fake_chat_completion(base, api_key, model, messages, temperature=0.3):
+            if base == "https://relay.example/v1":
+                raise urllib.error.HTTPError(base, 403, "Forbidden", hdrs=None, fp=None)
+            return "这是一个完整的中文翻译标题"
+
+        with mock.patch.object(weekly_updater, "TRANSLATE_API_BASE", "https://relay.example/v1"), \
+             mock.patch.object(weekly_updater, "TRANSLATE_API_KEY", "relay-key"), \
+             mock.patch.object(weekly_updater, "DS_API_KEY", "deepseek-key"), \
+             mock.patch.object(weekly_updater, "_chat_completion", side_effect=fake_chat_completion):
+            zh = weekly_updater.translate_title_once(
+                "SAME-251",
+                "SAME-251 かなり長い日本語の作品タイトル",
+                actresses=[],
+            )
+
+        self.assertEqual(zh, "这是一个完整的中文翻译标题")
 
     def test_blocked_item_never_fetches_artwork_or_magnet(self):
         item = {"id": "ABF-001", "title": "title"}

@@ -56,6 +56,16 @@ def translation_provider():
     return "", ""
 
 
+def translation_provider_candidates():
+    """Return translation providers in preference order."""
+    providers = []
+    if TRANSLATE_API_BASE and TRANSLATE_API_KEY:
+        providers.append(("relay", TRANSLATE_API_BASE, TRANSLATE_API_KEY, TRANSLATE_MODEL))
+    if DS_API_KEY:
+        providers.append(("deepseek", "https://api.deepseek.com", DS_API_KEY, DS_MODEL))
+    return providers
+
+
 def _chat_endpoint(base):
     return base if base.endswith("/chat/completions") else f"{base}/chat/completions"
 
@@ -92,8 +102,8 @@ def _deepseek_chat(messages, temperature=0.3):
 
 def translate_title_once(avid, title, actresses=None):
     """Translate one title. Returns Chinese titleZh without actress names."""
-    provider, model = translation_provider()
-    if not provider:
+    candidates = translation_provider_candidates()
+    if not candidates:
         raise RuntimeError("translation API is not configured")
     from src.weekly import actresses as actress_util
 
@@ -106,32 +116,47 @@ def translate_title_once(avid, title, actresses=None):
     ]
     saw_invalid = False
     saw_empty = False
-    for i, sys_p in enumerate(prompts):
-        messages = [
-            {"role": "system", "content": sys_p},
-            {"role": "user", "content": text},
-        ]
-        if provider == "relay":
-            zh = _chat_completion(
-                TRANSLATE_API_BASE,
-                TRANSLATE_API_KEY,
-                model,
-                messages,
-                temperature=0.3 if i == 0 else 0.2,
-            ).strip()
-        else:
-            zh = _deepseek_chat(messages, temperature=0.3 if i == 0 else 0.2).strip()
-        if zh:
-            if actress_util.is_valid_title_zh(zh, title, avid):
-                # Never append actress names into titleZh — they live in actresses[]
-                return zh
-            saw_invalid = True
+    last_err = None
+    for provider_idx, (provider, api_base, api_key, model) in enumerate(candidates):
+        provider_failed = False
+        for prompt_idx, sys_p in enumerate(prompts):
+            messages = [
+                {"role": "system", "content": sys_p},
+                {"role": "user", "content": text},
+            ]
+            try:
+                zh = _chat_completion(
+                    api_base,
+                    api_key,
+                    model,
+                    messages,
+                    temperature=0.3 if prompt_idx == 0 else 0.2,
+                ).strip()
+                if provider == "deepseek":
+                    try:
+                        from src.status_report import record_deepseek_usage
+                        record_deepseek_usage(1)
+                    except Exception:
+                        pass
+            except Exception as e:
+                last_err = e
+                provider_failed = True
+                break
+            if zh:
+                if actress_util.is_valid_title_zh(zh, title, avid):
+                    # Never append actress names into titleZh — they live in actresses[]
+                    return zh
+                saw_invalid = True
+                continue
+            saw_empty = True
+        if provider_failed:
             continue
-        saw_empty = True
     if saw_invalid:
         raise RuntimeError("invalid translation")
     if saw_empty:
         raise RuntimeError("empty translation")
+    if last_err:
+        raise last_err
     raise RuntimeError("empty translation")
 
 
@@ -291,7 +316,12 @@ def batch_translate(items, passes=None, checkpoint_path=None):
     if not provider:
         log("Skip translate: no translation API configured")
         return 0, 0
-    log(f"Translate provider={provider} model={model}")
+    candidates = translation_provider_candidates()
+    if len(candidates) > 1:
+        fallback = ", ".join(f"{name}/{cand_model}" for name, _base, _key, cand_model in candidates[1:])
+        log(f"Translate provider={provider} model={model} fallback={fallback}")
+    else:
+        log(f"Translate provider={provider} model={model}")
 
     # Always peel names off existing titleZh first
     stripped = strip_actresses_from_title_zh(eligible)

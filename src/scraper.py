@@ -135,53 +135,12 @@ class Sracper:
         if not metadata.title:
             return
         try:
-            import urllib.request
-            from .weekly import actresses as actress_util
-            relay_base = os.environ.get("TRANSLATE_API_BASE", "").strip().rstrip("/")
-            relay_key = os.environ.get("TRANSLATE_API_KEY", "").strip()
-            if relay_base and relay_key:
-                api_base = relay_base
-                api_key = relay_key
-                model = (os.environ.get("TRANSLATE_MODEL") or "gpt-5.4").strip()
-                provider = "relay"
-            else:
-                api_base = "https://api.deepseek.com"
-                api_key = os.environ["DEEPSEEK_API_KEY"]
-                raw_model = (os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash").strip()
-                model = {
-                    "deepseek-chat": "deepseek-v4-flash",
-                    "deepseek-reasoner": "deepseek-v4-pro",
-                }.get(raw_model, raw_model)
-                provider = "deepseek"
-            payload = json.dumps({
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": "你是日语翻译助手。将日文成人影片标题翻译为简洁的中文，只输出翻译结果，不要任何解释。"},
-                    {"role": "user", "content": metadata.title}
-                ],
-                "max_tokens": 128,
-                "temperature": 0.3
-            }).encode()
-            endpoint = api_base if api_base.endswith("/chat/completions") else f"{api_base}/chat/completions"
-            req = urllib.request.Request(
-                endpoint,
-                data=payload,
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-            )
-            resp = urllib.request.urlopen(req, timeout=15)
-            result = json.loads(resp.read().decode())
-            if provider == "deepseek":
-                try:
-                    from src.status_report import record_deepseek_usage
-                    record_deepseek_usage(1)
-                except Exception:
-                    pass
-            zh = result["choices"][0]["message"]["content"].strip()
-            if zh and zh != metadata.title and actress_util.is_valid_title_zh(zh, metadata.title, metadata.avid):
+            from weekly_updater import translate_title_once
+
+            zh = translate_title_once(metadata.avid or "", metadata.title, actresses=[])
+            if zh and zh != metadata.title:
                 metadata.title_zh = zh
-                logger.info(f"Translated ({provider}/{model}): {metadata.title[:30]}... -> {zh}")
-            elif zh:
-                logger.warning(f"Rejected translated title ({provider}/{model}): {metadata.avid or metadata.title} -> {zh}")
+                logger.info(f"Translated title: {metadata.title[:30]}... -> {zh}")
         except Exception as e:
             logger.warning(f"Translation failed: {e}")
 

@@ -6,7 +6,6 @@ available. It only changes title metadata: <title> gets the Chinese title and
 the previous title is preserved in <originaltitle>.
 """
 import argparse
-import json
 import os
 import random
 import re
@@ -18,10 +17,10 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from xml.dom import minidom
 
+from weekly_updater import translate_title_once
+
 
 SAVE_PATH = Path(os.environ.get("SAVE_PATH", "/data"))
-DS_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-DS_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 CODE_RE = re.compile(r"([A-Z]{2,}\d*)-(\d+)", re.I)
 JAPANESE_KANA_RE = re.compile(r"[\u3040-\u30ff]")
 HAN_RE = re.compile(r"[\u4e00-\u9fff]")
@@ -53,50 +52,8 @@ def title_needs_translation(title):
     return bool(title and JAPANESE_KANA_RE.search(title))
 
 
-def strip_code_prefix(title, avid):
-    title = normalize_title(title)
-    avid = clean_avid(avid)
-    patterns = (
-        rf"^{re.escape(avid)}\s+",
-        rf"^\({re.escape(avid)}\)\s*",
-        rf"^{re.escape(avid.replace('-', ''))}\s+",
-    )
-    for pattern in patterns:
-        title = re.sub(pattern, "", title, flags=re.I).strip()
-    return title
-
-
-def remove_code_prefix(title, avid):
-    title = normalize_title(title)
-    stripped = strip_code_prefix(title, avid)
-    return stripped or title
-
-
 def translate_title(avid, title):
-    if not DS_API_KEY:
-        raise RuntimeError("DEEPSEEK_API_KEY is not set")
-    source = strip_code_prefix(title, avid)
-    payload = json.dumps({
-        "model": DS_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": "你是日语翻译助手。将日文影视标题翻译为简洁自然的中文，只输出翻译结果，不要解释，不要添加番号。",
-            },
-            {"role": "user", "content": source},
-        ],
-        "max_tokens": 256,
-        "temperature": 0.3,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.deepseek.com/chat/completions",
-        data=payload,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {DS_API_KEY}"},
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        result = json.loads(resp.read().decode("utf-8"))
-    translated = normalize_title(result["choices"][0]["message"]["content"])
-    translated = remove_code_prefix(translated, avid)
+    translated = normalize_title(translate_title_once(avid, title, actresses=[]))
     if not translated or not HAN_RE.search(translated):
         return ""
     return f"{clean_avid(avid)} {translated}"
