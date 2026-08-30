@@ -104,6 +104,17 @@ _TITLE_BRACKETS = {
 }
 _TITLE_BRACKET_CLOSE = {close: open_ for open_, close in _TITLE_BRACKETS.items()}
 _HAN_RE = re.compile(r"[\u4e00-\u9fff]")
+_TITLE_REFUSAL_RE = re.compile(
+    r"(?:"
+    r"^I\s+can(?:not|'t)\s+(?:assist|help)\b|"
+    r"^I\s+am\s+sorry\b|"
+    r"^抱歉(?:[，,。！？!：:]|$)|"
+    r"^对不起(?:[，,。！？!：:]|$)|"
+    r"^无法协助\b|^不能协助\b|^无法帮助\b|^不能帮助\b|"
+    r"作为(?:一个|一名|该)?AI.{0,40}(?:不能|无法|不可以|不能协助|无法协助|不能帮助|无法帮助)"
+    r")",
+    re.I,
+)
 
 
 def _strip_name_alias(name: str) -> str:
@@ -262,7 +273,7 @@ def extract_trailing_actresses(title: str) -> Tuple[str, List[str]]:
             right = right.strip()
             names = [t for t in _WS_SPLIT.split(right) if t]
             if names and all(_looks_like_person_name(n) for n in names) and 1 <= len(names) <= 5:
-                return left.rstrip(" 、,。．.!！?？』」》"), names
+                return left.rstrip(" 、,"), names
 
     # Insert space when a name is glued after closing quote / punct
     body_spaced = re.sub(
@@ -289,7 +300,7 @@ def extract_trailing_actresses(title: str) -> Tuple[str, List[str]]:
     body_tokens = tokens[:i]
     if len(names) > 3 and len(body_tokens) < 3:
         return body, []
-    new_body = " ".join(body_tokens).rstrip(" 、,。．.!！?？』」》")
+    new_body = " ".join(body_tokens).rstrip(" 、,")
     return new_body, names
 
 
@@ -439,7 +450,7 @@ def title_for_translate(title: str, actresses: Sequence[str] | None = None) -> T
     if acts:
         for name in reversed(acts):
             work = re.sub(rf"(?:[\s　、,・]*{re.escape(name)})+\s*$", "", work)
-        work = work.rstrip(" 、,。．.!！?？』」》—–-")
+        work = work.rstrip(" 、,")
     return work.strip() or strip_code_prefix(title), acts
 
 
@@ -486,6 +497,8 @@ def is_valid_title_zh(title_zh: str, source_title: str = "", video_id: str = "")
     if body_len <= 1 or not _has_balanced_title_brackets(body):
         return False
     if not _has_han_text(body):
+        return False
+    if _TITLE_REFUSAL_RE.search(body):
         return False
 
     source_body = _CODE_PREFIX.sub("", str(source_title or "").strip(), count=1)

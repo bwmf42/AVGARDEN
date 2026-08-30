@@ -90,6 +90,40 @@ class WeeklyUpdaterRetentionTest(unittest.TestCase):
 
         self.assertEqual(zh, "这是一个完整的中文翻译标题")
 
+    def test_translate_title_once_uses_neutral_prompt_when_needed(self):
+        with mock.patch.object(weekly_updater, "TRANSLATE_API_BASE", ""), \
+             mock.patch.object(weekly_updater, "TRANSLATE_API_KEY", ""), \
+             mock.patch.object(weekly_updater, "DS_API_KEY", "deepseek-key"), \
+             mock.patch.object(
+                 weekly_updater,
+                 "_chat_completion",
+                 side_effect=["", "", "这是一个完整的中文翻译标题"],
+             ):
+            zh = weekly_updater.translate_title_once(
+                "ID-061",
+                "ID-061 心爱的上门服务小姐 61 全身敏感带的淫荡丰满关西娘篇",
+                actresses=[],
+            )
+
+        self.assertEqual(zh, "这是一个完整的中文翻译标题")
+
+    def test_translate_title_once_falls_back_to_raw_title_when_body_is_empty(self):
+        with mock.patch.object(weekly_updater, "TRANSLATE_API_BASE", ""), \
+             mock.patch.object(weekly_updater, "TRANSLATE_API_KEY", ""), \
+             mock.patch.object(weekly_updater, "DS_API_KEY", "deepseek-key"), \
+             mock.patch.object(
+                 weekly_updater,
+                 "_chat_completion",
+                 side_effect=["", "", "", "", "", "这是一个完整的中文翻译标题"],
+             ):
+            zh = weekly_updater.translate_title_once(
+                "MMKZ-166",
+                "MMKZ-166 お姉さんの巨尻が猥褻過ぎて秒殺で悩殺！！ 岬ひかり",
+                actresses=["岬ひかり"],
+            )
+
+        self.assertEqual(zh, "这是一个完整的中文翻译标题")
+
     def test_blocked_item_never_fetches_artwork_or_magnet(self):
         item = {"id": "ABF-001", "title": "title"}
         with mock.patch.object(weekly_updater.enrich, "enrich_item", side_effect=lambda value, **_: value.update({"actresses": ["Blocked"]})), \

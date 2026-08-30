@@ -108,49 +108,54 @@ def translate_title_once(avid, title, actresses=None):
     from src.weekly import actresses as actress_util
 
     body, _names = actress_util.title_for_translate(title, actresses)
-    text = f"{avid}: {body}" if body else f"{avid}: {title}"
+    text_candidates = [f"{avid}: {body}" if body else f"{avid}: {title}"]
+    raw_text = f"{avid}: {title}"
+    if raw_text not in text_candidates:
+        text_candidates.append(raw_text)
     # Primary prompt, then milder fallback if content filter returns empty
     prompts = [
         actress_util.translate_system_prompt(),
         "将日文影片标题译为简洁简体中文。只输出中文标题，不要女优姓名，不要解释。",
+        "将日文标题翻译成简洁自然的简体中文，只输出翻译结果，不要解释，不要添加番号。",
     ]
     saw_invalid = False
     saw_empty = False
     last_err = None
-    for provider_idx, (provider, api_base, api_key, model) in enumerate(candidates):
-        provider_failed = False
-        for prompt_idx, sys_p in enumerate(prompts):
-            messages = [
-                {"role": "system", "content": sys_p},
-                {"role": "user", "content": text},
-            ]
-            try:
-                zh = _chat_completion(
-                    api_base,
-                    api_key,
-                    model,
-                    messages,
-                    temperature=0.3 if prompt_idx == 0 else 0.2,
-                ).strip()
-                if provider == "deepseek":
-                    try:
-                        from src.status_report import record_deepseek_usage
-                        record_deepseek_usage(1)
-                    except Exception:
-                        pass
-            except Exception as e:
-                last_err = e
-                provider_failed = True
-                break
-            if zh:
-                if actress_util.is_valid_title_zh(zh, title, avid):
-                    # Never append actress names into titleZh — they live in actresses[]
-                    return zh
-                saw_invalid = True
+    for text in text_candidates:
+        for provider_idx, (provider, api_base, api_key, model) in enumerate(candidates):
+            provider_failed = False
+            for prompt_idx, sys_p in enumerate(prompts):
+                messages = [
+                    {"role": "system", "content": sys_p},
+                    {"role": "user", "content": text},
+                ]
+                try:
+                    zh = _chat_completion(
+                        api_base,
+                        api_key,
+                        model,
+                        messages,
+                        temperature=0.3 if prompt_idx == 0 else 0.2,
+                    ).strip()
+                    if provider == "deepseek":
+                        try:
+                            from src.status_report import record_deepseek_usage
+                            record_deepseek_usage(1)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    last_err = e
+                    provider_failed = True
+                    break
+                if zh:
+                    if actress_util.is_valid_title_zh(zh, title, avid):
+                        # Never append actress names into titleZh — they live in actresses[]
+                        return zh
+                    saw_invalid = True
+                    continue
+                saw_empty = True
+            if provider_failed:
                 continue
-            saw_empty = True
-        if provider_failed:
-            continue
     if saw_invalid:
         raise RuntimeError("invalid translation")
     if saw_empty:

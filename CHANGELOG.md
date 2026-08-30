@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Hardened Weekly title translation so actress stripping no longer eats closing punctuation, the translator retries with both cleaned and raw titles, and obvious refusal text cannot pass as `titleZh`; this closes the remaining “looks like translated but is actually missing” cases.
 - Added relay-to-DeepSeek fallback for title translation so relay-side 403/forbidden replies no longer leave Weekly/search/media titles untranslated; the same fallback chain now backs the worker, online search, and media-title backfill paths.
 - Rejected translation-service refusal text and other non-Chinese `titleZh` values across Weekly, online search, local media scrape, and display filtering, so English safety replies now fall back to the source title instead of being shown as a Chinese translation.
 - Hardened media replacement and download state handling: single-file torrents can never delete the media root, completed output moves refuse overwrites, optional scraper fields no longer abort metadata generation, watched-state reads use the canonical locked store, and database/status/current-download failures no longer masquerade as missing media or lose concurrent updates.

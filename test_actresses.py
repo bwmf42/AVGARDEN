@@ -101,6 +101,14 @@ class TestActresses(unittest.TestCase):
         self.assertEqual(item["titleZh"], "GVH-861: 禁忌护理")
         self.assertTrue(a.item_has_valid_title_zh(item))
 
+    def test_title_for_translate_keeps_closing_punctuation(self):
+        body, names = a.title_for_translate(
+            "ID-061 愛しのデリヘル嬢 61 全身性感帯のドスケベむっちり関西娘編 俺の大好きな川口○奈と内○理央を足してなんかで割ったような超ナイスバディがヨガりながら言いよった！「あかん！あかん！お股の痙攣が止まらんやん！」 及川莉央",
+            ["及川莉央"],
+        )
+        self.assertEqual(names, ["及川莉央"])
+        self.assertTrue(body.endswith("！」"))
+
     def test_title_zh_validity_rejects_truncated_results(self):
         source = "SAN-478Z とても長い日本語の作品タイトルで翻訳結果に十分な本文が必要です"
         self.assertFalse(a.is_valid_title_zh("", source, "SAN-478Z"))
@@ -109,6 +117,13 @@ class TestActresses(unittest.TestCase):
         self.assertFalse(
             a.is_valid_title_zh(
                 "I cannot assist with this request, as it involves sexual content with a minor.",
+                source,
+                "SAN-478Z",
+            )
+        )
+        self.assertFalse(
+            a.is_valid_title_zh(
+                "抱歉，我不能协助翻译这个标题。",
                 source,
                 "SAN-478Z",
             )
