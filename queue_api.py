@@ -221,7 +221,14 @@ def _emit_request_log(scope):
         or bool(scope["lock_events"])
         or bool(scope["slow_ops"])
     )
-    if not (is_queue_path or slow or scope["error"] or scope["write_error"] or QUEUE_ACCESS_LOG_ALL):
+    # Default: only slow queue requests, failures/disconnects, or full tracing.
+    # Fast queue requests stay silent so the log volume does not grow.
+    if not (
+        (is_queue_path and slow)
+        or scope["error"]
+        or scope["write_error"]
+        or QUEUE_ACCESS_LOG_ALL
+    ):
         return
     log(
         f"[req] request={scope.get('id') or '-'} method={scope['method'] or '-'} "

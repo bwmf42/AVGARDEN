@@ -208,6 +208,48 @@ class QueueObservabilityTest(unittest.TestCase):
         self.assertEqual(logged.count("[slow]"), 1, logged)
         self.assertIn("duration_ms=20000.0", logged)
 
+    def test_fast_queue_request_is_not_logged_by_default(self):
+        """Default mode must stay quiet for fast queue requests (no log spam)."""
+        original_ms = queue_api.QUEUE_ACCESS_LOG_MS
+        original_all = queue_api.QUEUE_ACCESS_LOG_ALL
+        queue_api.QUEUE_ACCESS_LOG_MS = 500.0
+        queue_api.QUEUE_ACCESS_LOG_ALL = False
+
+        def scope(path, age_ms):
+            return {
+                "id": "spam-check",
+                "resolved": True,
+                "method": "GET",
+                "path": path,
+                "t_received": time.monotonic() - age_ms / 1000.0,
+                "accept_ms": 0.4,
+                "lock_wait_ms": 0.3,
+                "lock_hold_ms": age_ms,
+                "handler_ms": age_ms,
+                "handler_done_ts": 0.0,
+                "response_write_ms": 0.1,
+                "lock_events": [],
+                "slow_ops": [],
+                "qb_calls": [],
+                "status": 200,
+                "error": "",
+                "write_error": "",
+            }
+
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                queue_api._emit_request_log(scope("/api/queue/", 5.0))
+            self.assertEqual(buf.getvalue(), "", "fast queue request must not be logged")
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                queue_api._emit_request_log(scope("/api/queue/", 600.0))
+            self.assertIn("[req] request=spam-check", buf.getvalue())
+        finally:
+            queue_api.QUEUE_ACCESS_LOG_MS = original_ms
+            queue_api.QUEUE_ACCESS_LOG_ALL = original_all
+
 
 if __name__ == "__main__":
     unittest.main()
