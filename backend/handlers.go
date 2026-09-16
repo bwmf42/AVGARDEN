@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -1405,7 +1406,18 @@ func queueHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	proxyReq.Header = r.Header.Clone()
 	proxyReq.ContentLength = int64(len(body))
+	// Diagnostics only: propagate a request id and record client-side phases so a
+	// 15s queue proxy timeout can be attributed to a specific stage.
+	requestID := queueRequestID(r)
+	proxyReq.Header.Set("X-Request-ID", requestID)
+	phases := newQueueProxyPhases()
+	proxyReq = proxyReq.WithContext(httptrace.WithClientTrace(proxyReq.Context(), phases.trace()))
 	resp, err := queueHTTPClient.Do(proxyReq)
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	phases.log(requestID, r.Method, r.URL.Path, status, err)
 	if err != nil {
 		// Explicit JSON so frontend can show a clear reason during deploy/restart
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")

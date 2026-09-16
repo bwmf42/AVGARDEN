@@ -4,7 +4,7 @@ AV/GARDEN Queue API v7 —
 下载管理（完整声明周期：排队→下载中→已完成，保留展示）
 完成后自动更新 weekly.json + 写入 AV/GARDEN SQLite（让主页也可见）
 """
-import os, sys, json, signal, time, subprocess, re, shutil, threading
+import os, sys, json, signal, time, subprocess, re, shutil, threading, uuid
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import unquote, urlparse
 
@@ -24,6 +24,7 @@ from queue_store import (
     write_json,
     write_queue,
 )
+import queue_store
 from video_id import (
     local_video_id_aliases,
     normalize_local_video_id,
@@ -76,6 +77,177 @@ DEBUG = os.environ.get("DEBUG", "0") == "1"
 QUEUE_REGISTRATION_GRACE_SECONDS = int(os.environ.get("QUEUE_REGISTRATION_GRACE_SECONDS", "120"))
 
 
+# ---------------------------------------------------------------------------
+# Request observability (diagnostics only — no behaviour change)
+#
+# Every reference to a queue request is stamped with a request id taken from the
+# X-Request-ID header (or generated) so a Go "[QueueProxy]" line and the Python
+# "[req]"/"[lock]"/"[flock]"/"[qb]"/"[slow]" lines can be correlated.
+# Only timings, paths, statuses and request ids are logged: cookies, SID,
+# passwords, magnets and request bodies are never printed.
+# ---------------------------------------------------------------------------
+def _env_float(name, default):
+    try:
+        return float(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+QUEUE_ACCESS_LOG_MS = _env_float("QUEUE_ACCESS_LOG_MS", 500)
+QUEUE_ACCESS_LOG_ALL = (
+    os.environ.get("QUEUE_ACCESS_LOG", "").strip().lower() in ("1", "all", "true", "yes")
+    or DEBUG
+)
+
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
+_request_ctx = threading.local()
+_accept_ctx = threading.local()
+
+
+def _request_scope():
+    return getattr(_request_ctx, "scope", None)
+
+
+def _ms(value):
+    return round(float(value or 0.0), 1)
+
+
+def _sanitize_request_id(raw):
+    value = str(raw or "").strip()
+    if value and _REQUEST_ID_RE.match(value):
+        return value
+    return ""
+
+
+def _ensure_request_id(handler):
+    """Resolve the request id / method / path once the request line is parsed."""
+    scope = _request_scope()
+    if scope is None:
+        return ""
+    if scope.get("resolved"):
+        return scope.get("id") or ""
+    raw = ""
+    try:
+        raw = handler.headers.get("X-Request-ID") or ""
+    except Exception:
+        raw = ""
+    scope["id"] = _sanitize_request_id(raw) or ("q-" + uuid.uuid4().hex[:16])
+    scope["method"] = str(getattr(handler, "command", "") or scope.get("method") or "")
+    try:
+        scope["path"] = urlparse(getattr(handler, "path", "") or "").path
+    except Exception:
+        scope["path"] = ""
+    scope["resolved"] = True
+    return scope["id"]
+
+
+def _begin_request_scope(handler):
+    scope = {
+        "id": "",
+        "resolved": False,
+        "method": str(getattr(handler, "command", "") or ""),
+        "path": "",
+        "t_received": getattr(handler, "_qd_t_received", time.monotonic()),
+        "accept_ms": float(getattr(handler, "_qd_accept_ms", 0.0) or 0.0),
+        "lock_wait_ms": 0.0,
+        "lock_hold_ms": 0.0,
+        "handler_ms": 0.0,
+        "handler_done_ts": 0.0,
+        "response_write_ms": 0.0,
+        "lock_events": [],
+        "slow_ops": [],
+        "qb_calls": [],
+        "status": 0,
+        "error": "",
+        "write_error": "",
+    }
+    _request_ctx.scope = scope
+    return scope
+
+
+def _slow_op(op, duration_ms, extra=""):
+    """Report a local operation that exceeded the slow threshold."""
+    if duration_ms < QUEUE_ACCESS_LOG_MS and not QUEUE_ACCESS_LOG_ALL:
+        return
+    scope = _request_scope()
+    suffix = f" {extra}" if extra else ""
+    if duration_ms >= QUEUE_ACCESS_LOG_MS and scope is not None:
+        scope["slow_ops"].append(f"{op}:{_ms(duration_ms)}ms")
+    rid = (scope or {}).get("id") or "-"
+    log(f"[slow] request={rid} op={op} duration_ms={_ms(duration_ms)}{suffix}")
+
+
+def _lock_trace_hook(path, wait_ms, hold_ms):
+    """queue_store hook: attribute flock wait/hold time to the current request."""
+    scope = _request_scope()
+    if scope is None:
+        return
+    scope["lock_wait_ms"] = max(scope["lock_wait_ms"], wait_ms)
+    scope["lock_hold_ms"] = max(scope["lock_hold_ms"], hold_ms)
+    if wait_ms < QUEUE_ACCESS_LOG_MS and hold_ms < QUEUE_ACCESS_LOG_MS:
+        return
+    name = os.path.basename(path) or path
+    scope["lock_events"].append(f"{name}:wait={_ms(wait_ms)},hold={_ms(hold_ms)}")
+    log(
+        f"[flock] request={scope.get('id') or '-'} file={name} "
+        f"wait_ms={_ms(wait_ms)} hold_ms={_ms(hold_ms)}"
+    )
+
+
+# Inert for every other process (the worker never installs a hook).
+queue_store.set_trace_hook(_lock_trace_hook)
+
+
+def _qb_caller():
+    """Which queue route issued the qB call (worker uses its own adapter)."""
+    scope = _request_scope()
+    method = str((scope or {}).get("method") or "").upper()
+    if method in ("GET", "POST", "DELETE"):
+        return f"queue.{method}"
+    return "other"
+
+
+def _emit_request_log(scope):
+    finished = time.monotonic()
+    total_ms = (finished - scope["t_received"]) * 1000.0
+    after_handler_ms = 0.0
+    if scope["handler_done_ts"]:
+        after_handler_ms = max(0.0, (finished - scope["handler_done_ts"]) * 1000.0)
+    is_queue_path = scope["path"] == "/api/queue" or scope["path"].startswith("/api/queue/")
+    slow = (
+        total_ms >= QUEUE_ACCESS_LOG_MS
+        or scope["lock_wait_ms"] >= QUEUE_ACCESS_LOG_MS
+        or scope["handler_ms"] >= QUEUE_ACCESS_LOG_MS
+        or bool(scope["lock_events"])
+        or bool(scope["slow_ops"])
+    )
+    if not (is_queue_path or slow or scope["error"] or scope["write_error"] or QUEUE_ACCESS_LOG_ALL):
+        return
+    log(
+        f"[req] request={scope.get('id') or '-'} method={scope['method'] or '-'} "
+        f"path={scope['path'] or '-'} status={scope['status'] or 0} "
+        f"accept_ms={_ms(scope['accept_ms'])} "
+        f"lock_wait_ms={_ms(scope['lock_wait_ms'])} lock_hold_ms={_ms(scope['lock_hold_ms'])} "
+        f"handler_ms={_ms(scope['handler_ms'])} response_write_ms={_ms(scope['response_write_ms'])} "
+        f"after_handler_ms={_ms(after_handler_ms)} "
+        f"total_ms={_ms(total_ms)} "
+        f"locks={'|'.join(scope['lock_events']) or '-'} "
+        f"slow_ops={'|'.join(scope['slow_ops']) or '-'} "
+        f"qb={'|'.join(scope['qb_calls']) or '-'} "
+        f"error={scope['error'] or '-'} write_error={scope['write_error'] or '-'}"
+    )
+
+
+def _end_request_scope(handler):
+    scope = _request_scope()
+    if scope is None:
+        return
+    try:
+        _emit_request_log(scope)
+    finally:
+        _request_ctx.scope = None
+
+
 def _p115_probe(p115, force=False):
     """Use probe_cached when present; old images only have test_connection."""
     probe = getattr(p115, "probe_cached", None)
@@ -117,10 +289,47 @@ def _actress_is_blocked(name: str) -> bool:
 def queue_route_locked(method):
     def wrapped(self, *args, **kwargs):
         path = urlparse(self.path).path.rstrip("/")
-        if path == "/api/queue" or path.startswith("/api/queue/"):
-            with queue_state_lock:
+        scope = _request_scope()
+        if path != "/api/queue" and not path.startswith("/api/queue/"):
+            if scope is None:
                 return method(self, *args, **kwargs)
-        return method(self, *args, **kwargs)
+            started = time.monotonic()
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                scope["handler_ms"] = (time.monotonic() - started) * 1000.0
+                scope["handler_done_ts"] = time.monotonic()
+
+        _ensure_request_id(self)
+        wait_started = time.monotonic()
+        # Same lock, same scope as before — only timing was added around it.
+        with queue_state_lock:
+            acquired = time.monotonic()
+            if scope is not None:
+                scope["lock_wait_ms"] = (acquired - wait_started) * 1000.0
+                if scope["lock_wait_ms"] >= QUEUE_ACCESS_LOG_MS:
+                    log(
+                        f"[lock] request={scope.get('id') or '-'} method={scope['method'] or '-'} "
+                        f"path={scope['path'] or path} phase=acquired "
+                        f"lock_wait_ms={_ms(scope['lock_wait_ms'])}"
+                    )
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                hold_ms = (time.monotonic() - acquired) * 1000.0
+                if scope is not None:
+                    scope["handler_ms"] = hold_ms
+                    scope["lock_hold_ms"] = hold_ms
+                    scope["handler_done_ts"] = time.monotonic()
+                    if (
+                        scope["lock_wait_ms"] >= QUEUE_ACCESS_LOG_MS
+                        or hold_ms >= QUEUE_ACCESS_LOG_MS
+                    ):
+                        log(
+                            f"[lock] request={scope.get('id') or '-'} method={scope['method'] or '-'} "
+                            f"path={scope['path'] or path} phase=released "
+                            f"lock_wait_ms={_ms(scope['lock_wait_ms'])} lock_hold_ms={_ms(hold_ms)}"
+                        )
     return wrapped
 
 def clean_avid(name):
@@ -211,41 +420,84 @@ def log_write(source, message):
         pass
 
 
-def qb_request(endpoint, data=None):
-    """Call qBittorrent Web API with a fresh authenticated session."""
+def qb_request(endpoint, data=None, caller=None):
+    """Call qBittorrent Web API with a fresh authenticated session.
+
+    Timings are diagnostics only; credentials/SID are never logged.
+    """
     import http.cookiejar
     import urllib.parse
     import urllib.request
 
+    scope = _request_scope()
+    caller = caller or _qb_caller()
+    started = time.monotonic()
+    login_ms = 0.0
+    api_ms = 0.0
+    login_status = 0
+    api_status = 0
+
+    def _finish(result):
+        total_ms = (time.monotonic() - started) * 1000.0
+        if total_ms >= QUEUE_ACCESS_LOG_MS or QUEUE_ACCESS_LOG_ALL:
+            detail = (
+                f"{caller}:{endpoint}:login={_ms(login_ms)},api={_ms(api_ms)},"
+                f"total={_ms(total_ms)},login_status={login_status},status={api_status}"
+            )
+            if scope is not None:
+                scope["qb_calls"].append(detail)
+            log(
+                f"[qb] request={(scope or {}).get('id') or '-'} caller={caller} endpoint={endpoint} "
+                f"login_ms={_ms(login_ms)} api_ms={_ms(api_ms)} total_ms={_ms(total_ms)} "
+                f"login_status={login_status} status={api_status}"
+            )
+        return result
+
     if not QB_PASSWORD:
         log("QBITTORRENT_PASSWORD is not configured")
-        return None
+        return _finish(None)
     try:
         cookie_jar = http.cookiejar.CookieJar()
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
         login_url = f"{QB_URL}/api/v2/auth/login"
         login_data = f"username={urllib.parse.quote(QB_USERNAME)}&password={urllib.parse.quote(QB_PASSWORD)}".encode()
-        resp = opener.open(urllib.request.Request(login_url, data=login_data), timeout=5)
+        login_started = time.monotonic()
         try:
+            resp = opener.open(urllib.request.Request(login_url, data=login_data), timeout=5)
+        finally:
+            login_ms = (time.monotonic() - login_started) * 1000.0
+        try:
+            try:
+                login_status = int(getattr(resp, "status", 0) or 0)
+            except (TypeError, ValueError):
+                login_status = 0
             if resp.status != 200:
-                return None
+                return _finish(None)
             request_data = urllib.parse.urlencode(data).encode() if data is not None else None
             request = urllib.request.Request(f"{QB_URL}{endpoint}", data=request_data)
-            resp2 = opener.open(request, timeout=10)
+            api_started = time.monotonic()
             try:
+                resp2 = opener.open(request, timeout=10)
+            finally:
+                api_ms = (time.monotonic() - api_started) * 1000.0
+            try:
+                try:
+                    api_status = int(getattr(resp2, "status", 0) or 0)
+                except (TypeError, ValueError):
+                    api_status = 0
                 body = resp2.read().decode().strip()
                 if not body or body == "Ok.":
-                    return True
+                    return _finish(True)
                 if body == "Fails.":
-                    return None
-                return json.loads(body)
+                    return _finish(None)
+                return _finish(json.loads(body))
             finally:
                 resp2.close()
         finally:
             resp.close()
     except Exception as e:
         log(f"qB API error: {e}")
-        return None
+        return _finish(None)
 
 
 def qb_api(endpoint):
@@ -635,6 +887,7 @@ def get_main_video_index():
             and now - main_video_cache_time < MAIN_VIDEO_CACHE_TTL_SECONDS
         ):
             return main_video_cache
+        build_started = time.monotonic()
         primary = {}
         alias_candidates = {}
         if os.path.isdir(root):
@@ -654,17 +907,29 @@ def get_main_video_index():
         for alias, candidates in alias_candidates.items():
             if alias not in index and len(candidates) == 1:
                 index[alias] = next(iter(candidates))
+        _slow_op(
+            "get_main_video_index",
+            (time.monotonic() - build_started) * 1000.0,
+            f"items={len(index)}",
+        )
         main_video_cache = index
         main_video_cache_root = root
         main_video_cache_time = now
         return main_video_cache
 
 def get_dir_size(path):
+    started = time.monotonic()
     try:
         r = subprocess.run(["du", "-sb", path], capture_output=True, text=True, timeout=5)
-        return int(r.stdout.split()[0])
+        size = int(r.stdout.split()[0])
     except:
-        return 0
+        size = 0
+    _slow_op(
+        "du",
+        (time.monotonic() - started) * 1000.0,
+        f"path={os.path.basename(str(path).rstrip('/')) or path}",
+    )
+    return size
 
 def get_file_size(path):
     try:
@@ -1164,15 +1429,94 @@ def localize_weekly_fanarts(raw_code):
         return None, "lookup failed"
 
 
+class QueueHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that records how long a connection waited for its handler.
+
+    The accept timestamp is handed to the handler thread through a thread-local
+    (socket objects have __slots__, so they cannot carry attributes).
+    """
+
+    _accept_stamps = {}
+    _accept_stamps_lock = threading.Lock()
+
+    def process_request(self, request, client_address):
+        now = time.monotonic()
+        with self._accept_stamps_lock:
+            if len(self._accept_stamps) > 256:
+                cutoff = now - 60.0
+                for key in [k for k, v in self._accept_stamps.items() if v < cutoff]:
+                    self._accept_stamps.pop(key, None)
+            self._accept_stamps[id(request)] = now
+        super().process_request(request, client_address)
+
+    def finish_request(self, request, client_address):
+        with self._accept_stamps_lock:
+            stamp = self._accept_stamps.pop(id(request), None)
+        _accept_ctx.stamp = stamp
+        try:
+            super().finish_request(request, client_address)
+        finally:
+            _accept_ctx.stamp = None
+
+
 class QueueHandler(BaseHTTPRequestHandler):
     def _json(self, data, status=200):
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.end_headers()
-        self.wfile.write(json.dumps(data, ensure_ascii=False).encode())
+        scope = _request_scope()
+        _ensure_request_id(self)
+        body = json.dumps(data, ensure_ascii=False).encode()
+        write_started = time.monotonic()
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Request-ID")
+            if scope is not None and scope.get("id"):
+                self.send_header("X-Request-ID", scope["id"])
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+        except Exception as exc:
+            if scope is not None and not scope.get("write_error"):
+                scope["write_error"] = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            if scope is not None:
+                scope["response_write_ms"] += (time.monotonic() - write_started) * 1000.0
+
+    def send_response(self, code, message=None):
+        scope = _request_scope()
+        if scope is not None:
+            try:
+                scope["status"] = int(code)
+            except (TypeError, ValueError):
+                pass
+        super().send_response(code, message)
+
+    def parse_request(self):
+        ok = super().parse_request()
+        if ok:
+            _ensure_request_id(self)
+        return ok
+
+    def handle_one_request(self):
+        self._qd_t_received = time.monotonic()
+        # Gap between "connection accepted" and "this handler thread started":
+        # distinguishes server accept/thread scheduling delay from handler work.
+        self._qd_accept_ms = 0.0
+        accept_ts = getattr(_accept_ctx, "stamp", None)
+        if accept_ts:
+            self._qd_accept_ms = max(0.0, (self._qd_t_received - accept_ts) * 1000.0)
+        _begin_request_scope(self)
+        try:
+            super().handle_one_request()
+        except Exception as exc:
+            scope = _request_scope()
+            if scope is not None and not scope.get("error"):
+                scope["error"] = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            _end_request_scope(self)
 
     def do_OPTIONS(self):
         self._json({})
@@ -1710,7 +2054,7 @@ def main():
         log(f"Download source startup cleanup failed: {e}")
     threading.Thread(target=online_cleanup_loop, daemon=True).start()
     
-    server = ThreadingHTTPServer(("0.0.0.0", port), QueueHandler)
+    server = QueueHTTPServer(("0.0.0.0", port), QueueHandler)
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
     try:
         server.serve_forever()

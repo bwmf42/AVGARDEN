@@ -6,6 +6,10 @@
 
 ## Unreleased
 
+### Added
+
+- Added queue timeout observability so the next Go 15s `/api/queue` timeout can be attributed to a specific stage. The Go queue proxy stamps every proxied request with an `X-Request-ID` (reused when already present) and logs `httptrace` phases (`dns_ms`, `connect_ms`, `conns`, `gotconn_ms`, `write_ms`, `ttfb_ms`, `total_ms`, status, error) including partial phases on failure. `queue_api` reads the same id, echoes it back, and logs one `[req]` line with `lock_wait_ms` / `lock_hold_ms` / `handler_ms` / `response_write_ms` / `total_ms` plus `[lock]`, `[flock]`, `[qb]` (per caller, login vs API time) and `[slow]` lines for slow local operations. Default threshold is 500ms (`QUEUE_ACCESS_LOG_MS`, `QUEUE_PROXY_LOG_MS`); `QUEUE_ACCESS_LOG=all` or `AVGARDEN_QUEUE_TRACE=1` logs every request. Diagnostics only: queue timeouts, lock scope and behaviour, worker, qB session handling and deployment are unchanged.
+
 ### Fixed
 
 - Hardened Weekly title translation so actress stripping no longer eats closing punctuation, the translator retries with both cleaned and raw titles, and obvious refusal text cannot pass as `titleZh`; this closes the remaining “looks like translated but is actually missing” cases.

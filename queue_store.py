@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import time
 from contextlib import contextmanager
 
 
@@ -10,18 +11,44 @@ except ImportError:  # pragma: no cover - production runs on Linux
     fcntl = None
 
 
+# Optional observability hook. queue_api installs a hook per request thread so it
+# can report file-lock wait/hold time together with its request id. Nothing sets
+# it by default, so the worker and every other caller keep their existing
+# behaviour and produce no extra output.
+_trace_hook = None
+
+
+def set_trace_hook(hook):
+    """Install (or clear with None) the file-lock trace hook."""
+    global _trace_hook
+    _trace_hook = hook
+
+
 @contextmanager
 def _locked(path):
     lock_path = path + ".lock"
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    hook = _trace_hook
+    wait_started = time.monotonic() if hook else 0.0
     with open(lock_path, "a+", encoding="utf-8") as lock_file:
         if fcntl is not None:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        acquired = time.monotonic() if hook else 0.0
         try:
             yield
         finally:
+            released = time.monotonic() if hook else 0.0
             if fcntl is not None:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            if hook:
+                try:
+                    hook(
+                        path,
+                        (acquired - wait_started) * 1000.0,
+                        (released - acquired) * 1000.0,
+                    )
+                except Exception:
+                    pass
 
 
 def _read_unlocked(path):
