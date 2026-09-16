@@ -14,7 +14,7 @@
 # 说明：
 # - 98堂 url-test 直测 plwt.kpqq4.com；含日本（有时只是暂时不通，死节点会被测活跳过）
 # - 403/Cloudflare 算连通（握手成功）
-# - AVGARDEN worker PROXY=http://192.168.5.14:7890 走 mixed-port，由下列规则分流
+# - AVGARDEN worker PROXY=http://192.168.5.17:7890 走 mixed-port，由下列规则分流
 
 # ---------------------------------------------------------------------------
 # proxy-groups（追加到现有 groups 末尾、rules: 之前）

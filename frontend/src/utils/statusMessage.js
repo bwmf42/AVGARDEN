@@ -18,7 +18,12 @@ export function summarizeCheckMessage(raw, fallback = '异常') {
   const http = text.match(/^HTTP\s+(\d+)\s*:?\s*(.*)$/i)
   if (http) {
     const code = http[1]
-    const extracted = extractJsonMessage(http[2]) || http[2].trim()
+    let extracted = extractJsonMessage(http[2]) || http[2].trim()
+    // Drop noisy request ids so short Chinese API errors stay readable.
+    extracted = extracted.replace(/\s*\(request id:[^)]+\)\s*/gi, '').trim()
+    if (/无权访问/.test(extracted)) {
+      return extracted.length <= 28 ? extracted : '无权访问该模型分组'
+    }
     if (code === '503') return '服务暂不可用'
     if (/unknown provider/i.test(extracted)) {
       const model = extracted.match(/model\s+([^\s"]+)/i)

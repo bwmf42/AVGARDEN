@@ -294,54 +294,61 @@ def _chat_endpoint(base: str) -> str:
     return base if base.endswith("/chat/completions") else f"{base}/chat/completions"
 
 
-def probe_translation() -> Tuple[bool, str]:
-    """Probe the same translation provider that Weekly uses."""
+def _translation_probe_candidates() -> List[Tuple[str, str, str, str]]:
+    """(label, base, key, model) in preference order — same as Weekly."""
+    out: List[Tuple[str, str, str, str]] = []
     if TRANSLATE_API_BASE and TRANSLATE_API_KEY:
-        provider = "GPT 中继"
-        base = TRANSLATE_API_BASE
-        key = TRANSLATE_API_KEY
-        model = TRANSLATE_MODEL
-    elif DS_API_KEY:
-        provider = "DeepSeek"
-        base = "https://api.deepseek.com"
-        key = DS_API_KEY
-        model = DS_MODEL
-    else:
+        out.append(("翻译中继", TRANSLATE_API_BASE, TRANSLATE_API_KEY, TRANSLATE_MODEL))
+    if DS_API_KEY:
+        out.append(("DeepSeek", "https://api.deepseek.com", DS_API_KEY, DS_MODEL))
+    return out
+
+
+def probe_translation() -> Tuple[bool, str]:
+    """Probe translation providers; fall back when the relay is down."""
+    candidates = _translation_probe_candidates()
+    if not candidates:
         return False, "未配置翻译 API"
-    payload = json.dumps({
-        "model": model,
-        "messages": [
-            {"role": "user", "content": "ping"},
-        ],
-        "max_tokens": 4,
-        "temperature": 0,
-    }).encode()
-    req = urllib.request.Request(
-        _chat_endpoint(base),
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            data = json.loads(resp.read().decode())
-        if provider == "DeepSeek":
-            try:
-                from src.status_report import record_deepseek_usage
-                record_deepseek_usage(1)
-            except Exception:
-                pass
-        content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
-        if content is None:
-            return False, "empty content"
-        return True, f"{provider} · model={model}"
-    except urllib.error.HTTPError as e:
-        body = e.read().decode(errors="replace")[:200]
-        return False, f"HTTP {e.code}: {body}"
-    except Exception as e:
-        return False, str(e)[:160]
+    last_err = ""
+    for label, base, key, model in candidates:
+        payload = json.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 4,
+            "temperature": 0,
+        }).encode()
+        req = urllib.request.Request(
+            _chat_endpoint(base),
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                data = json.loads(resp.read().decode())
+            if label == "DeepSeek":
+                try:
+                    from src.status_report import record_deepseek_usage
+                    record_deepseek_usage(1)
+                except Exception:
+                    pass
+            content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+            if content is None:
+                last_err = f"{label}: empty content"
+                continue
+            return True, f"{label} · model={model}"
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")[:160]
+            last_err = f"HTTP {e.code}: {body}"
+            log(f"translation probe {label}/{model} failed: HTTP {e.code}")
+            continue
+        except Exception as e:
+            last_err = str(e)[:160]
+            log(f"translation probe {label}/{model} failed: {last_err}")
+            continue
+    return False, last_err or "translation probe failed"
 
 
 def probe_deepseek() -> Tuple[bool, str]:

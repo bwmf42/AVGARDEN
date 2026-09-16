@@ -383,7 +383,8 @@ export default {
           queueLine = `不可用: ${q.error}`
         }
         const checkValues = Object.values(checks)
-        const criticalNames = new Set(['qb', 'plwt', 'translation', 'deepseek', 'scrape'])
+        // translation/deepseek/p115/version: yellow only — not whole-system 异常
+        const criticalNames = new Set(['qb', 'plwt', 'scrape'])
         const hasCriticalFailure = Object.entries(checks).some(([name, check]) =>
           criticalNames.has(name) && check && check.ok === false
         )
@@ -405,7 +406,7 @@ export default {
       } catch (e) {}
     },
     applySystemChecks(checks) {
-      const criticalNames = new Set(['qb', 'plwt', 'translation', 'deepseek', 'scrape'])
+      const criticalNames = new Set(['qb', 'plwt', 'scrape'])
       const hasCriticalFailure = Object.entries(checks).some(([name, check]) =>
         criticalNames.has(name) && check && check.ok === false
       )

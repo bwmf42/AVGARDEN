@@ -293,9 +293,9 @@ def build_health_from_diag(diag: Dict[str, Any]) -> Dict[str, Any]:
     }
 
     fails = [k for k, v in checks.items() if not v.get("ok")]
-    # yellow: non-critical (version behind, missing_files, p115 cookie)
-    # red: qB/plwt/translation down or scrape stuck
-    critical = {"qb", "plwt", "translation", "deepseek", "scrape"}
+    # yellow: version behind, missing_files, p115 cookie, translation relay flake
+    # red: qB/plwt down or scrape stuck
+    critical = {"qb", "plwt", "scrape"}
     crit_fails = [k for k in fails if k in critical]
     if crit_fails:
         overall = "red"

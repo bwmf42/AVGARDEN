@@ -16,7 +16,7 @@
 | 在家 Mac 部署 | `AVGARDEN_PASS=… bash deploy.sh`（rsync→NAS；可 `AVGARDEN_DEPLOY_SERVICES=server\|worker\|all`） |
 | 外面飞书 / NAS 本地部署 | `bash deploy_local.sh`（`server`/`worker`/`all`；`AVGARDEN_HOT=1` 热补 worker；**不要**跑 Mac `deploy.sh`） |
 | 版本对齐 | `./check_version.sh`（Mac vs 运行中 `/api/version`） |
-| 状态 | `curl -s http://192.168.5.14:31471/api/videos` |
+| 状态 | `curl -s http://192.168.5.17:31471/api/videos` |
 | Worker 日志 | `ssh zspace 'sudo docker logs avgarden-worker --tail 40'` |
 | 周更新 | `docker exec avgarden-worker … weekly_updater.py` |
 | 未看图回填 | worker 内 `plwt_art_backfill.py`（默认 `BACKFILL_UNWATCHED_ONLY=1`） |
@@ -44,7 +44,7 @@
 
 ## NAS 要点
 
-- IP `192.168.5.14`；SSH 常用别名 `zspace` 或 `13049108160@192.168.5.14 -p 10000`
+- IP `192.168.5.17`；SSH 常用别名 `zspace` 或 `13049108160@192.168.5.17 -p 10000`
 - 媒体库与 qB 保存目录须同一挂载（现为 `…/data/data2/115生活备份` → 容器 `/data`）；`/db` `/app/cfg` `/app/logs`
 - 出站刮削依赖 `PROXY`（mihomo mixed-port）；javdatabase / MGS / DMM 走固定 rules（日本组等）
 - mihomo：**订阅** `Clash_sub_v2.yaml` vs **固定** `config.yaml`（groups/rules）。98堂 `url-test` 组与 `kpqq4.com`/`plwt` 规则见 [`docs/mihomo-fixed-snippet.yaml`](docs/mihomo-fixed-snippet.yaml)；勿用订阅覆盖固定配置
@@ -163,7 +163,7 @@ curl -sS http://127.0.0.1:31471/api/queue-status
 部署前/回家后先核对本地源码是否与正在跑的 NAS 构建一致，避免“以为改了其实线上还是旧的”：
 
 ```bash
-./check_version.sh              # local vs http://192.168.5.14:31471/api/version（分 server/worker）
+./check_version.sh              # local vs http://192.168.5.17:31471/api/version（分 server/worker）
 ./check_version.sh --nas-tree   # 额外 ssh zspace 指纹 NAS 现役源码目录
 ```
 

@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./check_version.sh
-#   AVGARDEN_URL=http://192.168.5.14:31471 ./check_version.sh
+#   AVGARDEN_URL=http://192.168.5.17:31471 ./check_version.sh
 #   ./check_version.sh --nas-tree   # also fingerprint NAS source via ssh zspace
 #
 # Exit: 0 full match (or server+worker match with dirty warning only if not dirty),
@@ -14,7 +14,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
-URL="${AVGARDEN_URL:-http://192.168.5.14:31471}"
+URL="${AVGARDEN_URL:-http://192.168.5.17:31471}"
 CHECK_NAS_TREE=0
 [ "${1:-}" = "--nas-tree" ] && CHECK_NAS_TREE=1
 
