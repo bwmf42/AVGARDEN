@@ -1373,8 +1373,9 @@ func queueHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost && strings.TrimRight(r.URL.Path, "/") == "/api/queue" {
 		var payload struct {
-			Code   string `json:"code"`
-			Target string `json:"target"`
+			Code      string `json:"code"`
+			Target    string `json:"target"`
+			RequestID string `json:"request_id"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			httpError(w, "Invalid JSON", http.StatusBadRequest)
@@ -1390,7 +1391,13 @@ func queueHandler(w http.ResponseWriter, r *http.Request) {
 			httpError(w, "Invalid target (use qb or 115)", http.StatusBadRequest)
 			return
 		}
-		body, _ = json.Marshal(map[string]string{"code": code, "target": target})
+		forward := map[string]string{"code": code, "target": target}
+		// Idempotency key: forwarded verbatim so retries keep the same value.
+		// Legacy clients without request_id stay supported.
+		if rawID := strings.TrimSpace(payload.RequestID); rawID != "" && queueRequestIDRe.MatchString(rawID) {
+			forward["request_id"] = rawID
+		}
+		body, _ = json.Marshal(forward)
 		failedAckMtx.Lock()
 		acked := loadFailedAckIDs()
 		if acked[code] {

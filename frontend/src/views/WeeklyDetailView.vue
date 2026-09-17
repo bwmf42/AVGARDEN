@@ -1025,12 +1025,22 @@ export default {
                 this.p115Available = false
             }
         },
-        async postToQueue(targetId, downloadTarget = 'qb') {
+        newAddRequestId() {
             try {
+                if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+                    return window.crypto.randomUUID()
+                }
+            } catch (e) {}
+            return `add-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+        },
+        async postToQueue(targetId, downloadTarget = 'qb', requestId = '') {
+            try {
+                const payload = { code: targetId, target: downloadTarget }
+                if (requestId) payload.request_id = requestId
                 const resp = await fetch('/api/queue/', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ code: targetId, target: downloadTarget })
+                    body: JSON.stringify(payload)
                 })
                 if (resp.ok) {
                     return { ok: true }
@@ -1074,6 +1084,8 @@ export default {
             // Skip early-return so user can switch qb ↔ 115.
 
             const maxPostAttempts = 4
+            // One logical add = one idempotency key, reused by every retry below.
+            const requestId = this.newAddRequestId()
             let lastReason = ''
             for (let attempt = 1; attempt <= maxPostAttempts; attempt++) {
                 if (token !== this.queueAddToken) return
@@ -1092,7 +1104,7 @@ export default {
                     this.queueHint = '服务已恢复，正在加入队列…'
                 }
 
-                const result = await this.postToQueue(targetId, channel)
+                const result = await this.postToQueue(targetId, channel, requestId)
                 if (token !== this.queueAddToken) return
 
                 if (result.ok) {

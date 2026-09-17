@@ -26,7 +26,9 @@ class TestHealRunner(unittest.TestCase):
              mock.patch.object(h.urllib.request, "urlopen", return_value=Response()) as urlopen:
             ok, msg = h.probe_translation()
         self.assertTrue(ok)
-        self.assertEqual(msg, "GPT 中继 · model=gpt-5.4")
+        # Probe labels were renamed to 翻译中继 / DeepSeek by the approved relay
+        # fallback change (see CHANGELOG "relay-to-DeepSeek fallback").
+        self.assertEqual(msg, "翻译中继 · model=gpt-5.4")
         self.assertIn("relay.example/v1/chat/completions", urlopen.call_args.args[0].full_url)
 
     def test_count_titlezh_gaps(self):

@@ -295,10 +295,13 @@ export default {
       }
       this.isAdding = true
       try {
+        const requestId = (window.crypto && typeof window.crypto.randomUUID === 'function')
+          ? window.crypto.randomUUID()
+          : `add-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
         const resp = await fetch('/api/queue/', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code })
+          body: JSON.stringify({ code, request_id: requestId })
         })
         if (!resp.ok) {
           this.showToast(`${code} 添加失败，请重试`, 'warn')

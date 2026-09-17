@@ -70,12 +70,52 @@ def _request(server, method, path, request_id):
         req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status, resp.headers.get("X-Request-ID"), resp.read()
+            try:
+                body = resp.read()
+            except Exception:
+                # The server closes HTTP/1.0 connections right after the body;
+                # a late read can surface as a reset — status/headers suffice.
+                body = b""
+            return resp.status, resp.headers.get("X-Request-ID"), body
     except urllib.error.HTTPError as exc:  # 404 for the side-effect-free POST probe
-        return exc.code, exc.headers.get("X-Request-ID"), exc.read()
+        try:
+            body = exc.read()
+        except Exception:
+            body = b""
+        return exc.code, exc.headers.get("X-Request-ID"), body
 
 
 class QueueObservabilityTest(unittest.TestCase):
+    def setUp(self):
+        # Per-test isolated state so this module can share a process with the
+        # concurrency tests (both re-point queue_api module paths).
+        self.tmp = tempfile.mkdtemp(prefix="queue-obs-case-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        os.environ["QUEUE_PATH"] = os.path.join(self.tmp, "download_queue.txt")
+        queue_api.QUEUE_PATH = os.environ["QUEUE_PATH"]
+        queue_api.STATE_PATH = os.path.join(self.tmp, "queue_state.json")
+        queue_api.CURRENT_PATH = os.path.join(self.tmp, "current_download.txt")
+        queue_api.DOWNLOAD_TARGETS_PATH = os.path.join(self.tmp, "download_targets.json")
+        queue_api.IDEMPOTENCY_PATH = os.path.join(self.tmp, "queue_idempotency.json")
+        queue_api.HISTORY_PATH = os.path.join(self.tmp, "download_history.json")
+        queue_api.SAVE_PATH = os.path.join(self.tmp, "data")
+        queue_api.WEEKLY_JSON = os.path.join(self.tmp, "weekly.json")
+        queue_api.LOCK_PATH = os.path.join(self.tmp, "work")
+        queue_api.FAILED_QUEUE_JSON_PATH = os.path.join(self.tmp, "failed_queue.json")
+        queue_api.FAILED_QUEUE_PATH = os.path.join(self.tmp, "failed_queue.txt")
+        queue_api.RETRY_PATH = os.path.join(self.tmp, "retry_counts.json")
+        os.makedirs(queue_api.SAVE_PATH, exist_ok=True)
+        # Force full tracing for this module regardless of import order.
+        self._orig_all = queue_api.QUEUE_ACCESS_LOG_ALL
+        self._orig_ms = queue_api.QUEUE_ACCESS_LOG_MS
+        queue_api.QUEUE_ACCESS_LOG_ALL = True
+        queue_api.QUEUE_ACCESS_LOG_MS = 0.0
+        self.addCleanup(self._restore_log_settings)
+
+    def _restore_log_settings(self):
+        queue_api.QUEUE_ACCESS_LOG_ALL = self._orig_all
+        queue_api.QUEUE_ACCESS_LOG_MS = self._orig_ms
+
     def test_request_log_fields_and_request_id_echo(self):
         server, thread = _start_server(queue_api.QueueHTTPServer)
         self.addCleanup(_stop_server, server, thread)
@@ -225,6 +265,10 @@ class QueueObservabilityTest(unittest.TestCase):
                 "accept_ms": 0.4,
                 "lock_wait_ms": 0.3,
                 "lock_hold_ms": age_ms,
+                "lock_wait_total_ms": 0.3,
+                "lock_hold_max_ms": age_ms,
+                "lock_count": 1,
+                "lock_sections": ["get.snapshot:wait=0.3,hold=%.1f" % age_ms],
                 "handler_ms": age_ms,
                 "handler_done_ts": 0.0,
                 "response_write_ms": 0.1,

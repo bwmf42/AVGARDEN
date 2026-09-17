@@ -4,7 +4,7 @@ AV/GARDEN Queue API v7 —
 下载管理（完整声明周期：排队→下载中→已完成，保留展示）
 完成后自动更新 weekly.json + 写入 AV/GARDEN SQLite（让主页也可见）
 """
-import os, sys, json, signal, time, subprocess, re, shutil, threading, uuid
+import contextlib, os, sys, json, signal, time, subprocess, re, shutil, threading, uuid
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import unquote, urlparse
 
@@ -15,6 +15,7 @@ from queue_store import (
     append_unique,
     clear_if_matches,
     clear_download_target,
+    get_download_target,
     normalize_download_target,
     read_json,
     read_queue,
@@ -75,6 +76,21 @@ main_video_cache = {}
 MAIN_VIDEO_CACHE_TTL_SECONDS = int(os.environ.get("MAIN_VIDEO_CACHE_TTL_SECONDS", "30"))
 DEBUG = os.environ.get("DEBUG", "0") == "1"
 QUEUE_REGISTRATION_GRACE_SECONDS = int(os.environ.get("QUEUE_REGISTRATION_GRACE_SECONDS", "120"))
+
+# --- POST idempotency / in-flight de-duplication (local state only) ---------
+# Empty means "derive from QUEUE_PATH at call time" so path overrides work.
+IDEMPOTENCY_PATH = os.environ.get("QUEUE_IDEMPOTENCY_PATH", "")
+IDEMPOTENCY_TTL_SECONDS = int(os.environ.get("QUEUE_IDEMPOTENCY_TTL", str(7 * 24 * 3600)))
+IDEMPOTENCY_MAX_ENTRIES = int(os.environ.get("QUEUE_IDEMPOTENCY_MAX", "5000"))
+# Window in which an accepted code still counts as in-flight even though it has
+# already left download_queue.txt (worker pop -> current_download, 115 submit).
+INFLIGHT_ACCEPT_TTL_SECONDS = int(os.environ.get("QUEUE_INFLIGHT_TTL", "300"))
+ACTIVE_STATE_STATUSES = frozenset({"queued", "downloading", "processing"})
+# Terminal rows explicitly end a lifecycle: they win over the short
+# "recently accepted" race-window protection.
+TERMINAL_STATE_STATUSES = frozenset(
+    {"done", "failed", "error", "cancelled", "canceled", "completed", "complete", "skipped"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +167,10 @@ def _begin_request_scope(handler):
         "accept_ms": float(getattr(handler, "_qd_accept_ms", 0.0) or 0.0),
         "lock_wait_ms": 0.0,
         "lock_hold_ms": 0.0,
+        "lock_wait_total_ms": 0.0,
+        "lock_hold_max_ms": 0.0,
+        "lock_count": 0,
+        "lock_sections": [],
         "handler_ms": 0.0,
         "handler_done_ts": 0.0,
         "response_write_ms": 0.0,
@@ -207,6 +227,198 @@ def _qb_caller():
     return "other"
 
 
+def _record_lock_event(section, phase, wait_ms=None, hold_ms=None):
+    """Accumulate + report one queue_state_lock critical section."""
+    scope = _request_scope()
+    if scope is not None:
+        if wait_ms is not None:
+            scope["lock_wait_ms"] = max(scope["lock_wait_ms"], wait_ms)
+            scope["lock_wait_total_ms"] += wait_ms
+        if hold_ms is not None:
+            scope["lock_hold_ms"] += hold_ms
+            scope["lock_hold_max_ms"] = max(scope["lock_hold_max_ms"], hold_ms)
+            scope["lock_count"] += 1
+        if phase == "released":
+            scope["lock_sections"].append(
+                f"{section}:wait={_ms(wait_ms or 0)},hold={_ms(hold_ms or 0)}"
+            )
+    log_line = wait_ms is not None and wait_ms >= QUEUE_ACCESS_LOG_MS
+    hold_line = hold_ms is not None and (
+        hold_ms >= QUEUE_ACCESS_LOG_MS or (wait_ms or 0) >= QUEUE_ACCESS_LOG_MS
+    )
+    if not (log_line or hold_line):
+        return
+    rid = (scope or {}).get("id") or "-"
+    method = (scope or {}).get("method") or "-"
+    path = (scope or {}).get("path") or "-"
+    if phase == "acquired":
+        log(
+            f"[lock] request={rid} method={method} path={path} section={section} "
+            f"phase=acquired lock_wait_ms={_ms(wait_ms)}"
+        )
+    else:
+        log(
+            f"[lock] request={rid} method={method} path={path} section={section} "
+            f"phase=released lock_wait_ms={_ms(wait_ms or 0)} lock_hold_ms={_ms(hold_ms or 0)}"
+        )
+
+
+@contextlib.contextmanager
+def queue_state_critical(section="queue_state"):
+    """Short critical section around shared queue state.
+
+    Only local read-modify-write work belongs inside; qB/HTTP/du/os.walk must
+    stay outside so a slow request cannot block every other queue request.
+    """
+    started = time.monotonic()
+    with queue_state_lock:
+        acquired = time.monotonic()
+        wait_ms = (acquired - started) * 1000.0
+        _record_lock_event(section, "acquired", wait_ms=wait_ms)
+        try:
+            yield
+        finally:
+            hold_ms = (time.monotonic() - acquired) * 1000.0
+            _record_lock_event(section, "released", wait_ms=wait_ms, hold_ms=hold_ms)
+
+
+def _idempotency_path():
+    configured = os.environ.get("QUEUE_IDEMPOTENCY_PATH") or ""
+    path = configured or globals().get("IDEMPOTENCY_PATH") or ""
+    if path:
+        return path
+    return os.path.join(os.path.dirname(QUEUE_PATH) or "/db", "queue_idempotency.json")
+
+
+def _idem_store():
+    """Load the idempotency store; never fail a request over the store."""
+    try:
+        data = read_json(_idempotency_path(), {})
+    except Exception as exc:
+        log(f"Idempotency store unavailable ({exc}); continuing without replay data")
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    entries = data.get("entries")
+    if not isinstance(entries, dict):
+        entries = {}
+    return {"version": 1, "entries": entries}
+
+
+def _idem_prune(store, now=None):
+    now = now or time.time()
+    entries = store["entries"]
+    for key in [
+        k
+        for k, value in entries.items()
+        if now - float((value or {}).get("created_at") or 0) > IDEMPOTENCY_TTL_SECONDS
+    ]:
+        entries.pop(key, None)
+    if IDEMPOTENCY_MAX_ENTRIES > 0 and len(entries) > IDEMPOTENCY_MAX_ENTRIES:
+        ordered = sorted(entries.items(), key=lambda kv: float((kv[1] or {}).get("created_at") or 0))
+        for key, _ in ordered[: len(entries) - IDEMPOTENCY_MAX_ENTRIES]:
+            entries.pop(key, None)
+    return store
+
+
+def _idem_record(request_id, code, target, status, response):
+    """Persist the first result for request_id (atomic, survives restart)."""
+    if not request_id:
+        return
+    now = time.time()
+
+    def updater(store):
+        store = _idem_prune(store if isinstance(store, dict) else {"version": 1, "entries": {}}, now)
+        if not isinstance(store.get("entries"), dict):
+            store["entries"] = {}
+        store["version"] = 1
+        store["entries"][request_id] = {
+            "request_id": request_id,
+            "code": code,
+            "target": target,
+            "status": status,
+            "result": response,
+            "created_at": now,
+            "updated_at": now,
+        }
+        return store
+
+    try:
+        update_json(_idempotency_path(), {"version": 1, "entries": {}}, updater)
+    except Exception as exc:
+        # The task itself is already accepted; losing the replay record only
+        # means a retry is treated as a fresh (but still in-flight-deduped) add.
+        log(f"Idempotency record failed for {request_id}: {exc}")
+
+
+def _recent_accept(code, ttl=None):
+    """Most recent accepted entry for code within ttl (covers pop->processing gap)."""
+    ttl = INFLIGHT_ACCEPT_TTL_SECONDS if ttl is None else ttl
+    upper = str(code or "").upper()
+    if not upper:
+        return None
+    now = time.time()
+    entries = _idem_store()["entries"]
+    best = None
+    for value in entries.values():
+        if not isinstance(value, dict):
+            continue
+        if str(value.get("code") or "").upper() != upper:
+            continue
+        created = float(value.get("created_at") or 0)
+        if now - created > ttl:
+            continue
+        if best is None or created > float(best.get("created_at") or 0):
+            best = value
+    return best
+
+
+def _channel_label(target):
+    """User-facing channel label."""
+    return "115 离线" if str(target or "").lower() == "115" else "qB"
+
+
+def _channel_log_label(target):
+    """Log label kept identical to the pre-existing av-garden.log wording."""
+    return "115" if str(target or "").lower() == "115" else "qB"
+
+
+def _inflight_for_code(code, state_items, queue_codes, current_code, failed_codes=None):
+    """Local-only in-flight probe: (in_flight, existing_target, source).
+
+    Terminal local state (done/failed/cancelled in queue_state, or a recorded
+    failure) always wins over the `recent_accept` race-window heuristic, so an
+    accepted-then-finished task can be queued again with a new request_id.
+    """
+    upper = str(code or "").upper()
+    if not upper:
+        return False, None, ""
+    if any(str(c or "").upper() == upper for c in queue_codes):
+        return True, get_download_target(DOWNLOAD_TARGETS_PATH, code), "queued"
+    if str(current_code or "").upper() == upper:
+        return True, get_download_target(DOWNLOAD_TARGETS_PATH, code), "current_download"
+    if {str(c or "").upper() for c in (failed_codes or ())} & {upper}:
+        return False, None, "terminal:failed"
+    terminal_seen = False
+    for item in state_items or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("code") or "").upper() != upper:
+            continue
+        status = str(item.get("status") or "").lower()
+        if status in ACTIVE_STATE_STATUSES:
+            stored = str(item.get("target") or "").strip() or None
+            return True, stored or get_download_target(DOWNLOAD_TARGETS_PATH, code), f"state:{status}"
+        if status in TERMINAL_STATE_STATUSES:
+            terminal_seen = True
+    if terminal_seen:
+        return False, None, "terminal:state"
+    recent = _recent_accept(code)
+    if recent is not None:
+        return True, str(recent.get("target") or "") or get_download_target(DOWNLOAD_TARGETS_PATH, code), "recent_accept"
+    return False, None, ""
+
+
 def _emit_request_log(scope):
     finished = time.monotonic()
     total_ms = (finished - scope["t_received"]) * 1000.0
@@ -235,10 +447,12 @@ def _emit_request_log(scope):
         f"path={scope['path'] or '-'} status={scope['status'] or 0} "
         f"accept_ms={_ms(scope['accept_ms'])} "
         f"lock_wait_ms={_ms(scope['lock_wait_ms'])} lock_hold_ms={_ms(scope['lock_hold_ms'])} "
+        f"lock_hold_max_ms={_ms(scope['lock_hold_max_ms'])} lock_count={scope['lock_count']} "
         f"handler_ms={_ms(scope['handler_ms'])} response_write_ms={_ms(scope['response_write_ms'])} "
         f"after_handler_ms={_ms(after_handler_ms)} "
         f"total_ms={_ms(total_ms)} "
         f"locks={'|'.join(scope['lock_events']) or '-'} "
+        f"sections={'|'.join(scope['lock_sections']) or '-'} "
         f"slow_ops={'|'.join(scope['slow_ops']) or '-'} "
         f"qb={'|'.join(scope['qb_calls']) or '-'} "
         f"error={scope['error'] or '-'} write_error={scope['write_error'] or '-'}"
@@ -294,6 +508,11 @@ def _actress_is_blocked(name: str) -> bool:
 
 
 def queue_route_locked(method):
+    """Legacy handler-wide lock — kept only for DELETE.
+
+    GET/POST no longer use it: they take queue_state_critical() around their
+    local read-modify-write sections and keep slow/external work unlocked.
+    """
     def wrapped(self, *args, **kwargs):
         path = urlparse(self.path).path.rstrip("/")
         scope = _request_scope()
@@ -308,35 +527,14 @@ def queue_route_locked(method):
                 scope["handler_done_ts"] = time.monotonic()
 
         _ensure_request_id(self)
-        wait_started = time.monotonic()
-        # Same lock, same scope as before — only timing was added around it.
-        with queue_state_lock:
-            acquired = time.monotonic()
-            if scope is not None:
-                scope["lock_wait_ms"] = (acquired - wait_started) * 1000.0
-                if scope["lock_wait_ms"] >= QUEUE_ACCESS_LOG_MS:
-                    log(
-                        f"[lock] request={scope.get('id') or '-'} method={scope['method'] or '-'} "
-                        f"path={scope['path'] or path} phase=acquired "
-                        f"lock_wait_ms={_ms(scope['lock_wait_ms'])}"
-                    )
+        started = time.monotonic()
+        with queue_state_critical("handler"):
             try:
                 return method(self, *args, **kwargs)
             finally:
-                hold_ms = (time.monotonic() - acquired) * 1000.0
                 if scope is not None:
-                    scope["handler_ms"] = hold_ms
-                    scope["lock_hold_ms"] = hold_ms
+                    scope["handler_ms"] = (time.monotonic() - started) * 1000.0
                     scope["handler_done_ts"] = time.monotonic()
-                    if (
-                        scope["lock_wait_ms"] >= QUEUE_ACCESS_LOG_MS
-                        or hold_ms >= QUEUE_ACCESS_LOG_MS
-                    ):
-                        log(
-                            f"[lock] request={scope.get('id') or '-'} method={scope['method'] or '-'} "
-                            f"path={scope['path'] or path} phase=released "
-                            f"lock_wait_ms={_ms(scope['lock_wait_ms'])} lock_hold_ms={_ms(hold_ms)}"
-                        )
     return wrapped
 
 def clean_avid(name):
@@ -710,6 +908,31 @@ def append_history(code, size):
     })
     save_history(history)
 
+def run_post_download_actions(code, size):
+    """Idempotent post-download side effects (safe to repeat after a crash).
+
+    weekly.json only flips `downloaded`, the MissAV row is existence-checked +
+    INSERT OR REPLACE, append_history de-duplicates by code and
+    clear_failure_record is idempotent. The completion mark is written only
+    after these return, so a crash in between re-runs them instead of losing
+    them permanently.
+    """
+    results = {}
+    actions = (
+        ("weekly", lambda: update_weekly_json_downloaded(code)),
+        ("db", lambda: write_to_missav_db(code)),
+        ("history", lambda: append_history(code, size)),
+        ("clear_failure", lambda: clear_failure_record(code)),
+    )
+    for name, action in actions:
+        try:
+            results[name] = action()
+        except Exception as exc:
+            log(f"Post-download {name} failed for {code}: {exc}")
+            results[name] = False
+    return results
+
+
 def is_weekly_scrape_running():
     global weekly_scrape_proc
     if weekly_scrape_proc and weekly_scrape_proc.poll() is None:
@@ -1077,11 +1300,15 @@ def write_to_missav_db(code):
         if conn is not None:
             conn.close()
 
-def get_download_info(code):
-    """Returns {size, speed, progress_pct}"""
+def get_download_info(code, torrents=None):
+    """Returns {size, speed, progress_pct}.
+
+    `torrents` lets a caller reuse one request-scoped /torrents/info snapshot
+    instead of triggering another qB login + query inside the same request.
+    """
     # qB 优先取实时速度
     save_dir = get_code_dir(code)
-    qb_progress = get_qb_progress(save_dir)
+    qb_progress = get_qb_progress(save_dir, torrents=torrents)
     if qb_progress:
         return qb_progress
 
@@ -1528,7 +1755,6 @@ class QueueHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self._json({})
 
-    @queue_route_locked
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
@@ -1594,14 +1820,38 @@ class QueueHandler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
             return
 
-        state = load_state()
-        is_locked = get_lock()
-        queue_codes = read_queue_file()
-        current_code = read_current_download()
-        failed_codes = load_failure_codes()
+        # Phase A — consistent local snapshot under a short lock. Nothing slow
+        # (qB, du, os.walk) may happen while queue_state_lock is held.
+        with queue_state_critical("get.snapshot"):
+            state = load_state()
+            snapshot = {
+                "state": state,
+                # Pristine copy used for phase-C revalidation: phase B mutates
+                # `state` in place while building the response.
+                "expected": {
+                    str(item.get("code") or "").upper(): {
+                        "status": item.get("status"),
+                        "added_at": item.get("added_at"),
+                    }
+                    for item in state
+                    if isinstance(item, dict) and item.get("code")
+                },
+                "queue_codes": read_queue_file(),
+                "current_code": read_current_download(),
+                "is_locked": get_lock(),
+                "failed_codes": load_failure_codes(),
+            }
+        state = snapshot["state"]
+        is_locked = snapshot["is_locked"]
+        queue_codes = snapshot["queue_codes"]
+        current_code = snapshot["current_code"]
+        failed_codes = snapshot["failed_codes"]
+
+        # Phase B — slow/external work runs unlocked; one qB snapshot per request.
         qb_torrents = qb_api("/api/v2/torrents/info")
         if not isinstance(qb_torrents, list):
             qb_torrents = []
+        mutations = []
         
         result = {}
         
@@ -1620,12 +1870,12 @@ class QueueHandler(BaseHTTPRequestHandler):
                 total = get_file_size(mp4)
                 result[current_code] = {"code": current_code, "status": "done", "size": total, "speed": 0, "progress_pct": 100}
                 if current_code.upper() in failed_codes:
-                    clear_failure_record(current_code)
                     failed_codes.discard(current_code.upper())
-                clear_current_download(current_code)
+                    mutations.append(("clear_failure", current_code))
+                mutations.append(("clear_current", current_code))
                 log(f"Cleaned stale current_download {current_code} (already done)")
             else:
-                info = get_download_info(current_code)
+                info = get_download_info(current_code, torrents=qb_torrents)
                 result[current_code] = {"code": current_code, "status": "downloading", **info}
         elif is_locked and not current_code:
             # Scan state for downloading items
@@ -1637,9 +1887,9 @@ class QueueHandler(BaseHTTPRequestHandler):
                         continue
                     has_ts = find_ts_path(c) is not None
                     if has_ts or get_dir_size(get_code_dir(c)) > 0:
-                        info = get_download_info(c)
+                        info = get_download_info(c, torrents=qb_torrents)
                         result[c] = {"code": c, "status": "downloading", **info}
-                        write_current_download(c)
+                        mutations.append(("set_current", c, False))
                         log(f"Discovered download from state: {c}")
                         break
             
@@ -1653,14 +1903,12 @@ class QueueHandler(BaseHTTPRequestHandler):
                         has_ts = find_ts_path(d) is not None
                         if has_ts and not find_mp4_path(d):
                             # This directory has a .ts file but no .mp4 = active download
-                            info = get_download_info(d)
+                            info = get_download_info(d, torrents=qb_torrents)
                             if info["size"] > 1024 * 1024:  # > 1MB = actively downloading
                                 result[d] = {"code": d, "status": "downloading", **info}
-                                write_current_download(d)
-                                # Also add to state so it persists
+                                mutations.append(("set_current", d, True))
                                 if d not in [s["code"] for s in state]:
                                     state.append({"code": d, "status": "downloading", "added_at": time.time()})
-                                    save_state(state)
                                 log(f"Discovered download from disk: {d}")
                                 break
 
@@ -1725,8 +1973,8 @@ class QueueHandler(BaseHTTPRequestHandler):
                 item, qb_codes=qb_codes, is_locked=is_locked, current_code=current_code
             ):
                 log(f"Removing stale heal ghost: {c} (status={item.get('status')})")
+                mutations.append(("remove_state", c, item.get("status"), item.get("added_at")))
                 state = [s for s in state if s["code"] != c]
-                save_state(state)
                 continue
 
             mp4 = find_mp4_path(c)
@@ -1734,22 +1982,22 @@ class QueueHandler(BaseHTTPRequestHandler):
                 total = get_file_size(mp4)
                 result[c] = {"code": c, "status": "done", "size": total, "speed": 0, "progress_pct": 100}
                 if c.upper() in failed_codes:
-                    clear_failure_record(c)
                     failed_codes.discard(c.upper())
+                    mutations.append(("clear_failure", c))
                 if item.get("status") != "done":
+                    mutations.append(("mark_done", c, item.get("status")))
                     item["status"] = "done"
-                    save_state(state)
             elif item.get("status") == "downloading" and not is_locked:
                 # Stale download: no mp4, no active lock, not in qB → clean
                 has_ts = find_ts_path(c) is not None
                 dir_size = get_dir_size(get_code_dir(c)) if os.path.isdir(get_code_dir(c)) else 0
                 if not has_ts and dir_size == 0 and c not in qb_codes:
                     log(f"Removing stale download state: {c} (no files, no lock, not in qB)")
+                    mutations.append(("remove_state", c, item.get("status"), item.get("added_at")))
                     state = [s for s in state if s["code"] != c]
-                    save_state(state)
                     continue
                 else:
-                    info = get_download_info(c)
+                    info = get_download_info(c, torrents=qb_torrents)
                     result[c] = {"code": c, "status": item.get("status", "queued"), **info}
             elif item.get("status") == "queued" and c not in queue_codes:
                 # Keep registration if still in qB (e.g. queuedDL) or worker current
@@ -1775,10 +2023,10 @@ class QueueHandler(BaseHTTPRequestHandler):
                 # Orphan: only scraped sidecar under __weekly__ etc., no real job
                 if find_ts_path(c) is None:
                     log(f"Removing stale queued state: {c} (not in queue/qB/current)")
+                    mutations.append(("remove_state", c, item.get("status"), item.get("added_at")))
                     state = [s for s in state if s["code"] != c]
-                    save_state(state)
                     continue
-                info = get_download_info(c)
+                info = get_download_info(c, torrents=qb_torrents)
                 result[c] = {"code": c, "status": "queued", **info}
             else:
                 visible_status = item.get("status", "queued")
@@ -1786,29 +2034,23 @@ class QueueHandler(BaseHTTPRequestHandler):
                     visible_status = "queued"
                 if visible_status not in ("queued", "downloading", "done"):
                     continue
-                info = get_download_info(c)
+                info = get_download_info(c, torrents=qb_torrents)
                 result[c] = {"code": c, "status": visible_status, **info}
         
         # Check for newly completed items → trigger post-download actions
         for c in list(result.keys()):
             if result[c]["status"] == "done":
-                # Update weekly.json + MissAV DB (only once)
+                # Decide only — the completion mark is written *after* the
+                # (idempotent) side effects so a crash can never skip them.
                 state_item = next((s for s in state if s["code"] == c), None)
                 if state_item and not state_item.get("_post_done"):
-                    log(f"Post-download actions for {c}")
-                    update_weekly_json_downloaded(c)
-                    write_to_missav_db(c)
+                    mutations.append(("post_done", c, result[c].get("size", 0)))
+                    state_item["_post_done_pending"] = True
                     if c.upper() in failed_codes:
-                        clear_failure_record(c)
                         failed_codes.discard(c.upper())
-                    # Save to permanent history
-                    append_history(c, result[c].get("size", 0))
-                    state_item["_post_done"] = True
-                    state_item["status"] = "done"
-                    save_state(state)
                 elif state_item and state_item.get("status") != "done":
+                    mutations.append(("mark_done", c, state_item.get("status")))
                     state_item["status"] = "done"
-                    save_state(state)
         
         # Merge history into result (persistent done items)
         history = load_history()
@@ -1829,10 +2071,153 @@ class QueueHandler(BaseHTTPRequestHandler):
         # Sort: downloading, queued, done
         order = {"downloading": 0, "queued": 1, "done": 2}
         sorted_result = sorted(result.values(), key=lambda x: order.get(x["status"], 9))
-        
+
+        # Phase C — commit only revalidated local mutations under a short lock;
+        # the heavier post-download writes then run unlocked.
+        post_actions = []
+        if mutations:
+            with queue_state_critical("get.commit"):
+                post_actions = self._apply_queue_mutations(mutations, snapshot)
+
+        # Phase B2 — post-download side effects, unlocked and idempotent.
+        # The completion mark is *not* written yet: if the process dies here the
+        # next GET simply repeats these (safe to repeat) operations.
+        for code, size in post_actions:
+            log(f"Post-download actions for {code}")
+            run_post_download_actions(code, size)
+        if post_actions:
+            # Phase C2 — revalidate and finalise the completion mark.
+            with queue_state_critical("get.post_done"):
+                self._mark_post_done(post_actions, snapshot)
+
         self._json(sorted_result)
 
-    @queue_route_locked
+    def _apply_queue_mutations(self, mutations, snapshot):
+        """Phase C: revalidate every intent against current state, then commit.
+
+        A worker/mutation that landed while phase B was running wins: stale
+        snapshot intents are dropped instead of overwriting newer state.
+        """
+        expected = snapshot.get("expected") or {
+            str(item.get("code") or "").upper(): {
+                "status": item.get("status"),
+                "added_at": item.get("added_at"),
+            }
+            for item in (snapshot.get("state") or [])
+            if isinstance(item, dict) and item.get("code")
+        }
+        state = None
+        dirty = False
+        post_actions = []
+
+        def load_current():
+            nonlocal state
+            if state is None:
+                state = load_state()
+            return state
+
+        def find(items, code):
+            upper = str(code or "").upper()
+            return next((s for s in items if str(s.get("code") or "").upper() == upper), None)
+
+        def matches_snapshot(item, want):
+            if item is None or want is None:
+                return False
+            return (
+                str(item.get("status") or "") == str(want.get("status") or "")
+                and float(item.get("added_at") or 0) == float(want.get("added_at") or 0)
+            )
+
+        def same_lifecycle(item, want):
+            """Same job lifecycle = same added_at (status may have been updated
+            by an earlier mutation in this very phase)."""
+            if item is None:
+                return False
+            if want is None:
+                return True
+            return float(item.get("added_at") or 0) == float(want.get("added_at") or 0)
+
+        for mutation in mutations:
+            kind = mutation[0]
+            if kind == "clear_current":
+                clear_current_download(mutation[1])
+            elif kind == "clear_failure":
+                clear_failure_record(mutation[1])
+            elif kind == "set_current":
+                code, register = mutation[1], mutation[2]
+                write_current_download(code)
+                if register:
+                    items = load_current()
+                    if find(items, code) is None:
+                        items.append({"code": code, "status": "downloading", "added_at": time.time()})
+                        dirty = True
+            elif kind == "remove_state":
+                code, want = mutation[1], expected.get(str(mutation[1]).upper())
+                items = load_current()
+                item = find(items, code)
+                if matches_snapshot(item, want):
+                    state = [
+                        s for s in items if str(s.get("code") or "").upper() != str(code).upper()
+                    ]
+                    dirty = True
+                else:
+                    log(f"Skip stale state removal for {code} (state changed during scan)")
+            elif kind == "mark_done":
+                items = load_current()
+                item = find(items, mutation[1])
+                if item is not None and str(item.get("status") or "") != "done":
+                    item["status"] = "done"
+                    dirty = True
+            elif kind == "post_done":
+                code, size = mutation[1], mutation[2]
+                items = load_current()
+                item = find(items, code)
+                want = expected.get(str(code).upper())
+                if item is not None and not item.get("_post_done") and same_lifecycle(item, want):
+                    # Decide only; side effects + final mark happen outside.
+                    post_actions.append((code, size))
+                else:
+                    log(f"Skip post-download actions for {code} (state changed or already done)")
+        if dirty and state is not None:
+            save_state(state)
+        return post_actions
+
+    def _mark_post_done(self, post_actions, snapshot):
+        """Phase C2: finalise the completion mark *after* the side effects ran.
+
+        Revalidates against the pristine snapshot (same lifecycle = same
+        `added_at`), so a stale GET cannot mark a different completion. Crash
+        safe: if this never runs, the next GET repeats the idempotent side
+        effects and marks afterwards.
+        """
+        expected = snapshot.get("expected") or {}
+        state = load_state()
+        dirty = False
+        for code, size in post_actions:
+            upper = str(code or "").upper()
+            item = next(
+                (s for s in state if str(s.get("code") or "").upper() == upper), None
+            )
+            if item is None:
+                log(f"Skip post-done mark for {code} (state gone)")
+                continue
+            if item.get("_post_done"):
+                continue
+            want = expected.get(upper)
+            if want is not None and float(item.get("added_at") or 0) != float(
+                want.get("added_at") or 0
+            ):
+                log(f"Skip post-done mark for {code} (new lifecycle started)")
+                continue
+            item["_post_done"] = True
+            item["status"] = "done"
+            item["_post_done_size"] = size
+            item["_post_done_at"] = time.time()
+            item.pop("_post_done_pending", None)
+            dirty = True
+        if dirty:
+            save_state(state)
+
     def do_POST(self):
         path = self.path.rstrip("/")
         if path in ("/api/p115/config", "/api/p115/config/"):
@@ -1892,63 +2277,93 @@ class QueueHandler(BaseHTTPRequestHandler):
         if target is None:
             self._json({"error": "invalid target (use qb or 115)"}, 400)
             return
-        if target == "115":
-            try:
-                from src import p115_offline as p115
+        request_id = _sanitize_request_id(data.get("request_id", ""))
 
-                ok, msg = _p115_probe(p115)
-                pub = _p115_public_config(p115)
-                if not pub.get("available"):
-                    self._json(
-                        {
-                            "error": "115 未就绪",
-                            "message": msg or pub.get("message") or "请先在设置启用 115 并配置 Cookie",
-                        },
-                        400,
-                    )
-                    return
-                if not ok:
-                    self._json(
-                        {
-                            "error": "115 Cookie 已失效",
-                            "message": msg or "请到设置重新测试连接",
-                        },
-                        400,
-                    )
-                    return
-            except Exception as e:
-                self._json({"error": f"115 配置检查失败: {e}"}, 500)
+        # POST performs local state changes only: no 115 probe, no qB login or
+        # torrents/info, no du/os.walk. Downstream availability is discovered by
+        # the worker when it actually runs the task.
+        with queue_state_critical("post"):
+            self._queue_add_locked(code, target, request_id)
+
+    def _queue_add_locked(self, code, target, request_id):
+        """Idempotent enqueue. Caller holds the queue_state_lock."""
+        entry = _idem_store()["entries"].get(request_id) if request_id else None
+        if entry:
+            if (
+                str(entry.get("code") or "").upper() != code.upper()
+                or str(entry.get("target") or "") != target
+            ):
+                self._json(
+                    {
+                        "error": "request_id_conflict",
+                        "message": "该请求编号已用于其它番号或通道，请重新发起",
+                        "request_id": request_id,
+                        "code": code,
+                        "target": target,
+                    },
+                    409,
+                )
                 return
+            payload = dict(entry.get("result") or {})
+            payload["already_accepted"] = True
+            payload["replayed"] = True
+            payload["request_id"] = request_id
+            log(f"Idempotent replay: {code} target={target} request={request_id}")
+            self._json(payload)
+            return
 
         cancel_age = cancel_request_age(code)
         if cancel_age is not None and cancel_age < 300:
-            self._json({"error": "cancellation in progress", "code": code}, 409)
+            self._json(
+                {
+                    "error": "cancellation in progress",
+                    "code": code,
+                    "message": "取消进行中，请稍后再试",
+                },
+                409,
+            )
             return
         if cancel_age is not None:
             clear_cancel_request(code)
+
+        in_flight, existing_target, source = _inflight_for_code(
+            code,
+            load_state(),
+            read_queue_file(),
+            read_current_download(),
+            load_failure_codes(),
+        )
+        if in_flight:
+            existing_target = existing_target or target
+            if existing_target != target:
+                self._json(
+                    {
+                        "status": "already_in_flight",
+                        "error": "already_in_flight",
+                        "message": f"该任务当前正在通过 {_channel_label(existing_target)} 处理",
+                        "code": code,
+                        "existing_target": existing_target,
+                        "requested_target": target,
+                        "source": source,
+                    },
+                    409,
+                )
+                return
+            payload = {
+                "status": "already_in_flight",
+                "already_in_flight": True,
+                "already_accepted": True,
+                "code": code,
+                "target": target,
+                "source": source,
+            }
+            if request_id:
+                payload["request_id"] = request_id
+                _idem_record(request_id, code, target, "already_in_flight", payload)
+            self._json(payload)
+            return
+
         clear_failure_record(code)
-
-        # 检查 qBittorrent 是否已有此番号（含 queuedDL + tags）— 仅 qB 通道
-        if target == "qb":
-            qb_torrents = qb_api("/api/v2/torrents/info")
-            cleaned = clean_avid(code)
-            if isinstance(qb_torrents, list):
-                for t in qb_torrents:
-                    st = str(t.get("state") or "")
-                    if st not in _QB_ACTIVE_DL and st not in _QB_DONE_UP:
-                        continue
-                    t_code = code_from_qb_torrent(t)
-                    if t_code and (t_code == cleaned or clean_avid(t_code) == cleaned):
-                        # Ensure registration file still shows "已加入"
-                        def ensure_in_state(state):
-                            if code not in [s["code"] for s in state]:
-                                state.append({"code": code, "status": "queued", "added_at": time.time()})
-                            return state
-                        update_state(ensure_in_state)
-                        set_download_target(DOWNLOAD_TARGETS_PATH, code, "qb")
-                        self._json({"status": "already in qBittorrent", "code": code, "target": "qb"})
-                        return
-
         append_unique(QUEUE_PATH, code)
         set_download_target(DOWNLOAD_TARGETS_PATH, code, target)
 
@@ -1962,25 +2377,29 @@ class QueueHandler(BaseHTTPRequestHandler):
                     "added_at": time.time(),
                     "target": target,
                 })
-                channel = "115" if target == "115" else "qB"
-                log_write("Queue", f"{code} 已加入下载列表（{channel}）")
+                log_write("Queue", f"{code} 已加入下载列表（{_channel_log_label(target)}）")
             else:
                 existing["status"] = "queued"
                 existing["target"] = target
                 if not existing.get("added_at"):
                     existing["added_at"] = time.time()
+                # New lifecycle: let the next completion run post-download
+                # actions again (they are idempotent).
+                existing.pop("_post_done", None)
+                existing.pop("_post_done_pending", None)
             return state
 
-        state = update_state(add_or_update_code)
-        existing = next((s for s in state if s.get("code") == code), None)
-        if existing and existing.get("status") == "queued" and existing.get("added_at"):
-            # 重复入队静默（前台不刷）
-            if any(s.get("code") == code and s.get("status") == "queued" for s in state[:-1] if s.get("code") == code):
-                self._json({"status": "already in queue", "code": code, "target": target})
-            else:
-                self._json({"status": "added", "code": code, "target": target})
-        else:
-            self._json({"status": "added", "code": code, "target": target})
+        update_state(add_or_update_code)
+        payload = {
+            "status": "added",
+            "code": code,
+            "target": target,
+            "already_accepted": False,
+        }
+        if request_id:
+            payload["request_id"] = request_id
+            _idem_record(request_id, code, target, "accepted", payload)
+        self._json(payload)
 
     @queue_route_locked
     def do_DELETE(self):
