@@ -1042,7 +1042,7 @@ func buildMediaIndex() map[string]bool {
 		return index
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), "__") || entry.Name() == "thumb" {
+		if !entry.IsDir() || isSkippedMediaRoot(entry.Name()) {
 			continue
 		}
 		if findMainVideoInDir(basePath, entry.Name()) != "" {

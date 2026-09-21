@@ -130,6 +130,28 @@ func TestBuildVideoListCacheSkipsInternalTrees(t *testing.T) {
 	}
 }
 
+func TestMediaScansSkipExternalSyncDirectory(t *testing.T) {
+	root := withTestMediaRoot(t)
+	createSparseVideo(t, filepath.Join(root, "艾薇", "START-603", "START-603.mp4"), 600*1024*1024)
+	if err := os.WriteFile(
+		filepath.Join(root, "艾薇", "艾薇-poster.jpg"),
+		[]byte("poster"),
+		0644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buildVideoListCache(); err != nil {
+		t.Fatal(err)
+	}
+	if len(videoListCache) != 0 {
+		t.Fatalf("external sync directory leaked into video cache: %#v", videoListCache)
+	}
+	if got := buildMediaIndex(); len(got) != 0 {
+		t.Fatalf("external sync directory leaked into media index: %#v", got)
+	}
+}
+
 func TestVideoDetailUsesNestedRelativePath(t *testing.T) {
 	root := withTestMediaRoot(t)
 	createSparseVideo(

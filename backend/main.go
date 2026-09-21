@@ -379,6 +379,13 @@ func hasPoster(base, dirName string) bool {
 	return getPosterFile(base, dirName) != ""
 }
 
+// isSkippedMediaRoot keeps service and external-sync directories out of the
+// local media index. They can share the media mount, but are not works and
+// must never be walked recursively.
+func isSkippedMediaRoot(dirName string) bool {
+	return strings.HasPrefix(dirName, "__") || dirName == "thumb" || dirName == "艾薇"
+}
+
 func getPosterFile(base, dirName string) string {
 	dirPath := filepath.Join(base, dirName)
 	// 先试精确匹配
@@ -666,7 +673,7 @@ func buildVideoListCache() error {
 	var count int
 	for _, dir := range dirs {
 		dirName := dir.entry.Name()
-		if strings.HasPrefix(dirName, "__") || dirName == "thumb" {
+		if isSkippedMediaRoot(dirName) {
 			continue
 		}
 		if findMainVideoInDir(basePath, dirName) == "" {

@@ -7,6 +7,7 @@
 ## Unreleased
 
 - Removed the retired 115-sync-to-library linker from the launcher, self-healer, deployment hot-copy list, and Compose configuration. 115 cloud downloads remain available when explicitly selected, but their external sync directory is no longer exposed as local A/GARDEN media.
+- Excluded the existing external 115 sync directory from the local media cache and queue-status index, so it is never traversed as part of A/GARDEN library scans.
 
 ### Added
 
