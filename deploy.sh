@@ -347,7 +347,6 @@ if [ "$DEPLOY_HOT" = "1" ] && [ "${HOT_WORKER:-0}" = "1" ]; then
             unwatched_chinese_refill.py plwt_translate_missing.py \
             requirements.txt \
             src/p115_offline.py src/log_writer.py src/failure_recovery.py \
-            tools/maintenance/link_115_aiwei_into_data_root.py \
             ; do
             # note: queue_store.py is required when queue_api imports download_targets helpers
             if [ -f '$NAS_DIR/'\"\$rel\" ]; then

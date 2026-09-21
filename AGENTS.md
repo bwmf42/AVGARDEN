@@ -45,7 +45,7 @@
 ## NAS 要点
 
 - IP `192.168.5.17`；SSH 常用别名 `zspace` 或 `13049108160@192.168.5.17 -p 10000`
-- 媒体库与 qB 保存目录须同一挂载（现为 `…/data/data2/115生活备份` → 容器 `/data`）；`/db` `/app/cfg` `/app/logs`
+- 媒体库与 qB 保存目录须同一挂载（现为 `…/data/data2/115生活备份` → 容器 `/data`）；`/db` `/app/cfg` `/app/logs`。115 云下载与极空间同步是独立链路，不得将其同步目录软链接或映射进本地媒体库。
 - 出站刮削依赖 `PROXY`（mihomo mixed-port）；javdatabase / MGS / DMM 走固定 rules（日本组等）
 - mihomo：**订阅** `Clash_sub_v2.yaml` vs **固定** `config.yaml`（groups/rules）。98堂 `url-test` 组与 `kpqq4.com`/`plwt` 规则见 [`docs/mihomo-fixed-snippet.yaml`](docs/mihomo-fixed-snippet.yaml)；勿用订阅覆盖固定配置
 - 前台系统日志默认只读 `av-garden.log`（入队/开始/完成/失败）；明细在 loguru 日文件 / docker logs，`/api/logs?debug=1` 可看全量；日志保留约 **30 天**

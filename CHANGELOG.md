@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Removed the retired 115-sync-to-library linker from the launcher, self-healer, deployment hot-copy list, and Compose configuration. 115 cloud downloads remain available when explicitly selected, but their external sync directory is no longer exposed as local A/GARDEN media.
+
 ### Added
 
 - Made `POST /api/queue` end-to-end idempotent and removed the handler-wide queue lock from GET/POST. Each add now carries a `request_id` (generated once per logical add in the UI, reused by every retry, forwarded verbatim by the Go proxy) and the first result is persisted atomically in `queue_idempotency.json`, so a replayed `request_id` returns `already_accepted` without appending the queue, rewriting the target or creating another task. In-flight de-duplication now considers `download_queue.txt`, `current_download.txt`, active `queue_state.json` rows and recently accepted requests, which closes the "worker already popped the code" window, and a cross-channel add for an in-flight code is rejected with `409 already_in_flight` instead of silently overwriting `download_targets.json`. `POST /api/queue` no longer performs any external I/O (no 115 probe, no qB login/`torrents/info`, no `du`/`os.walk`); downstream availability is discovered by the worker. `GET /api/queue` was split into snapshot / unlocked slow work / revalidated commit phases with a single `torrents/info` fetch per request, so a slow qB call no longer holds `queue_state_lock`. Worker serial processing, the Go 15s timeout, qB session handling and DELETE semantics are unchanged.

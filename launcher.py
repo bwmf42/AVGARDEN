@@ -442,46 +442,6 @@ def heal_watcher():
             slept += 60.0
 
 
-def link115_watcher():
-    """周期把 115生活备份/艾薇 下的番号软链到 /data 根（不出现「艾薇」目录）。
-
-    默认 10 分钟；备份落盘后较快能在 2 根目录看到。
-    关闭：LINK115_ENABLE=0
-    """
-    if os.environ.get("LINK115_ENABLE", "1").strip().lower() in ("0", "false", "no", "off"):
-        log("link115 watcher disabled (LINK115_ENABLE=0)")
-        return
-    minutes = float(os.environ.get("LINK115_INTERVAL_M", "10") or "10")
-    interval = max(120.0, minutes * 60.0)
-    # 启动后稍等，让 /data 挂载就绪
-    time.sleep(60)
-    log(f"link115 watcher every {interval:.0f}s")
-    while running:
-        try:
-            from tools.maintenance.link_115_aiwei_into_data_root import sync_links
-
-            save = os.environ.get("SAVE_PATH", "/data")
-            stats = sync_links(data_root=save)
-            if stats.get("missing_source"):
-                log(f"link115: wait source {save}/115生活备份/艾薇")
-            else:
-                n = int(stats.get("linked") or 0) + int(stats.get("refreshed") or 0)
-                if n or stats.get("removed_aiwei"):
-                    names = ",".join((stats.get("names") or [])[:8])
-                    msg = f"115链接: 新增/更新={n}" + (f" ({names})" if names else "")
-                    log(msg)
-                    try:
-                        log_write("Heal", msg)
-                    except Exception:
-                        pass
-        except Exception as e:
-            log(f"link115 watcher error: {e}")
-        slept = 0.0
-        while running and slept < interval:
-            time.sleep(min(30.0, interval - slept))
-            slept += 30.0
-
-
 def retention_watcher():
     """Daily 04:30: optional weekly retention + sqlite backup + status daily report."""
     retention_on = os.environ.get("WEEKLY_RETENTION_ENABLE", "1").strip().lower() not in (
@@ -683,7 +643,6 @@ def main():
     start_guarded_thread("titlezh_retry_watcher", titlezh_retry_watcher)
     start_guarded_thread("heal_watcher", heal_watcher)
     start_guarded_thread("retention_watcher", retention_watcher)
-    start_guarded_thread("link115_watcher", link115_watcher)
     log(f"watchers started (guard={'on' if WATCHER_GUARD_ENABLE else 'off'})")
 
     # 等待任意一个退出
