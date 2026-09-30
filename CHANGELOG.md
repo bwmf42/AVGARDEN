@@ -6,6 +6,7 @@
 
 ## Unreleased
 
+- Removed the redundant “看预览图” jump link from Weekly details; preview images remain directly below the metadata.
 - Added a selection flow for daily recommendations: separate browsed, want-to-watch, and not-interested states; combine temporary filters for subtitles, actors and favorites, tags, duration, release date, and local availability; carry the filtered order into detail browsing. Existing watched records remain browsed records. Want-to-watch entries and their artwork are exempt from the 30-day browsed-item cleanup, while dismissing an entry remains reversible.
 - Removed the retired 115-sync-to-library linker from the launcher, self-healer, deployment hot-copy list, and Compose configuration. 115 cloud downloads remain available when explicitly selected, but their external sync directory is no longer exposed as local A/GARDEN media.
 - Excluded the existing external 115 sync directory from the local media cache and queue-status index, so it is never traversed as part of A/GARDEN library scans.

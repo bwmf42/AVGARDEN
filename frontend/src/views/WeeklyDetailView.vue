@@ -48,7 +48,6 @@
                     <div v-if="!isOnlineSource" class="selection-buttons">
                         <button :class="{selected: selections[video.id]?.interest === 'want'}" :disabled="selectionBusy || routeLoading" @click="choose(selections[video.id]?.interest === 'want' ? 'clear' : 'want')">{{ selections[video.id]?.interest === 'want' ? '已加入想看 · 取消' : '想看' }}</button>
                         <button :class="{selected: selections[video.id]?.interest === 'dismissed'}" :disabled="selectionBusy || routeLoading" @click="choose(selections[video.id]?.interest === 'dismissed' ? 'clear' : 'dismiss')">{{ selections[video.id]?.interest === 'dismissed' ? '恢复兴趣' : '不感兴趣' }}</button>
-                        <a v-if="fanartList.length" href="#detail-previews">看预览图</a>
                         <span v-if="selections[video.id]?.interest === 'want'">长期保留</span>
                     </div>
                             <div class="action-row">
@@ -162,7 +161,7 @@
                 </div>
 
                 <!-- Fanarts Gallery (AV/GARDEN style) -->
-                <div v-if="fanartList.length" :key="`fanarts-${mediaKey}`" class="section preview-section" id="detail-previews">
+                <div v-if="fanartList.length" :key="`fanarts-${mediaKey}`" class="section preview-section">
                     <h3>预览图</h3>
                     <div class="fanarts-grid">
                         <div v-for="(img, i) in fanartList" :key="`${video.id}-${i}-${img}`" class="fanart-item" @click="openLightbox(i)">
@@ -1940,11 +1939,10 @@ export default {
 .selection-buttons { display:flex; align-items:center; gap:10px; flex-wrap:wrap }
 .selection-buttons button { min-height:40px; padding:8px 16px; border:1px solid var(--rose-line); border-radius:6px; background:white; color:var(--secondary-color); cursor:pointer; font:inherit }
 .selection-buttons .selected { background:var(--secondary-color); color:white }
-.selection-buttons a,.actress-link { color:var(--secondary-color); text-decoration:underline; cursor:pointer }
+.actress-link { color:var(--secondary-color); text-decoration:underline; cursor:pointer }
 .actress-link { background:none; border:0; font:inherit; padding:4px }
 .selection-buttons span { font-size:12px; color:var(--muted-color) }
 .decision-bar .action-row { margin-top:10px; flex-wrap:wrap }
 .selection-error { color:var(--error-color,#a22); margin:8px 0 0 }
-#detail-previews { scroll-margin-top:180px }
 @media(max-width:640px) { .decision-bar {top:4px;padding:10px} .selection-buttons {gap:6px} .selection-buttons button {padding:8px 10px} }
 </style>
