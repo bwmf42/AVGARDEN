@@ -72,6 +72,29 @@ class WeeklyRetentionTest(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
+    def test_wanted_keeps_old_item_artwork_and_survives_worker_updates(self):
+        path = os.path.join(self.db, "weekly_watched.json")
+        records = load_records(path)
+        records["ABF-002"]["interest"] = "want"
+        write_records(path, records)
+        mark_watched(path, "ABF-002", reason="blocked_genre")
+        self.assertEqual(load_records(path)["ABF-002"]["interest"], "want")
+        manifest = retention.build_manifest(self.save, self.db, now=self.now)
+        self.assertNotIn("ABF-002", manifest["actions"]["expire_ids"])
+        retention.apply_manifest(manifest)
+        self.assertTrue(os.path.exists(os.path.join(self.weekly, "ABF-002", "cover.jpg")))
+        self.assertEqual(load_records(path)["ABF-002"]["interest"], "want")
+
+    def test_bookmark_after_manifest_invalidates_cleanup(self):
+        manifest = retention.build_manifest(self.save, self.db, now=self.now)
+        path = os.path.join(self.db, "weekly_watched.json")
+        records = load_records(path)
+        records["ABF-002"]["interest"] = "want"
+        write_records(path, records)
+        with self.assertRaisesRegex(RuntimeError, "guard changed"):
+            retention.apply_manifest(manifest)
+        self.assertTrue(os.path.exists(os.path.join(self.weekly, "ABF-002", "cover.jpg")))
+
     def test_manifest_and_apply_keep_unwatched_and_strip_blocked_artwork(self):
         manifest = retention.build_manifest(self.save, self.db, now=self.now)
         self.assertEqual(manifest["actions"]["expire_ids"], ["ABF-002", "ABF-005"])

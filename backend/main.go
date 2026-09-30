@@ -523,6 +523,7 @@ func main() {
 	mux.HandleFunc("/api/weekly", weeklyHandler)
 	mux.HandleFunc("/api/weekly/by-genre/", byGenreHandler)
 	mux.HandleFunc("/api/weekly-watched", weeklyWatchedHandler)
+	mux.HandleFunc("/api/weekly-selection", weeklySelectionHandler)
 	mux.HandleFunc("/api/queue/", queueHandler)
 	mux.HandleFunc("/api/failed-ack/", failedAckHandler)
 	mux.HandleFunc("/api/failed-ack", failedAckHandler)

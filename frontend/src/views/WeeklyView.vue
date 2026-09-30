@@ -3,239 +3,114 @@
         <div class="weekly-hero">
             <div>
                 <span>每日推荐</span>
-                <h1>先看推荐，再决定下载。</h1>
-                <p>列表会过滤已下载和队列中的条目，已看内容保留在同一页签内。</p>
+                <h1>{{ query.actor ? query.actor + '的已收录作品' : '筛选每日推荐' }}</h1>
+                <p>浏览只留记录；想看长期保留，不感兴趣可随时恢复。筛选不会修改永久屏蔽设置。</p>
+                <button v-if="query.actor" class="filter-button" @click="change('actor', '')">返回全部演员</button>
             </div>
-            <div class="weekly-count">{{ weeklyCount }} 项</div>
+            <div class="weekly-count">{{ filteredVideos.length }} / {{ weeklyItems.length }} 项</div>
         </div>
-
-        <div class="sub-tabs">
-            <button :class="['sub-tab', { active: !showWatched }]" @click="setWatchedTab(false)">
-                未看 ({{ unwatchedCount }})
-            </button>
-            <button :class="['sub-tab', { active: showWatched }]" @click="setWatchedTab(true)">
-                已看 ({{ watchedInListCount }})
-            </button>
+        <div class="sub-tabs" aria-label="浏览状态">
+            <button v-for="[value, label] in tabs" :key="value" :class="['sub-tab', {active: (query.tab || 'unwatched') === value}]" @click="change('tab', value)">{{ label }}</button>
         </div>
-
+        <section class="weekly-filters" aria-label="推荐筛选">
+            <label>字幕<select :value="query.chinese || ''" @change="change('chinese', $event.target.value)"><option value="">全部</option><option value="yes">有中文字幕</option><option value="unknown">未确认中文</option></select></label>
+            <label>演员<select :value="query.actor || ''" @change="change('actor', $event.target.value)"><option value="">全部演员</option><option v-for="actor in actors" :key="actor">{{ actor }}</option></select></label>
+            <label class="check"><input type="checkbox" :checked="query.fav === '1'" @change="change('fav', $event.target.checked ? '1' : '')">只看收藏演员</label>
+            <label>时长<select :value="query.duration || ''" @change="change('duration', $event.target.value)"><option value="">全部</option><option value="short">90 分钟及以内</option><option value="medium">91–150 分钟</option><option value="long">超过 150 分钟</option><option value="unknown">时长未知</option></select></label>
+            <label>作品状态<select :value="query.availability || ''" @change="change('availability', $event.target.value)"><option value="">全部已收录</option><option value="pending">未在本地</option><option value="local">已在本地</option><option value="queued">队列中</option></select></label>
+            <label>发行起日<input type="date" :value="query.from || ''" @change="change('from', $event.target.value)"></label>
+            <label>发行止日<input type="date" :value="query.to || ''" @change="change('to', $event.target.value)"></label>
+            <label class="check"><input type="checkbox" :checked="query.dateUnknown === '1'" @change="unknownDate($event.target.checked)">发行日未知</label>
+            <details class="genre-filters"><summary>标签组合与临时排除 <span v-if="query.include || query.exclude">（已筛选）</span></summary>
+                <p>必须同时包含所有选中标签；任一排除标签命中即隐藏。</p>
+                <div v-for="genre in genres" :key="genre" class="genre-choice"><span>{{ genre }}</span><button :class="{chosen: includes.includes(genre)}" :aria-pressed="includes.includes(genre)" @click="toggleGenre('include',genre)">包含</button><button :class="{chosen: excludes.includes(genre)}" :aria-pressed="excludes.includes(genre)" @click="toggleGenre('exclude',genre)">排除</button></div>
+            </details>
+            <button class="filter-button" @click="$router.replace({name:'weekly',query:{tab:query.tab || 'unwatched'}})">清除筛选</button>
+        </section>
+        <p v-if="error" role="alert" class="selection-error">{{ error }} <button @click="loadData">重试</button></p>
         <div v-if="loading" class="loading">加载中...</div>
-        
+        <div v-else-if="!filteredVideos.length" class="loading">没有符合条件的作品，可以调整筛选或切换浏览状态。</div>
         <div v-else class="video-grid">
-            <template v-for="video in filteredVideos" :key="video.id">
-                <div class="video-card" @click="openVideo(video)">
-                    <div class="cover-container" :class="{ watched: isWatched(video.id) }">
-                        <img class="cover" :src="video.cover || video.poster || getDmmFallback(video)" :alt="video.title" loading="lazy">
-                        <div v-if="isWatched(video.id)" class="watched-overlay">已看</div>
-                        <div v-if="video.hasChinese" class="badge chinese">中文</div>
-                        <button class="watch-toggle" @click.stop="toggleWatch(video.id)" :title="isWatched(video.id) ? '标记未看' : '标记已看'">
-                            {{ isWatched(video.id) ? '已' : '看' }}
-                        </button>
-                    </div>
-                    <div class="info">
-                        <h3>{{ displayTitle(video) }}</h3>
-                        <div v-if="video.actresses && video.actresses.length" class="actresses">
-                            {{ video.actresses.slice(0, 2).join(' / ') }}
-                        </div>
-                    </div>
+            <div v-for="video in filteredVideos" :key="video.id" class="video-card" role="button" tabindex="0" @click="openVideo(video)" @keydown.enter="openVideo(video)">
+                <div class="cover-container" :class="{watched: selections[video.id]}">
+                    <img class="cover" :src="video.cover || video.poster" :alt="video.title" loading="lazy">
+                    <div v-if="video.hasChinese" class="badge chinese">中文</div>
+                    <div v-if="selections[video.id]?.interest === 'want'" class="watched-overlay">想看</div>
                 </div>
-            </template>
+                <div class="info"><h3>{{ displayTitle(video) }}</h3><div v-if="video.actresses?.length" class="actresses">{{ video.actresses.slice(0,2).join(' / ') }}</div><div class="selection-meta">{{ video.downloaded ? '已在本地' : video.queueStatus ? '队列中' : '已收录' }}</div></div>
+            </div>
         </div>
     </div>
 </template>
-
 <script>
-import {
-    normalizeWatchedIDs,
-    readWatchedOrderIDs,
-    readLocalWatchedIDs,
-    recordWatchedOrderID,
-    saveWatchedIDs,
-    syncWatchedIDs,
-    writeWatchedOrderIDs
-} from '../api/weeklyWatched'
-import { displayTitle as formatDisplayTitle } from '../utils/displayTitle'
-
-function normalizeID(id) {
-    return String(id || '').trim().toUpperCase()
-}
-
+import { loadSelections } from '../api/weeklySelection'
+import { displayTitle } from '../utils/displayTitle'
+import { filterWeekly, selectionTabs, saveBrowseContext, readBrowseContext } from '../utils/weeklyFilters'
 export default {
     name: 'WeeklyView',
-    data() {
-        return {
-            weeklyItems: [],
-            loading: true,
-            watchedSet: new Set(),
-            watchedOrder: [],
-            queueSet: new Set(),
-            showWatched: false
-        }
-    },
+    data: () => ({ weeklyItems: [], selections: {}, favorites: [], loading: true, error: '', tabs: selectionTabs, loaded: false }),
     computed: {
-        undownloadedVideos() {
-            return this.weeklyItems.filter(v => !v.downloaded && !this.queueSet.has(v.id))
-        },
-        unwatchedVideos() {
-            return this.undownloadedVideos.filter(v => !this.isWatched(v.id))
-        },
-        watchedInList() {
-            const videos = this.undownloadedVideos.filter(v => this.isWatched(v.id))
-            if (!this.watchedOrder.length) return videos
-
-            const orderIndex = new Map(this.watchedOrder.map((id, index) => [id, index]))
-            return [...videos].sort((a, b) => {
-                const ai = orderIndex.get(normalizeID(a.id))
-                const bi = orderIndex.get(normalizeID(b.id))
-                const aKnown = ai !== undefined
-                const bKnown = bi !== undefined
-
-                if (aKnown && bKnown) return bi - ai
-                if (aKnown) return -1
-                if (bKnown) return 1
-                return 0
-            })
-        },
-        filteredVideos() {
-            return this.showWatched ? this.watchedInList : this.unwatchedVideos
-        },
-        weeklyCount() { return this.undownloadedVideos.length },
-        unwatchedCount() { return this.unwatchedVideos.length },
-        watchedInListCount() { return this.watchedInList.length },
+        query() { return this.$route.query },
+        actors() { return [...new Set([...this.weeklyItems.flatMap(v => v.actresses || []), ...(this.query.actor ? [this.query.actor] : [])])].sort() },
+        genres() { return [...new Set(this.weeklyItems.flatMap(v => v.genres || []))].sort() },
+        includes() { return String(this.query.include || '').split(',').filter(Boolean) },
+        excludes() { return String(this.query.exclude || '').split(',').filter(Boolean) },
+        filteredVideos() { return filterWeekly(this.weeklyItems, this.query, this.selections, this.favorites) }
     },
     async created() {
-        this.applyRouteTab()
-        window.addEventListener('av-garden-weekly-refresh', this.onWeeklyRefresh)
-        await this.syncWatched()
+        window.addEventListener('av-garden-weekly-refresh', this.loadData)
+        window.addEventListener('av-garden-selection', this.onSelection)
         await this.loadData()
     },
+    async activated() { if (this.loaded) await this.loadData() },
     beforeUnmount() {
-        window.removeEventListener('av-garden-weekly-refresh', this.onWeeklyRefresh)
-    },
-    // Options API keep-alive
-    deactivated() {},
-    async activated() {
-        this.applyRouteTab()
-        // 只在首次进入或数据为空时重新加载，切标签不重新 fetch
-        if (this.weeklyItems.length === 0 || this._weeklyNeedsRefresh) {
-            this._weeklyNeedsRefresh = false
-            await this.syncWatched()
-            await this.loadData()
-        } else {
-            // 数据已有，只同步已看列表（不触发 loading）
-            this.syncWatched().then(result => {
-                this.applyWatchedIDs(result.ids)
-            })
-        }
-    },
-    watch: {
-        '$route.query.tab'() {
-            this.applyRouteTab()
-        }
+        window.removeEventListener('av-garden-weekly-refresh', this.loadData)
+        window.removeEventListener('av-garden-selection', this.onSelection)
     },
     methods: {
-        onWeeklyRefresh() {
-            // Detail page blocked genre/actress — drop stale list immediately
-            this._weeklyNeedsRefresh = true
-            this.loadData()
-        },
-        applyRouteTab() {
-            this.showWatched = this.$route.query.tab === 'watched'
-        },
-        applyWatchedIDs(ids) {
-            const normalized = normalizeWatchedIDs(ids)
-            this.watchedSet = new Set(normalized)
-            // 服务器返回的是 watched_at 降序（最近看的在前）
-            // watchedOrder 约定：最近看的在末尾（recordWatchedOrderID 追加到末尾）
-            // 所以反转服务器顺序，再合并本地已有的 order
-            const serverOrder = [...normalized].reverse()
-            const existingOrder = readWatchedOrderIDs()
-            const existingSet = new Set(existingOrder)
-            const newIds = serverOrder.filter(id => !existingSet.has(id))
-            this.watchedOrder = writeWatchedOrderIDs([...newIds, ...existingOrder], normalized)
-        },
-        loadWatched() {
-            this.applyWatchedIDs(readLocalWatchedIDs())
-        },
-        async syncWatched() {
-            const result = await syncWatchedIDs()
-            this.applyWatchedIDs(result.ids)
-        },
-        async saveWatched() {
-            const result = await saveWatchedIDs([...this.watchedSet])
-            this.applyWatchedIDs(result.ids)
-        },
-        isWatched(id) {
-            return this.watchedSet.has(id)
-        },
-        async toggleWatch(id) {
-            const nextSet = new Set(this.watchedSet)
-            if (nextSet.has(id)) {
-                nextSet.delete(id)
-            } else {
-                nextSet.add(id)
-                this.watchedOrder = recordWatchedOrderID(id, [...nextSet])
-            }
-            if (!nextSet.has(id)) {
-                this.watchedOrder = writeWatchedOrderIDs(this.watchedOrder, [...nextSet])
-            }
-            this.watchedSet = nextSet
-            await this.saveWatched()
-        },
+        onSelection(event) { this.selections = {...this.selections, [event.detail.id]: event.detail} },
         async loadData() {
-            this.loading = true
+            this.error = ''
             try {
-                const [wResp, qResp] = await Promise.all([
-                    fetch('/api/weekly'),
-                    fetch('/api/queue/')
+                const [items, states, favs] = await Promise.all([
+                    fetch('/api/weekly').then(r => { if (!r.ok) throw Error('推荐列表加载失败'); return r.json() }),
+                    loadSelections(),
+                    fetch('/api/fav-actress/').then(r => { if (!r.ok) throw Error('收藏演员加载失败'); return r.json() })
                 ])
-                if (wResp.ok) {
-                    const weeklyItems = await wResp.json().catch(() => [])
-                    this.weeklyItems = Array.isArray(weeklyItems) ? weeklyItems : []
-                }
-                if (qResp.ok) {
-                    const qItems = await qResp.json().catch(() => [])
-                    this.queueSet = new Set((Array.isArray(qItems) ? qItems : []).map(i => i.code))
-                }
-            } catch (e) {
-                console.error(e)
-            }
-            this.loading = false
+                this.weeklyItems = items; this.selections = states; this.favorites = favs
+                const context = readBrowseContext()
+                await this.$nextTick()
+                if (context && JSON.stringify(context.query) === JSON.stringify(this.query)) window.scrollTo(0, context.scroll || 0)
+            } catch(e) { this.error = e.message }
+            finally { this.loading = false; this.loaded = true }
         },
-        displayTitle(video) {
-            return formatDisplayTitle(video, { withCode: true, maxLen: 50 })
+        change(key, value) {
+            const query = {...this.query}
+            if (value) query[key] = value; else delete query[key]
+            if (key === 'from' || key === 'to') delete query.dateUnknown
+            this.$router.replace({name:'weekly',query})
         },
-        getDmmFallback(video) {
-            const c = (video.id || '').toLowerCase().replace('-', '')
-            return c ? `https://pics.dmm.co.jp/mono/movie/adult/${c}/${c}pl.jpg` : ''
+        unknownDate(on) {
+            const query = {...this.query}; delete query.from; delete query.to
+            if (on) query.dateUnknown='1'; else delete query.dateUnknown
+            this.$router.replace({name:'weekly',query})
         },
+        toggleGenre(key, genre) {
+            const values = new Set(key === 'include' ? this.includes : this.excludes)
+            if (values.has(genre)) values.delete(genre); else values.add(genre)
+            const other = key === 'include' ? 'exclude' : 'include'
+            const query = {...this.query, [key]: [...values].join(','), [other]: String(this.query[other] || '').split(',').filter(g => g !== genre).join(',')}
+            if (!query[key]) delete query[key]; if (!query[other]) delete query[other]
+            this.$router.replace({name:'weekly',query})
+        },
+        displayTitle(video) { return displayTitle(video, {withCode:true,maxLen:50}) },
         openVideo(video) {
-            if (video.downloaded) {
-                this.$router.push({ name: 'detail', params: { id: video.id } })
-            } else {
-                const tab = this.showWatched ? 'watched' : 'unwatched'
-                this.$router.push({ name: 'weekly-detail', params: { id: video.id }, query: { tab } })
-            }
-        },
-        async flushSessionViews() {
-            await this.syncWatched()
-        },
-        setWatchedTab(val) {
-            this.showWatched = val
-            const tab = val ? 'watched' : undefined
-            this.$router.replace({ name: 'weekly', query: tab ? { tab } : {} })
-        },
-        markWatched(id) {
-            if (!this.watchedSet.has(id)) {
-                this.watchedSet.add(id)
-                this.watchedOrder = recordWatchedOrderID(id, [...this.watchedSet])
-                this.saveWatched()
-                this.watchedSet = new Set(this.watchedSet)
-            }
-        },
+            saveBrowseContext(this.filteredVideos, {...this.query}, window.scrollY)
+            this.$router.push({name:'weekly-detail',params:{id:video.id},query:{...this.query,browse:'selection'}})
+        }
     }
 }
 </script>
-
 <style scoped>
 .container { padding: 0; }
 
@@ -328,4 +203,18 @@ h3 { margin: 0; font-size: 14px; font-weight: 750; display: -webkit-box; -webkit
     padding: 20px;
   }
 }
+</style>
+<style scoped>
+.weekly-filters { display:flex; flex-wrap:wrap; align-items:end; gap:14px; padding:18px; margin-bottom:20px; background:var(--surface); border:1px solid var(--rose-line); border-radius:8px }
+.weekly-filters label { display:flex; flex-direction:column; gap:6px; font-size:13px; color:var(--muted-color) }
+.weekly-filters select,.weekly-filters input[type=date] { min-height:40px; max-width:220px; padding:8px; background:white; color:var(--text-color); border:1px solid var(--rose-line); border-radius:6px; font:inherit }
+.weekly-filters .check { flex-direction:row; align-items:center; min-height:40px }
+.genre-filters { flex-basis:100%; font-size:13px }
+.genre-filters summary { cursor:pointer; padding:8px 0; color:var(--secondary-color) }
+.genre-choice { display:inline-flex; align-items:center; gap:6px; margin:4px 10px 4px 0; padding:6px; border:1px solid var(--rose-line); border-radius:6px }
+.genre-choice button,.filter-button { cursor:pointer; border:1px solid var(--rose-line); border-radius:6px; background:white; color:var(--secondary-color); padding:8px 10px }
+.genre-choice .chosen { background:var(--secondary-color); color:white }
+.selection-error { color:var(--error-color,#a22); padding:12px }
+.selection-meta { color:var(--muted-color); font-size:12px; margin-top:5px }
+@media(max-width:640px) { .weekly-filters {padding:12px;gap:10px} .weekly-filters label { flex:1 1 130px } .weekly-filters select,.weekly-filters input[type=date] {max-width:100%;width:100%;box-sizing:border-box} .sub-tabs {flex-wrap:wrap} }
 </style>

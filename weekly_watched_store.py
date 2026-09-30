@@ -28,6 +28,7 @@ def normalize_record(raw, fallback_time=None):
         "id": code,
         "watched_at": str(raw.get("watched_at") or fallback_time),
         "reason": str(raw.get("reason") or "manual"),
+        **({"interest": raw["interest"]} if raw.get("interest") in ("want", "dismissed") else {}),
     }
 
 

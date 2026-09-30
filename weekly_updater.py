@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.weekly import actresses as actress_util, sources, javbus, sukebei, merge, artwork, enrich, chinese_forum, blocking
 from weekly_store import atomic_write_json, weekly_update_lock
-from weekly_watched_store import mark_many, mark_watched
+from weekly_watched_store import load_records, mark_many, mark_watched
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 WEEKLY_DIR = os.path.join(SAVE_PATH, "__weekly__")
@@ -237,6 +237,7 @@ def mark_existing_blocked(items, rules=None):
     count = changed = 0
     blocked_ids = set()
     watched_entries = []
+    wanted = {code for code, record in load_records(WEEKLY_WATCHED_FILE).items() if record.get("interest") == "want"}
     for item in items or []:
         reason = blocking.match_reason(item, rules)
         if not reason:
@@ -247,7 +248,8 @@ def mark_existing_blocked(items, rules=None):
         blocked_ids.add(code)
         count += 1
         before = dict(item)
-        blocking.strip_expensive_fields(item)
+        if code not in wanted:
+            blocking.strip_expensive_fields(item)
         changed += item != before
         watched_entries.append({
             "id": code,

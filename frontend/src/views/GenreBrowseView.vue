@@ -5,17 +5,17 @@
                 <button class="back-link" @click="goBack">← 设置</button>
                 <span>屏蔽标签</span>
                 <h1>{{ tag || '标签' }}</h1>
-                <p>浏览带有该标签的作品（不经过屏蔽过滤）。列表与未看/已看页签设计一致。</p>
+                <p>浏览带有该标签的作品（不经过屏蔽过滤）。列表与未浏览/浏览过页签设计一致。</p>
             </div>
             <div class="weekly-count">{{ weeklyCount }} 项</div>
         </div>
 
         <div class="sub-tabs">
             <button :class="['sub-tab', { active: !showWatched }]" @click="setWatchedTab(false)">
-                未看 ({{ unwatchedCount }})
+                未浏览 ({{ unwatchedCount }})
             </button>
             <button :class="['sub-tab', { active: showWatched }]" @click="setWatchedTab(true)">
-                已看 ({{ watchedInListCount }})
+                浏览过 ({{ watchedInListCount }})
             </button>
         </div>
 
@@ -27,9 +27,9 @@
                 <div class="video-card" @click="openVideo(video)">
                     <div class="cover-container" :class="{ watched: isWatched(video.id) }">
                         <img class="cover" :src="video.cover || video.poster || getDmmFallback(video)" :alt="video.title" loading="lazy">
-                        <div v-if="isWatched(video.id)" class="watched-overlay">已看</div>
+                        <div v-if="isWatched(video.id)" class="watched-overlay">浏览过</div>
                         <div v-if="video.hasChinese" class="badge chinese">中文</div>
-                        <button class="watch-toggle" @click.stop="toggleWatch(video.id)" :title="isWatched(video.id) ? '标记未看' : '标记已看'">
+                        <button class="watch-toggle" @click.stop="toggleWatch(video.id)" :title="isWatched(video.id) ? '标记未浏览' : '标记浏览过'">
                             {{ isWatched(video.id) ? '已' : '看' }}
                         </button>
                     </div>

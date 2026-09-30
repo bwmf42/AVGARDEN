@@ -31,7 +31,7 @@ from weekly_watched_store import load_records, normalize_record, write_records
 
 
 MANIFEST_KIND = "weekly-retention"
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
 DEFAULT_RETENTION_DAYS = 30
 
 
@@ -148,11 +148,12 @@ def build_manifest(save_path, db_dir, retention_days=DEFAULT_RETENTION_DAYS, now
     expired_ids = sorted(
         code
         for code, record in effective_records.items()
-        if (parse_timestamp(record.get("watched_at")) or now) < cutoff
+        if record.get("interest") != "want" and (parse_timestamp(record.get("watched_at")) or now) < cutoff
     )
     expired_set = set(expired_ids)
     blocked_ids = {item["id"] for item in blocked}
-    artwork_remove_ids = expired_set | blocked_ids
+    wanted_ids = {code for code, record in records.items() if record.get("interest") == "want"}
+    artwork_remove_ids = (expired_set | blocked_ids) - wanted_ids
 
     artwork_dirs = []
     for name in sorted(os.listdir(weekly_dir)):
@@ -238,7 +239,7 @@ def apply_manifest(manifest):
                 code = normalize_video_id(item.get("id")) if isinstance(item, dict) else ""
                 if code in expired:
                     continue
-                if code in blocked:
+                if code in blocked and records.get(code, {}).get("interest") != "want":
                     blocking.strip_expensive_fields(item)
                 kept_items.append(item)
             for code in expired:
@@ -254,21 +255,21 @@ def apply_manifest(manifest):
             atomic_write_json(weekly_json, kept_items)
             write_records(watched_path, records)
 
-    removed_dirs = []
-    for record in manifest["actions"]["remove_artwork_dirs"]:
-        path = record["path"]
-        if not safe_under(path, weekly_dir) or os.path.dirname(path) != os.path.realpath(weekly_dir):
-            raise RuntimeError(f"unsafe Weekly artwork path: {path}")
-        shutil.rmtree(path)
-        removed_dirs.append(path)
+            removed_dirs = []
+            for record in manifest["actions"]["remove_artwork_dirs"]:
+                path = record["path"]
+                if not safe_under(path, weekly_dir) or os.path.dirname(path) != os.path.realpath(weekly_dir):
+                    raise RuntimeError(f"unsafe Weekly artwork path: {path}")
+                shutil.rmtree(path)
+                removed_dirs.append(path)
 
-    removed_files = []
-    for record in manifest["actions"]["remove_routine_files"]:
-        path = record["path"]
-        if not safe_under(path, roots["db_dir"]):
-            raise RuntimeError(f"unsafe maintenance path: {path}")
-        os.remove(path)
-        removed_files.append(path)
+            removed_files = []
+            for record in manifest["actions"]["remove_routine_files"]:
+                path = record["path"]
+                if not safe_under(path, roots["db_dir"]):
+                    raise RuntimeError(f"unsafe maintenance path: {path}")
+                os.remove(path)
+                removed_files.append(path)
 
     return {
         "completed_at": utc_now(),

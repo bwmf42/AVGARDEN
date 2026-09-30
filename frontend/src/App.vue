@@ -240,7 +240,9 @@ export default {
       return String(ts).replace('T', ' ').slice(0, 16)
     },
     routeViewKey() {
-      return this.$route.name === 'weekly-detail' ? 'weekly-detail' : this.$route.fullPath
+      if (this.$route.name === 'weekly-detail') return 'weekly-detail'
+      if (this.$route.name === 'weekly' || this.$route.name === 'weekly-downloaded') return 'weekly'
+      return this.$route.fullPath
     },
     activeStatusItems() {
       return this.statusBar.items.filter(item => item.status !== 'failed')

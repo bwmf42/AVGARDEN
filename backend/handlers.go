@@ -684,6 +684,7 @@ type WeeklyWatchedRecord struct {
 	ID        string `json:"id"`
 	WatchedAt string `json:"watched_at"`
 	Reason    string `json:"reason,omitempty"`
+	Interest  string `json:"interest,omitempty"`
 }
 
 type WeeklyWatchedStore struct {
@@ -775,7 +776,8 @@ func loadWeeklyWatchedStoreRecords() map[string]WeeklyWatchedRecord {
 			if reason == "" {
 				reason = "manual"
 			}
-			records[id] = WeeklyWatchedRecord{ID: id, WatchedAt: watchedAt.Format(time.RFC3339), Reason: reason}
+			item.ID, item.WatchedAt, item.Reason = id, watchedAt.Format(time.RFC3339), reason
+			records[id] = item
 		}
 	}
 
@@ -860,7 +862,7 @@ func saveWeeklyWatchedIDs(ids []string) error {
 	}
 	// A stale browser payload must not erase an automatic block recorded by Worker.
 	for id, item := range existing {
-		if strings.HasPrefix(item.Reason, "blocked_") && (weeklyIDs == nil || weeklyIDs[id]) {
+		if (strings.HasPrefix(item.Reason, "blocked_") || item.Interest != "") && (weeklyIDs == nil || weeklyIDs[id]) {
 			wanted[id] = true
 		}
 	}
@@ -1147,6 +1149,8 @@ func filterWeeklyItems(items []map[string]interface{}, mp4Index map[string]bool,
 				}
 			}
 		}
+
+		item["hasFavoriteActress"] = hasFavActress
 
 		// 过滤屏蔽标签(genres)，收藏女优跳过
 		if !hasFavActress {

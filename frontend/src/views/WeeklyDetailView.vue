@@ -40,72 +40,17 @@
                     <h1 class="title">{{ displayTitleText }}</h1>
                     <div class="title-meta">
                         <div class="code">{{ video.id }}</div>
-                        <div v-if="markedVisible" class="marked-badge">已标记为已看</div>
+                        <div v-if="markedVisible" class="marked-badge">已记录浏览</div>
                     </div>
                 </div>
 
-                <div class="detail-hero">
-                    <div class="poster-section">
-                        <img class="poster" :key="`poster-${mediaKey}`" :src="video.cover || video.poster" :alt="video.title">
+                <section class="decision-bar" aria-label="作品选择">
+                    <div v-if="!isOnlineSource" class="selection-buttons">
+                        <button :class="{selected: selections[video.id]?.interest === 'want'}" :disabled="selectionBusy || routeLoading" @click="choose(selections[video.id]?.interest === 'want' ? 'clear' : 'want')">{{ selections[video.id]?.interest === 'want' ? '已加入想看 · 取消' : '想看' }}</button>
+                        <button :class="{selected: selections[video.id]?.interest === 'dismissed'}" :disabled="selectionBusy || routeLoading" @click="choose(selections[video.id]?.interest === 'dismissed' ? 'clear' : 'dismiss')">{{ selections[video.id]?.interest === 'dismissed' ? '恢复兴趣' : '不感兴趣' }}</button>
+                        <a v-if="fanartList.length" href="#detail-previews">看预览图</a>
+                        <span v-if="selections[video.id]?.interest === 'want'">长期保留</span>
                     </div>
-
-                    <aside class="detail-side">
-                        <div class="info-section">
-                            <div v-if="video.actresses && video.actresses.length" class="section">
-                                <h3>演员</h3>
-                                <div class="tags">
-                                    <span v-for="a in video.actresses" class="tag actress">
-                                        {{ a }}
-                                        <button class="fav-btn"
-                                            :class="{ faved: favActresses[a] }"
-                                            @click.stop="toggleFav(a)"
-                                            :title="favActresses[a] ? '取消收藏' : '收藏此女优'">
-                                            {{ favActresses[a] ? '已收' : '收藏' }}
-                                        </button>
-                                        <template v-if="blockingName === a">
-                                            <span class="block-confirm">屏蔽?</span>
-                                            <button class="block-yes" :disabled="blockInFlight" @click.stop="doBlock(a)">确认</button>
-                                            <button class="block-no" :disabled="blockInFlight" @click.stop="blockingName = null">取消</button>
-                                        </template>
-                                        <button v-else class="block-btn" :disabled="blockInFlight" @click.stop="blockingName = a" title="屏蔽此女优">屏蔽</button>
-                                    </span>
-                                </div>
-                            </div>
-
-                            <div v-if="video.genres && video.genres.length" class="section">
-                                <h3>标签</h3>
-                                <div class="tags">
-                                    <span v-for="g in video.genres" class="tag genre" @mouseenter="showGenreActions(g)" @mouseleave="hideGenreActions(g)">
-                                        {{ g }}
-                                        <template v-if="blockingGenre === g">
-                                            <span class="block-confirm">屏蔽?</span>
-                                            <button class="block-yes" :disabled="blockInFlight" @click.stop="doBlockGenre(g)">确认</button>
-                                            <button class="block-no" :disabled="blockInFlight" @click.stop="blockingGenre = null">取消</button>
-                                        </template>
-                                        <button v-else class="block-btn" :class="{ visible: hoverGenre === g }" :disabled="blockInFlight" @mouseenter.stop="showGenreActions(g)" @mouseleave.stop="hideGenreActions(g)" @click.stop="blockingGenre = g" title="屏蔽此标签">屏蔽</button>
-                                    </span>
-                                </div>
-                            </div>
-
-                            <div class="info-grid">
-                                <div v-if="video.releaseDate" class="info-item">
-                                    <span class="label">发行</span>
-                                    <span>{{ video.releaseDate }}</span>
-                                </div>
-                                <div v-if="video.duration" class="info-item">
-                                    <span class="label">时长</span>
-                                    <span>{{ video.duration }}</span>
-                                </div>
-                                <div class="info-item">
-                                    <span class="label">字幕</span>
-                                    <span>{{ video.hasChinese ? '有中文字幕' : '无' }}</span>
-                                </div>
-                                <div v-if="video.size" class="info-item">
-                                    <span class="label">大小</span>
-                                    <span>{{ video.size }}</span>
-                                </div>
-                            </div>
-
                             <div class="action-row">
                                 <template v-if="!video.downloaded && (queueState === 'idle' || queueState === 'error')">
                                     <button
@@ -140,18 +85,84 @@
                                     所有源均失败，去 JavBus
                                 </a>
                                 <a v-if="video.downloaded" class="btn-play" @click="$router.push({ name: 'detail', params: { id: video.id } })">
-                                    播放 (AV/GARDEN)
+                                    查看本地详情
                                 </a>
                             </div>
                             <p v-if="queueHintText" class="queue-hint" :class="{ error: queueState === 'error' }">
                                 {{ queueHintText }}
                             </p>
+                    <p v-if="selectionError" class="selection-error" role="alert">{{ selectionError }}</p>
+                </section>
+                <div class="detail-hero">
+                    <div class="poster-section">
+                        <img class="poster" :key="`poster-${mediaKey}`" :src="video.cover || video.poster" :alt="video.title">
+                    </div>
+
+                    <aside class="detail-side">
+                        <div class="info-section">
+                            <div v-if="video.actresses && video.actresses.length" class="section">
+                                <h3>演员</h3>
+                                <div class="tags">
+                                    <span v-for="a in video.actresses" class="tag actress">
+                                        <button class="actress-link" @click="browseActor(a)">{{ a }}</button>
+                                        <button class="fav-btn"
+                                            :class="{ faved: favActresses[a] }"
+                                            @click.stop="toggleFav(a)"
+                                            :title="favActresses[a] ? '取消收藏' : '收藏此女优'">
+                                            {{ favActresses[a] ? '已收' : '收藏' }}
+                                        </button>
+                                        <template v-if="blockingName === a">
+                                            <span class="block-confirm">屏蔽?</span>
+                                            <button class="block-yes" :disabled="blockInFlight" @click.stop="doBlock(a)">确认</button>
+                                            <button class="block-no" :disabled="blockInFlight" @click.stop="blockingName = null">取消</button>
+                                        </template>
+                                        <button v-else class="block-btn" :disabled="blockInFlight" @click.stop="blockingName = a" title="屏蔽此女优">屏蔽</button>
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div v-if="video.genres && video.genres.length" class="section">
+                                <h3>标签</h3>
+                                <div class="tags">
+                                    <span v-for="g in video.genres" class="tag genre" @mouseenter="showGenreActions(g)" @mouseleave="hideGenreActions(g)">
+                                        {{ g }}
+                                        <template v-if="blockingGenre === g">
+                                            <span class="block-confirm">屏蔽?</span>
+                                            <button class="block-yes" :disabled="blockInFlight" @click.stop="doBlockGenre(g)">确认</button>
+                                            <button class="block-no" :disabled="blockInFlight" @click.stop="blockingGenre = null">取消</button>
+                                        </template>
+                                        <button v-else class="block-btn" :class="{ visible: hoverGenre === g }" :disabled="blockInFlight" @mouseenter.stop="showGenreActions(g)" @mouseleave.stop="hideGenreActions(g)" @click.stop="blockingGenre = g" title="屏蔽此标签">屏蔽</button>
+                                    </span>
+                                </div>
+                            </div>
+
+                            <p v-if="!video.actresses?.length" class="metadata-unknown">演员：未知</p>
+                            <p v-if="!video.genres?.length" class="metadata-unknown">标签：未知</p>
+                            <div class="info-grid">
+                                <div class="info-item">
+                                    <span class="label">发行</span>
+                                    <span>{{ video.releaseDate || '未知' }}</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="label">时长</span>
+                                    <span>{{ video.duration || '未知' }}</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="label">字幕</span>
+                                    <span>{{ video.hasChinese ? '有中文字幕' : '未知（未确认中文）' }}</span>
+                                </div>
+                                <div v-if="video.size" class="info-item">
+                                    <span class="label">大小</span>
+                                    <span>{{ video.size }}</span>
+                                </div>
+                            </div>
+
                         </div>
                     </aside>
                 </div>
 
                 <!-- Fanarts Gallery (AV/GARDEN style) -->
-                <div v-if="fanartList.length" :key="`fanarts-${mediaKey}`" class="section preview-section">
+                <div v-if="fanartList.length" :key="`fanarts-${mediaKey}`" class="section preview-section" id="detail-previews">
                     <h3>预览图</h3>
                     <div class="fanarts-grid">
                         <div v-for="(img, i) in fanartList" :key="`${video.id}-${i}-${img}`" class="fanart-item" @click="openLightbox(i)">
@@ -201,13 +212,12 @@
 </template>
 
 <script>
+import { loadSelections, selectWeekly } from '../api/weeklySelection'
+import { filterWeekly, readBrowseContext } from '../utils/weeklyFilters'
 import {
-    normalizeWatchedIDs,
     recordWatchedOrderID,
     readLocalWatchedIDs,
-    readWatchedOrderIDs,
-    saveWatchedIDs,
-    syncWatchedIDs
+    readWatchedOrderIDs
 } from '../api/weeklyWatched'
 import { displayTitle as formatDisplayTitle } from '../utils/displayTitle'
 
@@ -235,6 +245,9 @@ export default {
     data() {
         return {
             video: null,
+            selections: {},
+            selectionBusy: false,
+            selectionError: "",
             allVideos: [],
             currentIndex: -1,
             queueState: 'idle',
@@ -365,7 +378,6 @@ export default {
                 if (!loaded || token !== this.routeLoadToken) return
 
                 if (!this.isOnlineSource) {
-                    this.trackView(targetId)
                     this.markWatched(targetId)
                 }
 
@@ -377,16 +389,6 @@ export default {
                     this.navInFlight = false
                 }
             }
-        },
-        trackView(id) {
-            try {
-                const raw = sessionStorage.getItem('weekly_viewed_session') || '[]'
-                const arr = JSON.parse(raw)
-                if (!arr.includes(id)) {
-                    arr.push(id)
-                    sessionStorage.setItem('weekly_viewed_session', JSON.stringify(arr))
-                }
-            } catch(e) {}
         },
         async loadDetail(targetId, token = this.routeLoadToken) {
             const normalizedTarget = normalizeVideoID(targetId)
@@ -493,7 +495,7 @@ export default {
             }
             return weeklyDetailCache.promise
         },
-        // 与 WeeklyView 已看列表一致：watchedOrder 末尾 = 最近看过，列表降序 = 最近在最上
+        // 与 WeeklyView 浏览过列表一致：watchedOrder 末尾 = 最近看过，列表降序 = 最近在最上
         sortWatchedByRecency(videos) {
             const order = readWatchedOrderIDs()
             if (!order.length) return videos
@@ -513,11 +515,25 @@ export default {
             const normalizedTarget = normalizeVideoID(targetId)
             const canonicalTarget = canonicalVideoID(targetId)
             const allById = new Map(weeklyItems.map(v => [normalizeVideoID(v.id), v]))
+            if (this.$route.query.browse === 'selection') {
+                const context = readBrowseContext()
+                const query = {...this.$route.query}; delete query.browse
+                const sameQuery = context && Object.keys({...query,...context.query}).every(key => String(query[key] || '') === String(context.query[key] || ''))
+                this.allVideos = sameQuery && context.ids?.includes(targetId)
+                    ? context.ids.map(id => allById.get(normalizeVideoID(id))).filter(Boolean)
+                    : filterWeekly(weeklyItems, query, this.selections, Object.keys(this.favActresses).filter(a => this.favActresses[a]))
+                if (!this.allVideos.some(v => normalizeVideoID(v.id) === normalizedTarget)) {
+                    const current = allById.get(normalizedTarget)
+                    if (current) this.allVideos.unshift(current)
+                }
+                if (!this.setVideoFromCurrentList(targetId)) { this.currentIndex = -1; this.video = null }
+                return
+            }
             const undownloaded = weeklyItems.filter(v => !v.downloaded)
             const tab = this.$route.query.tab || 'unwatched'
 
             if (tab === 'watched') {
-                // 已看：始终按最近观看排序，不用 session 旧顺序（否则点列表第一张会变成 124/N）
+                // 浏览过：始终按最近观看排序，不用 session 旧顺序（否则点列表第一张会变成 124/N）
                 this.allVideos = this.sortWatchedByRecency(
                     undownloaded.filter(v => this.isWatched(v.id))
                 )
@@ -535,7 +551,7 @@ export default {
                 if (current) this.allVideos = [current, ...this.allVideos]
             }
 
-            // 已看：点进的那张固定为 1/N（列表本身已是最近观看在前）
+            // 浏览过：点进的那张固定为 1/N（列表本身已是最近观看在前）
             if (tab === 'watched') {
                 const pivot = this.allVideos.findIndex(v => {
                     const id = normalizeVideoID(v.id)
@@ -613,12 +629,10 @@ export default {
             this.watchedSet = new Set(readLocalWatchedIDs())
         },
         async syncWatched() {
-            const result = await syncWatchedIDs()
-            this.watchedSet = new Set(result.ids)
-        },
-        async saveWatched() {
-            const result = await saveWatchedIDs([...this.watchedSet])
-            this.watchedSet = new Set(result.ids)
+            try {
+                this.selections = await loadSelections()
+                this.watchedSet = new Set(Object.keys(this.selections))
+            } catch (e) { this.selectionError = e.message }
         },
         isWatched(id) {
             return this.watchedSet.has(id)
@@ -647,6 +661,11 @@ export default {
             } catch(e) {}
         },
         goBackToWeekly() {
+            if (this.$route.query.browse === 'selection') {
+                const query = {...this.$route.query}; delete query.browse
+                this.$router.push({name:'weekly', query})
+                return
+            }
             this.clearBrowseState()
             if (this.isOnlineSource) {
                 this.$router.push({ name: 'search' })
@@ -675,19 +694,25 @@ export default {
         },
         async markWatched(id) {
             if (!id) return
-            if (!this.watchedSet.has(id)) {
-                const nextIDs = normalizeWatchedIDs([...this.watchedSet, id])
-                this.watchedSet = new Set(nextIDs)
-                recordWatchedOrderID(id, nextIDs)
-                this.markedVisible = true
-                setTimeout(() => { this.markedVisible = false }, 2000)
-                try {
-                    await this.saveWatched()
-                } catch(e) {
-                    console.error('[markWatched] FAILED:', e)
-                }
-            }
+            try {
+                const record = await selectWeekly(id, 'view')
+                this.selections = {...this.selections, [record.id]: record}
+                this.watchedSet = new Set([...this.watchedSet, record.id])
+                recordWatchedOrderID(record.id, [...this.watchedSet])
+            } catch(e) { this.selectionError = e.message }
         },
+        async choose(action) {
+            if (this.selectionBusy || !this.video) return
+            this.selectionBusy = true
+            this.selectionError = ''
+            const id = this.video.id
+            try {
+                const record = await selectWeekly(id, action)
+                this.selections = {...this.selections, [record.id]: record}
+            } catch(e) { this.selectionError = e.message }
+            finally { this.selectionBusy = false }
+        },
+        browseActor(actor) { this.$router.push({name:'weekly', query:{actor,tab:'all'}}) },
         navigateRelative(delta) {
             if (this.routeLoading || this.navInFlight) return
             const targetIndex = this.currentIndex + delta
@@ -1908,4 +1933,18 @@ export default {
     right: 0;
   }
 }
+</style>
+
+<style scoped>
+.decision-bar { position:sticky; top:10px; z-index:20; background:var(--surface,#fff); border:1px solid var(--rose-line); border-radius:8px; padding:12px 16px; margin:0 0 18px; box-shadow:var(--shadow-soft) }
+.selection-buttons { display:flex; align-items:center; gap:10px; flex-wrap:wrap }
+.selection-buttons button { min-height:40px; padding:8px 16px; border:1px solid var(--rose-line); border-radius:6px; background:white; color:var(--secondary-color); cursor:pointer; font:inherit }
+.selection-buttons .selected { background:var(--secondary-color); color:white }
+.selection-buttons a,.actress-link { color:var(--secondary-color); text-decoration:underline; cursor:pointer }
+.actress-link { background:none; border:0; font:inherit; padding:4px }
+.selection-buttons span { font-size:12px; color:var(--muted-color) }
+.decision-bar .action-row { margin-top:10px; flex-wrap:wrap }
+.selection-error { color:var(--error-color,#a22); margin:8px 0 0 }
+#detail-previews { scroll-margin-top:180px }
+@media(max-width:640px) { .decision-bar {top:4px;padding:10px} .selection-buttons {gap:6px} .selection-buttons button {padding:8px 10px} }
 </style>
