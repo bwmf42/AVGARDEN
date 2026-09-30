@@ -1,6 +1,5 @@
 export const selectionTabs = [
-    ['unwatched', '未浏览'], ['watched', '浏览过'], ['want', '想看'],
-    ['dismissed', '不感兴趣'], ['all', '全部']
+    ['unwatched', '未浏览'], ['watched', '浏览过'], ['all', '全部']
 ]
 const nameKey = value => String(value || '').normalize('NFKC').replace(/\s/g, '').toLowerCase()
 export function durationMinutes(raw) {
@@ -24,15 +23,11 @@ export function filterWeekly(items, query = {}, selections = {}, favorites = [])
     const include = String(query.include || '').split(',').filter(Boolean)
     const exclude = String(query.exclude || '').split(',').filter(Boolean)
     const fav = new Set(favorites.map(nameKey))
-    const tab = query.tab || 'unwatched'
+    const tab = ['unwatched', 'watched', 'all'].includes(query.tab) ? query.tab : 'unwatched'
     const result = items.filter(item => {
         const state = selections[String(item.id).toUpperCase()]
-        const interest = state?.interest || ''
-        if (tab === 'want' && interest !== 'want') return false
-        if (tab === 'dismissed' && interest !== 'dismissed') return false
-        if (tab === 'unwatched' && (state || interest)) return false
-        if (tab === 'watched' && (!state || interest === 'dismissed')) return false
-        if (tab === 'all' && interest === 'dismissed') return false
+        if (tab === 'unwatched' && state) return false
+        if (tab === 'watched' && !state) return false
         if (query.chinese === 'yes' && !item.hasChinese) return false
         if (query.chinese === 'unknown' && item.hasChinese) return false
         const actors = item.actresses || []
@@ -54,7 +49,7 @@ export function filterWeekly(items, query = {}, selections = {}, favorites = [])
         if (query.availability === 'queued' && !item.queueStatus) return false
         return true
     })
-    if (tab === 'watched' || tab === 'want' || tab === 'dismissed') {
+    if (tab === 'watched') {
         result.sort((a,b) => String(selections[b.id]?.watched_at || '').localeCompare(String(selections[a.id]?.watched_at || '')))
     }
     return result

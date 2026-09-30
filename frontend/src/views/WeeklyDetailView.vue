@@ -44,54 +44,6 @@
                     </div>
                 </div>
 
-                <section class="decision-bar" aria-label="作品选择">
-                    <div v-if="!isOnlineSource" class="selection-buttons">
-                        <button :class="{selected: selections[video.id]?.interest === 'want'}" :disabled="selectionBusy || routeLoading" @click="choose(selections[video.id]?.interest === 'want' ? 'clear' : 'want')">{{ selections[video.id]?.interest === 'want' ? '已加入想看 · 取消' : '想看' }}</button>
-                        <button :class="{selected: selections[video.id]?.interest === 'dismissed'}" :disabled="selectionBusy || routeLoading" @click="choose(selections[video.id]?.interest === 'dismissed' ? 'clear' : 'dismiss')">{{ selections[video.id]?.interest === 'dismissed' ? '恢复兴趣' : '不感兴趣' }}</button>
-                        <span v-if="selections[video.id]?.interest === 'want'">长期保留</span>
-                    </div>
-                            <div class="action-row">
-                                <template v-if="!video.downloaded && (queueState === 'idle' || queueState === 'error')">
-                                    <button
-                                        class="btn-download"
-                                        :class="{ error: queueState === 'error' }"
-                                        @click="addToQueue('qb')"
-                                        :disabled="queueBusy">
-                                        {{ queueState === 'error' ? '重试 qB' : '加入 qB' }}
-                                    </button>
-                                    <button
-                                        class="btn-download btn-115"
-                                        :class="{ error: queueState === 'error', disabled: !p115Available }"
-                                        @click="addToQueue('115')"
-                                        :disabled="queueBusy || !p115Available"
-                                        :title="p115Available ? '提交 115 云端离线' : '115 Cookie 已失效，请到设置重新测试连接'">
-                                        {{ queueState === 'error' ? '重试 115' : '加入 115' }}
-                                    </button>
-                                </template>
-                                <button v-if="queueState === 'adding'" class="btn-download" disabled>添加中...</button>
-                                <button v-if="queueState === 'waiting_ready'" class="btn-download waiting" disabled>
-                                    等待服务就绪…
-                                </button>
-                                <div v-if="queueState === 'success'" class="btn-download success">已加入队列</div>
-                                <div v-if="queueState === 'queued'" class="btn-download queued">
-                                    {{ lastQueueTarget === '115' ? '已加入 115 队列' : '已加入 qB 队列' }}
-                                </div>
-                                <div v-if="queueState === 'downloading'" class="btn-download downloading">
-                                    下载中 {{ queueProgress }}%
-                                </div>
-                                <a v-if="queueState === 'failed'" class="btn-download error"
-                                    :href="'https://www.javbus.com/' + encodeURIComponent(this.id)" target="_blank">
-                                    所有源均失败，去 JavBus
-                                </a>
-                                <a v-if="video.downloaded" class="btn-play" @click="$router.push({ name: 'detail', params: { id: video.id } })">
-                                    查看本地详情
-                                </a>
-                            </div>
-                            <p v-if="queueHintText" class="queue-hint" :class="{ error: queueState === 'error' }">
-                                {{ queueHintText }}
-                            </p>
-                    <p v-if="selectionError" class="selection-error" role="alert">{{ selectionError }}</p>
-                </section>
                 <div class="detail-hero">
                     <div class="poster-section">
                         <img class="poster" :key="`poster-${mediaKey}`" :src="video.cover || video.poster" :alt="video.title">
@@ -156,6 +108,47 @@
                                 </div>
                             </div>
 
+                            <div class="action-row">
+                                <template v-if="!video.downloaded && (queueState === 'idle' || queueState === 'error')">
+                                    <button
+                                        class="btn-download"
+                                        :class="{ error: queueState === 'error' }"
+                                        @click="addToQueue('qb')"
+                                        :disabled="queueBusy">
+                                        {{ queueState === 'error' ? '重试 qB' : '加入 qB' }}
+                                    </button>
+                                    <button
+                                        class="btn-download btn-115"
+                                        :class="{ error: queueState === 'error', disabled: !p115Available }"
+                                        @click="addToQueue('115')"
+                                        :disabled="queueBusy || !p115Available"
+                                        :title="p115Available ? '提交 115 云端离线' : '115 Cookie 已失效，请到设置重新测试连接'">
+                                        {{ queueState === 'error' ? '重试 115' : '加入 115' }}
+                                    </button>
+                                </template>
+                                <button v-if="queueState === 'adding'" class="btn-download" disabled>添加中...</button>
+                                <button v-if="queueState === 'waiting_ready'" class="btn-download waiting" disabled>
+                                    等待服务就绪…
+                                </button>
+                                <div v-if="queueState === 'success'" class="btn-download success">已加入队列</div>
+                                <div v-if="queueState === 'queued'" class="btn-download queued">
+                                    {{ lastQueueTarget === '115' ? '已加入 115 队列' : '已加入 qB 队列' }}
+                                </div>
+                                <div v-if="queueState === 'downloading'" class="btn-download downloading">
+                                    下载中 {{ queueProgress }}%
+                                </div>
+                                <a v-if="queueState === 'failed'" class="btn-download error"
+                                    :href="'https://www.javbus.com/' + encodeURIComponent(this.id)" target="_blank">
+                                    所有源均失败，去 JavBus
+                                </a>
+                                <a v-if="video.downloaded" class="btn-play" @click="$router.push({ name: 'detail', params: { id: video.id } })">
+                                    查看本地详情
+                                </a>
+                            </div>
+                            <p v-if="queueHintText" class="queue-hint" :class="{ error: queueState === 'error' }">
+                                {{ queueHintText }}
+                            </p>
+                            <p v-if="selectionError" class="selection-error" role="alert">{{ selectionError }}</p>
                         </div>
                     </aside>
                 </div>
@@ -211,7 +204,7 @@
 </template>
 
 <script>
-import { loadSelections, selectWeekly } from '../api/weeklySelection'
+import { loadSelections, recordWeeklyView } from '../api/weeklySelection'
 import { filterWeekly, readBrowseContext } from '../utils/weeklyFilters'
 import {
     recordWatchedOrderID,
@@ -245,7 +238,6 @@ export default {
         return {
             video: null,
             selections: {},
-            selectionBusy: false,
             selectionError: "",
             allVideos: [],
             currentIndex: -1,
@@ -694,22 +686,11 @@ export default {
         async markWatched(id) {
             if (!id) return
             try {
-                const record = await selectWeekly(id, 'view')
+                const record = await recordWeeklyView(id)
                 this.selections = {...this.selections, [record.id]: record}
                 this.watchedSet = new Set([...this.watchedSet, record.id])
                 recordWatchedOrderID(record.id, [...this.watchedSet])
             } catch(e) { this.selectionError = e.message }
-        },
-        async choose(action) {
-            if (this.selectionBusy || !this.video) return
-            this.selectionBusy = true
-            this.selectionError = ''
-            const id = this.video.id
-            try {
-                const record = await selectWeekly(id, action)
-                this.selections = {...this.selections, [record.id]: record}
-            } catch(e) { this.selectionError = e.message }
-            finally { this.selectionBusy = false }
         },
         browseActor(actor) { this.$router.push({name:'weekly', query:{actor,tab:'all'}}) },
         navigateRelative(delta) {
@@ -1935,14 +1916,6 @@ export default {
 </style>
 
 <style scoped>
-.decision-bar { position:sticky; top:10px; z-index:20; background:var(--surface,#fff); border:1px solid var(--rose-line); border-radius:8px; padding:12px 16px; margin:0 0 18px; box-shadow:var(--shadow-soft) }
-.selection-buttons { display:flex; align-items:center; gap:10px; flex-wrap:wrap }
-.selection-buttons button { min-height:40px; padding:8px 16px; border:1px solid var(--rose-line); border-radius:6px; background:white; color:var(--secondary-color); cursor:pointer; font:inherit }
-.selection-buttons .selected { background:var(--secondary-color); color:white }
-.actress-link { color:var(--secondary-color); text-decoration:underline; cursor:pointer }
-.actress-link { background:none; border:0; font:inherit; padding:4px }
-.selection-buttons span { font-size:12px; color:var(--muted-color) }
-.decision-bar .action-row { margin-top:10px; flex-wrap:wrap }
+.actress-link { color:var(--secondary-color); text-decoration:underline; cursor:pointer; background:none; border:0; font:inherit; padding:4px }
 .selection-error { color:var(--error-color,#a22); margin:8px 0 0 }
-@media(max-width:640px) { .decision-bar {top:4px;padding:10px} .selection-buttons {gap:6px} .selection-buttons button {padding:8px 10px} }
 </style>

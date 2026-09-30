@@ -9,12 +9,11 @@ const items = [
 ]
 const states={'A-001':{watched_at:'2026-09-02',interest:'want'},'A-002':{watched_at:'2026-09-01',interest:'dismissed'}}
 const ids = (query) => filterWeekly(items,query,states,['Actor A']).map(v=>v.id)
-test('legacy browsing and user decisions stay distinct',()=>{
+test('browsing tabs include any legacy intent records',()=>{
  assert.deepEqual(ids({}),['A-003','A-004'])
- assert.deepEqual(ids({tab:'want'}),['A-001'])
- assert.deepEqual(ids({tab:'dismissed'}),['A-002'])
- assert.deepEqual(ids({tab:'watched'}),['A-001'])
- assert.deepEqual(ids({tab:'all'}),['A-001','A-003','A-004'])
+ assert.deepEqual(ids({tab:'watched'}),['A-001','A-002'])
+ assert.deepEqual(ids({tab:'all'}),['A-001','A-002','A-003','A-004'])
+ assert.deepEqual(ids({tab:'want'}),['A-003','A-004'])
 })
 test('combined filters use all included and any excluded tags',()=>{
  assert.deepEqual(ids({tab:'all',fav:'1',include:'Drama,Studio',chinese:'yes',availability:'local',duration:'medium',from:'2026-09-01'}),['A-001'])
@@ -25,7 +24,7 @@ test('combined filters use all included and any excluded tags',()=>{
 })
 test('missing metadata never passes numeric/date bounds',()=>{
  assert.deepEqual(ids({tab:'all',from:'2026-09-02'}),[])
- assert.deepEqual(ids({tab:'all',duration:'short'}),[])
+ assert.deepEqual(ids({tab:'all',duration:'short'}),['A-002'])
  assert.deepEqual(ids({tab:'all',dateUnknown:'1'}),['A-003','A-004'])
  assert.equal(releaseDay('2026-02-30'),'')
  assert.equal(durationMinutes('未知'),null)

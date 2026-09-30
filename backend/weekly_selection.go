@@ -13,7 +13,7 @@ import (
 )
 
 // Uses the existing watched file and flock shared with Worker maintenance.
-// Legacy records are browsed records; interest is a separate, optional decision.
+// Legacy intent fields remain readable, but new choices are no longer offered.
 func weeklySelectionHandler(w http.ResponseWriter, r *http.Request) {
 	weeklyWatchedMtx.Lock()
 	defer weeklyWatchedMtx.Unlock()
@@ -40,7 +40,7 @@ func weeklySelectionHandler(w http.ResponseWriter, r *http.Request) {
 		httpError(w, "Invalid ID", 400)
 		return
 	}
-	if request.Action != "view" && request.Action != "want" && request.Action != "dismiss" && request.Action != "clear" {
+	if request.Action != "view" {
 		httpError(w, "Invalid action", 400)
 		return
 	}
@@ -80,21 +80,7 @@ func weeklySelectionHandler(w http.ResponseWriter, r *http.Request) {
 	if !exists {
 		item = WeeklyWatchedRecord{ID: request.ID, WatchedAt: time.Now().Format(time.RFC3339), Reason: "viewed"}
 	}
-	switch request.Action {
-	case "want":
-		item.Interest = "want"
-	case "dismiss":
-		if item.Interest != "dismissed" {
-			item.WatchedAt = time.Now().Format(time.RFC3339)
-		}
-		item.Interest = "dismissed"
-	case "clear":
-		if item.Interest != "" {
-			item.WatchedAt = time.Now().Format(time.RFC3339)
-		}
-		item.Interest = ""
-	}
-	// Reopening a detail never cancels a selection or resets its retention clock.
+	// Reopening a detail never resets its retention clock or rewrites legacy fields.
 	if !exists || records[request.ID] != item {
 		records[request.ID] = item
 		if err := writeWeeklySelection(records); err != nil {

@@ -4,13 +4,13 @@
             <div>
                 <span>每日推荐</span>
                 <h1>{{ query.actor ? query.actor + '的已收录作品' : '筛选每日推荐' }}</h1>
-                <p>浏览只留记录；想看长期保留，不感兴趣可随时恢复。筛选不会修改永久屏蔽设置。</p>
+                <p>按字幕、演员、标签、时长和发行日期筛选已收录的作品。</p>
                 <button v-if="query.actor" class="filter-button" @click="change('actor', '')">返回全部演员</button>
             </div>
             <div class="weekly-count">{{ filteredVideos.length }} / {{ weeklyItems.length }} 项</div>
         </div>
         <div class="sub-tabs" aria-label="浏览状态">
-            <button v-for="[value, label] in tabs" :key="value" :class="['sub-tab', {active: (query.tab || 'unwatched') === value}]" @click="change('tab', value)">{{ label }}</button>
+            <button v-for="[value, label] in tabs" :key="value" :class="['sub-tab', {active: activeTab === value}]" @click="change('tab', value)">{{ label }}</button>
         </div>
         <section class="weekly-filters" aria-label="推荐筛选">
             <label>字幕<select :value="query.chinese || ''" @change="change('chinese', $event.target.value)"><option value="">全部</option><option value="yes">有中文字幕</option><option value="unknown">未确认中文</option></select></label>
@@ -35,7 +35,6 @@
                 <div class="cover-container" :class="{watched: selections[video.id]}">
                     <img class="cover" :src="video.cover || video.poster" :alt="video.title" loading="lazy">
                     <div v-if="video.hasChinese" class="badge chinese">中文</div>
-                    <div v-if="selections[video.id]?.interest === 'want'" class="watched-overlay">想看</div>
                 </div>
                 <div class="info"><h3>{{ displayTitle(video) }}</h3><div v-if="video.actresses?.length" class="actresses">{{ video.actresses.slice(0,2).join(' / ') }}</div><div class="selection-meta">{{ video.downloaded ? '已在本地' : video.queueStatus ? '队列中' : '已收录' }}</div></div>
             </div>
@@ -51,6 +50,7 @@ export default {
     data: () => ({ weeklyItems: [], selections: {}, favorites: [], loading: true, error: '', tabs: selectionTabs, loaded: false }),
     computed: {
         query() { return this.$route.query },
+        activeTab() { return ['unwatched', 'watched', 'all'].includes(this.query.tab) ? this.query.tab : 'unwatched' },
         actors() { return [...new Set([...this.weeklyItems.flatMap(v => v.actresses || []), ...(this.query.actor ? [this.query.actor] : [])])].sort() },
         genres() { return [...new Set(this.weeklyItems.flatMap(v => v.genres || []))].sort() },
         includes() { return String(this.query.include || '').split(',').filter(Boolean) },
@@ -183,9 +183,6 @@ export default {
 .badge.downloaded { bottom: 8px; right: 8px; background: rgba(40, 122, 67, 0.9); color: white; }
 .badge.undownloaded { bottom: 8px; right: 8px; background: rgba(186, 47, 93, 0.9); color: white; }
 .badge.chinese { top: 8px; left: 8px; background: rgba(161, 92, 0, 0.9); color: white; }
-
-/* Watched overlay */
-.watched-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 6px 14px; border-radius: 999px; font-size: 13px; font-weight: 800; background: rgba(53,36,44,0.72); color: white; z-index: 3; pointer-events: none; letter-spacing: 0; }
 
 /* Watch toggle button */
 .watch-toggle { position: absolute; top: 8px; right: 8px; min-width: 28px; height: 28px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.7); background: rgba(255,255,255,0.88); color: var(--secondary-color); font-size: 12px; font-weight: 800; cursor: pointer; z-index: 5; display: flex; align-items: center; justify-content: center; padding: 0 8px; line-height: 1; transition: all 0.18s ease; }

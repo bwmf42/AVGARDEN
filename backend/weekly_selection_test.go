@@ -9,14 +9,14 @@ import (
 	"testing"
 )
 
-func TestWeeklySelectionPreservesLegacyAndIntent(t *testing.T) {
+func TestWeeklySelectionRecordsBrowsingAndPreservesLegacy(t *testing.T) {
 	oldPath, oldBase := weeklyWatchedFile, basePath
 	defer func() { weeklyWatchedFile, basePath = oldPath, oldBase }()
 	basePath = t.TempDir()
 	weeklyWatchedFile = filepath.Join(basePath, "weekly_watched.json")
 	os.MkdirAll(filepath.Join(basePath, "__weekly__"), 0700)
 	os.WriteFile(filepath.Join(basePath, "__weekly__", "weekly.json"), []byte(`[{"id":"ABF-001"},{"id":"ABF-002"}]`), 0600)
-	os.WriteFile(weeklyWatchedFile, []byte(`{"items":[{"id":"ABF-001","watched_at":"2026-07-01T00:00:00Z","reason":"manual"}]}`), 0600)
+	os.WriteFile(weeklyWatchedFile, []byte(`{"items":[{"id":"ABF-001","watched_at":"2026-07-01T00:00:00Z","reason":"manual","interest":"want"}]}`), 0600)
 	call := func(id, action string, want int) {
 		t.Helper()
 		w := httptest.NewRecorder()
@@ -26,7 +26,6 @@ func TestWeeklySelectionPreservesLegacyAndIntent(t *testing.T) {
 			t.Fatalf("%s: %d %s", action, w.Code, w.Body.String())
 		}
 	}
-	call("ABF-001", "want", 200)
 	call("ABF-001", "view", 200)
 	call("ABF-002", "view", 200)
 	records := loadWeeklyWatchedStoreRecords()
@@ -40,17 +39,11 @@ func TestWeeklySelectionPreservesLegacyAndIntent(t *testing.T) {
 	if loadWeeklyWatchedStoreRecords()["ABF-001"].Interest != "want" {
 		t.Fatal("bookmark erased")
 	}
-	call("ABF-001", "dismiss", 200)
-	call("ABF-001", "view", 200)
-	if loadWeeklyWatchedStoreRecords()["ABF-001"].Interest != "dismissed" {
-		t.Fatal("view cleared dismissal")
-	}
-	call("ABF-001", "clear", 200)
-	if loadWeeklyWatchedStoreRecords()["ABF-001"].Interest != "" {
-		t.Fatal("restore failed")
-	}
-	call("ABF-999", "want", 404)
-	call("../bad", "want", 400)
+	call("ABF-999", "view", 404)
+	call("../bad", "view", 400)
+	call("ABF-001", "want", 400)
+	call("ABF-001", "dismiss", 400)
+	call("ABF-001", "clear", 400)
 	call("ABF-001", "delete", 400)
 	w := httptest.NewRecorder()
 	weeklySelectionHandler(w, httptest.NewRequest("GET", "/api/weekly-selection", nil))
@@ -59,5 +52,5 @@ func TestWeeklySelectionPreservesLegacyAndIntent(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 	os.WriteFile(weeklyWatchedFile, []byte(`{broken`), 0600)
-	call("ABF-001", "want", 500)
+	call("ABF-001", "view", 500)
 }
