@@ -21,6 +21,7 @@ test('combined filters use all included and any excluded tags',()=>{
  assert.deepEqual(ids({tab:'all',include:'Studio',exclude:'Drama'}),['A-003'])
  assert.deepEqual(ids({tab:'all',actor:'Actor A',duration:'unknown'}),['A-003'])
  assert.deepEqual(ids({tab:'all',availability:'queued'}),['A-004'])
+ assert.deepEqual(filterWeekly([{...items[0],hasFavoriteActress:true}],{tab:'all',fav:'1'},states,[]),[])
 })
 test('missing metadata never passes numeric/date bounds',()=>{
  assert.deepEqual(ids({tab:'all',from:'2026-09-02'}),[])

@@ -37,7 +37,7 @@ export function filterWeekly(items, query = {}, selections = {}, favorites = [])
         if (query.chinese === 'unknown' && item.hasChinese) return false
         const actors = item.actresses || []
         if (query.actor && !actors.some(a => nameKey(a) === nameKey(query.actor))) return false
-        if (query.fav === '1' && !item.hasFavoriteActress && !actors.some(a => fav.has(nameKey(a)))) return false
+        if (query.fav === '1' && !actors.some(a => fav.has(nameKey(a)))) return false
         const genres = item.genres || []
         if (!include.every(g => genres.includes(g)) || exclude.some(g => genres.includes(g))) return false
         const minutes = durationMinutes(item.duration)
