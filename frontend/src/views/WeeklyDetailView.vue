@@ -1155,6 +1155,7 @@ export default {
                         'info'
                     )
                     window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
+                    window.dispatchEvent(new CustomEvent('av-garden-weekly-refresh'))
                     return
                 }
 
@@ -1179,6 +1180,7 @@ export default {
                 this.queueErrorReason = ''
                 this.showToast(targetId + ' 已在下载队列中', 'info')
                 window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
+                window.dispatchEvent(new CustomEvent('av-garden-weekly-refresh'))
                 return
             }
 

@@ -6,7 +6,7 @@
 
 ## Unreleased
 
-- Reuse the Weekly list for one minute when returning from details, while refreshing watched/favorite state and invalidating the list immediately after preference changes.
+- Reuse the Weekly list for one minute when returning from details, while refreshing watched/favorite state and invalidating the list immediately after preference changes or successful queue additions. Ordinary detail status checks leave the list cache intact.
 - Clarified Weekly and download browsing: show tab counts and retryable load errors, keep partial search results and include tags, make preview and card actions keyboard/touch accessible, prioritize metadata on narrow detail screens, and keep qB/115 controls compact below it. Download management now separates cloud submissions, recent failures, and verified local completions; unknown progress is shown as indeterminate and local links use the real detail route.
 - Added durable removal for blocked actresses, genres, keywords, and favorite actresses. Settings now uses explicit DELETE requests, reports save failures, keeps each list beside its tab, and the server refreshes folded actress lookups immediately after changes.
 - Made queue deletion fail closed when qB is unavailable, a matching task is active, or removal fails; explicit file deletion now validates the exact query and media directory before touching files. Completion follow-ups retry failed writes, old completions stay out of the one-week view, qB outages preserve registrations, 115 submissions keep their own terminal state, and prolonged qB status failures no longer hold the Worker indefinitely.

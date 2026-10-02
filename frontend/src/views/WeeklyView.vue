@@ -60,19 +60,16 @@ export default {
     },
     async created() {
         window.addEventListener('av-garden-weekly-refresh', this.onWeeklyRefresh)
-        window.addEventListener('av-garden-refresh-status', this.invalidateWeekly)
         window.addEventListener('av-garden-selection', this.onSelection)
         await this.loadData()
     },
     async activated() { if (this.loaded) await this.loadData() },
     beforeUnmount() {
         window.removeEventListener('av-garden-weekly-refresh', this.onWeeklyRefresh)
-        window.removeEventListener('av-garden-refresh-status', this.invalidateWeekly)
         window.removeEventListener('av-garden-selection', this.onSelection)
     },
     methods: {
         onSelection(event) { this.selections = {...this.selections, [event.detail.id]: event.detail} },
-        invalidateWeekly() { this.lastWeeklyLoadedAt = 0 },
         onWeeklyRefresh() { return this.loadData(true) },
         async loadData(force = false) {
             const requestId = ++this.loadRequestId
