@@ -10,7 +10,7 @@
             <div class="weekly-count">{{ filteredVideos.length }} / {{ weeklyItems.length }} 项</div>
         </div>
         <div class="sub-tabs" aria-label="浏览状态">
-            <button v-for="[value, label] in tabs" :key="value" :class="['sub-tab', {active: activeTab === value}]" @click="change('tab', value)">{{ label }}</button>
+            <button v-for="[value, label] in tabs" :key="value" :class="['sub-tab', {active: activeTab === value}]" @click="change('tab', value)">{{ label }} ({{ tabCounts[value] }})</button>
         </div>
         <section class="weekly-filters" aria-label="推荐筛选">
             <label>字幕<select :value="query.chinese || ''" @change="change('chinese', $event.target.value)"><option value="">全部</option><option value="yes">有中文字幕</option><option value="unknown">未确认中文</option></select></label>
@@ -29,9 +29,9 @@
         </section>
         <p v-if="error" role="alert" class="selection-error">{{ error }} <button @click="loadData">重试</button></p>
         <div v-if="loading" class="loading">加载中...</div>
-        <div v-else-if="!filteredVideos.length" class="loading">没有符合条件的作品，可以调整筛选或切换浏览状态。</div>
+        <div v-else-if="!filteredVideos.length" class="loading">没有符合条件的作品。<button v-if="activeTab !== 'all' && tabCounts.all" class="filter-button" @click="change('tab', 'all')">查看全部</button></div>
         <div v-else class="video-grid">
-            <div v-for="video in filteredVideos" :key="video.id" class="video-card" role="button" tabindex="0" @click="openVideo(video)" @keydown.enter="openVideo(video)">
+            <div v-for="video in filteredVideos" :key="video.id" class="video-card" role="button" tabindex="0" @click="openVideo(video)" @keydown.enter.prevent="openVideo(video)" @keydown.space.prevent="openVideo(video)">
                 <div class="cover-container" :class="{watched: selections[video.id]}">
                     <img class="cover" :src="video.cover || video.poster" :alt="video.title" loading="lazy">
                     <div v-if="video.hasChinese" class="badge chinese">中文</div>
@@ -55,7 +55,8 @@ export default {
         genres() { return [...new Set(this.weeklyItems.flatMap(v => v.genres || []))].sort() },
         includes() { return String(this.query.include || '').split(',').filter(Boolean) },
         excludes() { return String(this.query.exclude || '').split(',').filter(Boolean) },
-        filteredVideos() { return filterWeekly(this.weeklyItems, this.query, this.selections, this.favorites) }
+        filteredVideos() { return filterWeekly(this.weeklyItems, this.query, this.selections, this.favorites) },
+        tabCounts() { return Object.fromEntries(this.tabs.map(([tab]) => [tab, filterWeekly(this.weeklyItems, {...this.query, tab}, this.selections, this.favorites).length])) }
     },
     async created() {
         window.addEventListener('av-garden-weekly-refresh', this.loadData)
@@ -72,12 +73,18 @@ export default {
         async loadData() {
             this.error = ''
             try {
-                const [items, states, favs] = await Promise.all([
+                const [items, states, favs] = await Promise.allSettled([
                     fetch('/api/weekly').then(r => { if (!r.ok) throw Error('推荐列表加载失败'); return r.json() }),
                     loadSelections(),
                     fetch('/api/fav-actress/').then(r => { if (!r.ok) throw Error('收藏演员加载失败'); return r.json() })
                 ])
-                this.weeklyItems = items; this.selections = states; this.favorites = favs
+                if (items.status !== 'fulfilled') throw items.reason
+                this.weeklyItems = Array.isArray(items.value) ? items.value : []
+                if (states.status === 'fulfilled') this.selections = states.value
+                if (favs.status === 'fulfilled') this.favorites = favs.value
+                if (states.status !== 'fulfilled' || favs.status !== 'fulfilled') {
+                    this.error = '推荐已加载；浏览记录或收藏状态暂不可用，相关筛选可能不准确。'
+                }
                 const context = readBrowseContext()
                 await this.$nextTick()
                 if (context && JSON.stringify(context.query) === JSON.stringify(this.query)) window.scrollTo(0, context.scroll || 0)

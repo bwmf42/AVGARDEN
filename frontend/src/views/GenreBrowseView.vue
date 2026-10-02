@@ -193,7 +193,9 @@ export default {
                 }
                 if (qResp.ok) {
                     const qItems = await qResp.json().catch(() => [])
-                    this.queueSet = new Set((Array.isArray(qItems) ? qItems : []).map(i => i.code))
+                    this.queueSet = new Set((Array.isArray(qItems) ? qItems : [])
+                        .filter(i => i.status === 'queued' || i.status === 'downloading')
+                        .map(i => i.code))
                 }
                 this.loadedTag = tag
             } catch (e) {

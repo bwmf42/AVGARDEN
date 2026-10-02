@@ -171,8 +171,9 @@
         </div>
 
         <div class="activity-card">
-          <strong>日志摘要</strong>
-          <p>日志页保留浅色表格和可读文本，不使用黑色终端块。</p>
+          <strong>运行日志</strong>
+          <p>查看最近的入队、下载与失败记录。</p>
+          <router-link class="activity-link" to="/logs">打开日志</router-link>
         </div>
       </aside>
     </div>
@@ -953,6 +954,14 @@ body {
   color: var(--muted-color);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.activity-link {
+  display: inline-block;
+  margin-top: 9px;
+  color: var(--secondary-color);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .muted-card {

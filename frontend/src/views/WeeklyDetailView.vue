@@ -75,14 +75,14 @@
                             <div v-if="video.genres && video.genres.length" class="section">
                                 <h3>标签</h3>
                                 <div class="tags">
-                                    <span v-for="g in video.genres" class="tag genre" @mouseenter="showGenreActions(g)" @mouseleave="hideGenreActions(g)">
+                                    <span v-for="g in video.genres" :key="g" class="tag genre">
                                         {{ g }}
                                         <template v-if="blockingGenre === g">
                                             <span class="block-confirm">屏蔽?</span>
                                             <button class="block-yes" :disabled="blockInFlight" @click.stop="doBlockGenre(g)">确认</button>
                                             <button class="block-no" :disabled="blockInFlight" @click.stop="blockingGenre = null">取消</button>
                                         </template>
-                                        <button v-else class="block-btn" :class="{ visible: hoverGenre === g }" :disabled="blockInFlight" @mouseenter.stop="showGenreActions(g)" @mouseleave.stop="hideGenreActions(g)" @click.stop="blockingGenre = g" title="屏蔽此标签">屏蔽</button>
+                                        <button v-else class="block-btn" :disabled="blockInFlight" @click.stop="blockingGenre = g" :aria-label="`屏蔽标签 ${g}`">屏蔽</button>
                                     </span>
                                 </div>
                             </div>
@@ -134,6 +134,7 @@
                                 <div v-if="queueState === 'queued'" class="btn-download queued">
                                     {{ lastQueueTarget === '115' ? '已加入 115 队列' : '已加入 qB 队列' }}
                                 </div>
+                                <div v-if="queueState === 'submitted_to_115'" class="btn-download queued">已提交 115 云端</div>
                                 <div v-if="queueState === 'downloading'" class="btn-download downloading">
                                     下载中 {{ queueProgress }}%
                                 </div>
@@ -157,9 +158,9 @@
                 <div v-if="fanartList.length" :key="`fanarts-${mediaKey}`" class="section preview-section">
                     <h3>预览图</h3>
                     <div class="fanarts-grid">
-                        <div v-for="(img, i) in fanartList" :key="`${video.id}-${i}-${img}`" class="fanart-item" @click="openLightbox(i)">
-                            <img :src="img" loading="lazy" class="fanart-img">
-                        </div>
+                        <button v-for="(img, i) in fanartList" :key="`${video.id}-${i}-${img}`" class="fanart-item" type="button" :aria-label="`查看第 ${i + 1} 张预览图`" @click="openLightbox(i)">
+                            <img :src="img" loading="lazy" class="fanart-img" alt="">
+                        </button>
                     </div>
                     <!-- Lightbox (like AV/GARDEN DetailView) -->
                     <div v-if="showLightbox" class="lightbox" @click="closeLightbox">
@@ -183,11 +184,12 @@
                     <h1 class="title">{{ id }}</h1>
                     <div class="title-meta">
                         <div class="code">{{ id }}</div>
-                        <div class="missing-badge">暂无刮削详情</div>
+                        <div class="missing-badge">{{ detailError ? '详情加载失败' : '暂无刮削详情' }}</div>
                     </div>
                 </div>
                 <div class="missing-content">
-                    <p>这个番号还没有出现在每日推荐的刮削数据里，当前只能显示队列状态。</p>
+                    <p>{{ detailError ? '推荐数据暂时无法读取，请重试。' : '这个番号还没有出现在每日推荐的刮削数据里，当前只能显示队列状态。' }}</p>
+                    <button v-if="detailError" class="btn-download" @click="loadRoute(id)">重试加载</button>
                     <div class="missing-status">
                         <span class="label">队列状态</span>
                         <span>{{ queueStateLabel }}</span>
@@ -249,6 +251,7 @@ export default {
             queueHint: '',
             queueAddToken: 0,
             lastQueueTarget: 'qb',
+            lastDirectQueueCheckAt: 0,
             p115Available: false,
             blockInFlight: false,
             blockingName: null,
@@ -261,6 +264,7 @@ export default {
             watchedSet: new Set(),
             markedVisible: false,
             detailMissing: false,
+            detailError: false,
             routeLoadToken: 0,
             routeLoading: false,
             navInFlight: false,
@@ -293,6 +297,7 @@ export default {
         queueStateLabel() {
             if (this.queueState === 'downloading') return `下载中 ${this.queueProgress}%`
             if (this.queueState === 'queued') return '等待中'
+            if (this.queueState === 'submitted_to_115') return '已提交 115 云端'
             if (this.queueState === 'failed') return '下载失败'
             if (this.queueState === 'adding') return '添加中'
             if (this.queueState === 'waiting_ready') return '等待服务就绪后加入'
@@ -374,6 +379,7 @@ export default {
 
                 this.loadFavActresses()
                 this.syncQueueState(window.avGardenQueueStatus || [], targetId)
+                this.syncDirectQueueState(targetId, true)
             } finally {
                 if (token === this.routeLoadToken) {
                     this.routeLoading = false
@@ -385,6 +391,7 @@ export default {
             const normalizedTarget = normalizeVideoID(targetId)
             const canonicalTarget = canonicalVideoID(targetId)
             this.detailMissing = false
+            this.detailError = false
             try {
                 if (this.isOnlineSource) {
                     return await this.loadOnlineDetail(canonicalTarget || normalizedTarget, token)
@@ -408,6 +415,8 @@ export default {
                 if (token !== this.routeLoadToken) return false
                 console.error(e)
                 this.detailMissing = true
+                this.detailError = true
+                this.video = null
                 return false
             }
         },
@@ -456,8 +465,8 @@ export default {
             if (this.isGenreBrowse) {
                 const tag = this.genreBrowseTag
                 const resp = await fetch('/api/weekly/by-genre/' + encodeURIComponent(tag))
-                if (!resp.ok) return []
-                const data = await resp.json().catch(() => [])
+                if (!resp.ok) throw new Error(`推荐详情加载失败 (${resp.status})`)
+                const data = await resp.json()
                 return Array.isArray(data) ? data : []
             }
             const now = Date.now()
@@ -473,7 +482,7 @@ export default {
             }
             if (!weeklyDetailCache.promise) {
                 weeklyDetailCache.promise = fetch('/api/weekly')
-                    .then(resp => resp.ok ? resp.json() : [])
+                    .then(resp => { if (!resp.ok) throw new Error(`推荐详情加载失败 (${resp.status})`); return resp.json() })
                     .then(data => Array.isArray(data) ? data : [])
                     .then(items => {
                         weeklyDetailCache = { items, fetchedAt: Date.now(), promise: null }
@@ -676,12 +685,15 @@ export default {
         },
         loadFavActresses() {
             if (!this.video?.actresses) return
-            this.video.actresses.forEach(a => {
-                fetch('/api/fav-actress/' + encodeURIComponent(a))
-                    .then(r => r.json())
-                    .then(d => { if (d.favorited) this.favActresses = { ...this.favActresses, [a]: true } })
-                    .catch(() => {})
-            })
+            const actresses = [...this.video.actresses]
+            fetch('/api/fav-actress/')
+                .then(r => { if (!r.ok) throw new Error('favorites unavailable'); return r.json() })
+                .then(names => {
+                    if (!Array.isArray(names)) return
+                    const selected = new Set(names)
+                    this.favActresses = Object.fromEntries(actresses.filter(a => selected.has(a)).map(a => [a, true]))
+                })
+                .catch(() => {})
         },
         async markWatched(id) {
             if (!id) return
@@ -743,6 +755,25 @@ export default {
         },
         handleGlobalStatus(e) {
             this.syncQueueState(e.detail?.items || [])
+            if (this.lastQueueTarget === '115' || this.queueState === 'submitted_to_115') this.syncDirectQueueState(this.id)
+        },
+        async syncDirectQueueState(targetId, force = false) {
+            if (!force && Date.now() - this.lastDirectQueueCheckAt < 15000) return
+            this.lastDirectQueueCheckAt = Date.now()
+            try {
+                const resp = await fetch('/api/queue/')
+                if (!resp.ok) return
+                const items = await resp.json()
+                if (normalizeVideoID(this.id) !== normalizeVideoID(targetId) || !Array.isArray(items)) return
+                const item = items.find(entry => normalizeVideoID(entry.code) === normalizeVideoID(targetId))
+                if (item?.status === 'submitted_to_115') {
+                    this.queueState = 'submitted_to_115'
+                    this.lastQueueTarget = '115'
+                    this.queueSubmittedAt = 0
+                } else if (!item && this.queueState === 'submitted_to_115') {
+                    this.queueState = 'idle'
+                }
+            } catch (e) { /* keep last known state */ }
         },
         showGenreActions(name) {
             if (this.genreHoverTimer) {
@@ -785,6 +816,7 @@ export default {
                     return
                 }
                 if (
+                    this.queueState !== 'submitted_to_115' &&
                     this.queueState !== 'adding' &&
                     this.queueState !== 'waiting_ready' &&
                     this.queueState !== 'error'
@@ -1354,14 +1386,14 @@ export default {
 .btn-play {
   display: block;
   text-align: center;
-  padding: 12px 14px;
+  padding: 8px 12px;
   border-radius: 8px;
   text-decoration: none;
   font-weight: 800;
   margin: 0;
   border: 1px solid var(--primary-color);
   font-size: 14px;
-  flex: 1 1 0;
+  flex: 0 0 auto;
   min-width: 0;
   line-height: 1.35;
   transition: all 0.18s ease;
@@ -1582,24 +1614,21 @@ export default {
 .tag.genre .block-confirm,
 .tag.genre .block-yes,
 .tag.genre .block-no {
-  position: absolute;
-  top: -30px;
-  z-index: 8;
+  position: static;
   white-space: nowrap;
-  box-shadow: var(--shadow-soft);
+  box-shadow: none;
 }
 
 .tag.genre .block-btn {
-  left: 50%;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateX(-50%) translateY(3px);
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
 }
 
 .tag.genre .block-btn.visible {
   opacity: 1;
   pointer-events: auto;
-  transform: translateX(-50%) translateY(0);
+  transform: none;
 }
 
 .tag.genre .block-confirm {
@@ -1708,6 +1737,8 @@ export default {
 }
 
 .fanart-item {
+  padding: 0;
+  background: var(--surface);
   border-radius: 8px;
   overflow: hidden;
   cursor: pointer;
@@ -1867,9 +1898,12 @@ export default {
     grid-template-columns: 1fr;
   }
 
+  .detail-side { order: 1; }
+  .poster-section { order: 2; min-height: 0; }
+
   .poster {
     width: 100%;
-    max-height: none;
+    max-height: 440px;
   }
 }
 

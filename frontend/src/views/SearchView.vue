@@ -4,6 +4,7 @@
             <h1>搜索结果</h1>
             <div class="query-pill">{{ query }}</div>
         </div>
+        <p v-if="loadError" role="alert">{{ loadError }} <button @click="loadData">重试</button></p>
 
         <div v-if="loading" class="loading">加载中...</div>
         <div v-else-if="!query" class="empty">请输入搜索内容</div>
@@ -15,7 +16,7 @@
             <div v-if="onlineResults.length" class="section">
                 <h2>在线作品 ({{ onlineResults.length }})</h2>
                 <div class="video-grid">
-                    <div v-for="video in onlineResults" :key="'online-' + video.id" class="video-card" @click="openResult(video)">
+                    <div v-for="video in onlineResults" :key="'online-' + video.id" class="video-card" role="button" tabindex="0" @click="openResult(video)" @keydown.enter.prevent="openResult(video)" @keydown.space.prevent="openResult(video)">
                         <div class="cover-container">
                             <img class="cover" :src="video.cover || video.poster || getDmmFallback(video)" :alt="video.title" loading="lazy">
                             <div class="source-badge online">在线</div>
@@ -35,7 +36,7 @@
             <div v-if="localResults.length" class="section">
                 <h2>本地片 ({{ localResults.length }})</h2>
                 <div class="video-grid">
-                    <div v-for="video in localResults" :key="'local-' + video.id" class="video-card" @click="openResult(video)">
+                    <div v-for="video in localResults" :key="'local-' + video.id" class="video-card" role="button" tabindex="0" @click="openResult(video)" @keydown.enter.prevent="openResult(video)" @keydown.space.prevent="openResult(video)">
                         <div class="cover-container">
                             <img class="cover local-cover" :src="video.poster || video.cover" :alt="video.title" loading="lazy">
                             <div class="source-badge local">本地</div>
@@ -53,7 +54,7 @@
             <div v-if="weeklyResults.length" class="section">
                 <h2>刮削片 ({{ weeklyResults.length }})</h2>
                 <div class="video-grid">
-                    <div v-for="video in weeklyResults" :key="'weekly-' + video.id" class="video-card" @click="openResult(video)">
+                    <div v-for="video in weeklyResults" :key="'weekly-' + video.id" class="video-card" role="button" tabindex="0" @click="openResult(video)" @keydown.enter.prevent="openResult(video)" @keydown.space.prevent="openResult(video)">
                         <div class="cover-container">
                             <img class="cover" :src="video.cover || video.poster || getDmmFallback(video)" :alt="video.title" loading="lazy">
                             <div class="source-badge weekly">刮削</div>
@@ -98,7 +99,8 @@ export default {
             localItems: [],
             weeklyItems: [],
             onlineResult: null,
-            onlineError: ''
+            onlineError: '',
+            loadError: ''
         }
     },
     computed: {
@@ -185,15 +187,23 @@ export default {
             this.onlineSearching = false
             this.onlineResult = null
             this.onlineError = ''
+            this.loadError = ''
             try {
-                const [local, weeklyResp] = await Promise.all([
+                const [local, weeklyResp] = await Promise.allSettled([
                     videosApi.getVideoList(),
                     fetch('/api/weekly')
                 ])
-                this.localItems = Array.isArray(local) ? local : []
-                this.weeklyItems = weeklyResp.ok ? await weeklyResp.json() : []
+                if (local.status === 'fulfilled') this.localItems = Array.isArray(local.value) ? local.value : []
+                if (weeklyResp.status === 'fulfilled' && weeklyResp.value.ok) {
+                    const items = await weeklyResp.value.json()
+                    this.weeklyItems = Array.isArray(items) ? items : []
+                }
+                if (local.status !== 'fulfilled' || weeklyResp.status !== 'fulfilled' || !weeklyResp.value?.ok) {
+                    this.loadError = '部分搜索数据暂不可用，当前结果可能不完整。'
+                }
             } catch (e) {
                 console.error(e)
+                this.loadError = '搜索数据暂不可用，请重试。'
             } finally {
                 this.loading = false
             }
@@ -245,7 +255,8 @@ export default {
                 video.title,
                 video.titleZh,
                 video.titleJp,
-                ...(Array.isArray(video.actresses) ? video.actresses : [])
+                ...(Array.isArray(video.actresses) ? video.actresses : []),
+                ...(Array.isArray(video.genres) ? video.genres : [])
             ]
             const compactQuery = compactText(q)
             return fields.some(field =>

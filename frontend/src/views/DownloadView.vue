@@ -3,8 +3,9 @@
         <h1 class="page-title">下载管理</h1>
         
         <div v-if="loading" class="loading">加载中...</div>
+        <p v-else-if="fetchError" class="empty" role="alert">{{ fetchError }} <button @click="fetchStatus">重试</button></p>
         
-        <div v-else-if="items.length === 0" class="empty">
+        <div v-else-if="items.length === 0 && failedItems.length === 0" class="empty">
             <p>队列为空</p>
             <p class="hint">在每日推荐详情页点「加入 qB」或「加入 115」即可添加</p>
         </div>
@@ -21,12 +22,11 @@
                                 <span class="code">{{ item.code }}</span>
                             </div>
                             <div v-if="item.status === 'downloading'" class="progress-section">
-                                <div class="progress-bar">
-                                    <div class="progress-fill" :style="{ width: progressWidth(item) + '%' }"></div>
+                                <div class="progress-bar" :class="{ indeterminate: !hasProgress(item) }">
+                                    <div class="progress-fill" :style="{ width: hasProgress(item) ? item.progress_pct + '%' : '35%' }"></div>
                                 </div>
                                 <div class="progress-info">
                                     <span v-if="item.speed > 0">{{ formatSpeed(item.speed) }}</span>
-                                    <span v-if="item.size > 0" class="eta-text">{{ formatETA(item) }}</span>
                                     <span class="size-text">{{ formatSize(item.size) }}</span>
                                     <span v-if="item.progress_pct > 0" class="pct-text">{{ item.progress_pct }}%</span>
                                 </div>
@@ -37,6 +37,22 @@
                         </div>
                     </div>
                 </div>
+            </div>
+
+            <div v-if="cloudItems.length" class="section">
+                <h2 class="section-title">已提交 115 ({{ cloudItems.length }})</h2>
+                <div class="queue-list"><div v-for="item in cloudItems" :key="item.code" class="queue-item">
+                    <div class="item-main"><div class="item-top"><span class="status-badge">云端</span><span class="code">{{ item.code }}</span></div><div class="done-info">已提交离线任务，云端进度请在 115 查看</div></div>
+                    <button class="btn-delete" @click="removeItem(item.code)">移出记录</button>
+                </div></div>
+            </div>
+
+            <div v-if="failedItems.length" class="section">
+                <h2 class="section-title">最近失败 ({{ failedItems.length }})</h2>
+                <div class="queue-list"><div v-for="item in failedItems" :key="item.id" class="queue-item failed">
+                    <div class="item-top"><span class="status-badge failed">失败</span><span class="code">{{ item.id }}</span></div>
+                    <router-link class="btn-view" :to="{ name: 'weekly-detail', params: { id: item.id } }">查看详情</router-link>
+                </div></div>
             </div>
 
             <!-- 已完成：折叠 -->
@@ -54,7 +70,7 @@
                             <div class="done-info">{{ formatSize(item.size) }}</div>
                         </div>
                         <div class="item-actions">
-                            <a class="btn-view" :href="'/' + item.code" target="_blank">查看</a>
+                            <router-link v-if="item.local_available" class="btn-view" :to="{ name: 'detail', params: { id: item.code } }">查看</router-link>
                             <button class="btn-delete" @click="removeItem(item.code)">移出记录</button>
                         </div>
                     </div>
@@ -70,6 +86,9 @@ export default {
     data() {
         return {
             items: [],
+            failedItems: [],
+            fetchError: '',
+            lastFailedFetchAt: 0,
             loading: true,
             pollTimer: null,
             showDone: false
@@ -81,6 +100,9 @@ export default {
         },
         doneItems() {
             return this.items.filter(i => i.status === 'done')
+        },
+        cloudItems() {
+            return this.items.filter(i => i.status === 'submitted_to_115')
         }
     },
     async created() {
@@ -94,26 +116,29 @@ export default {
         async fetchStatus() {
             try {
                 const resp = await fetch('/api/queue/')
-                if (resp.ok) {
-                    this.items = await resp.json()
+                if (!resp.ok) throw new Error('下载状态暂时无法读取')
+                this.items = await resp.json()
+                if (Date.now() - this.lastFailedFetchAt > 30000) {
+                    this.lastFailedFetchAt = Date.now()
+                    const status = await fetch('/api/queue-status').catch(() => null)
+                    if (status?.ok) {
+                        const data = await status.json()
+                        this.failedItems = Array.isArray(data.failed) ? data.failed : []
+                    }
                 }
+                this.fetchError = ''
             } catch (e) {
                 console.error('Queue fetch error:', e)
+                this.fetchError = '下载状态暂时无法读取，请重试。'
             }
             this.loading = false
         },
         statusText(item) {
-            const map = { 'queued': '等待中', 'downloading': 'qB 下载中', 'failed': '失败' }
+            const map = { 'queued': '等待中', 'downloading': 'qB 下载中', 'failed': '失败', 'submitted_to_115': '已提交 115' }
             return map[item.status] || item.status
         },
-        progressWidth(item) {
-            if (item.progress_pct === 100) return 100
-            if (item.progress_pct > 0) return item.progress_pct
-            if (item.size > 0) {
-                const est = Math.min(85, Math.max(5, item.size / (2 * 1024**3) * 100))
-                return Math.round(est)
-            }
-            return 5
+        hasProgress(item) {
+            return Number.isFinite(item.progress_pct) && item.progress_pct > 0
         },
         formatSize(bytes) {
             if (!bytes || bytes === 0) return ''
@@ -129,17 +154,6 @@ export default {
             if (bps < 1024*1024) return (bps/1024).toFixed(0) + ' KB/s'
             return (bps/1024/1024).toFixed(1) + ' MB/s'
         },
-        formatETA(item) {
-            if (!item.speed || item.speed === 0) return ''
-            if (!item.size || item.size === 0) return ''
-            const remaining = item.size * (100 - Math.min(99, item.progress_pct || 0)) / 100
-            const seconds = remaining / item.speed
-            if (seconds < 60) return Math.ceil(seconds) + 's'
-            if (seconds < 3600) return Math.ceil(seconds / 60) + 'm'
-            const h = Math.floor(seconds / 3600)
-            const m = Math.ceil((seconds % 3600) / 60)
-            return h + 'h' + (m > 0 ? m + 'm' : '')
-        },
         async removeItem(code) {
             if (!confirm(`确定将 ${code} 从下载管理中移出吗？\n不会删除已经下载的文件。`)) {
                 return
@@ -147,16 +161,17 @@ export default {
             try {
                 const resp = await fetch(`/api/queue/${encodeURIComponent(code)}`, { method: 'DELETE' })
                 if (!resp.ok) {
-                    throw new Error(`Delete failed: ${resp.status}`)
+                    const payload = await resp.json().catch(() => ({}))
+                    throw new Error(payload.error === 'qB task removal unavailable' ? 'qB 暂不可用，请稍后重试' : `移出失败 (${resp.status})`)
                 }
                 this.items = this.items.filter(i => i.code !== code)
                 window.dispatchEvent(new CustomEvent('av-garden-toast', {
-                    detail: { msg: `${code} 已停止并移出下载管理`, type: 'info' }
+                    detail: { msg: `${code} 已移出下载管理`, type: 'info' }
                 }))
             } catch (e) {
                 console.error(e)
                 window.dispatchEvent(new CustomEvent('av-garden-toast', {
-                    detail: { msg: `${code} 停止失败，请稍后重试`, type: 'warn' }
+                    detail: { msg: `${code} ${e.message || '移出失败，请稍后重试'}`, type: 'warn' }
                 }))
                 await this.fetchStatus()
             }
@@ -395,6 +410,15 @@ export default {
   background: linear-gradient(90deg, var(--info-color), var(--primary-color));
   border-radius: 999px;
   transition: width 1s ease;
+}
+
+.progress-bar.indeterminate .progress-fill {
+  animation: queue-progress 1.4s ease-in-out infinite alternate;
+}
+
+@keyframes queue-progress {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(280%); }
 }
 
 .progress-info {
