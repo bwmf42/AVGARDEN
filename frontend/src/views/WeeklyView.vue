@@ -27,7 +27,7 @@
             </details>
             <button class="filter-button" @click="$router.replace({name:'weekly',query:{tab:query.tab || 'unwatched'}})">清除筛选</button>
         </section>
-        <p v-if="error" role="alert" class="selection-error">{{ error }} <button @click="loadData">重试</button></p>
+        <p v-if="error" role="alert" class="selection-error">{{ error }} <button @click="loadData(true)">重试</button></p>
         <div v-if="loading" class="loading">加载中...</div>
         <div v-else-if="!filteredVideos.length" class="loading">没有符合条件的作品。<button v-if="activeTab !== 'all' && tabCounts.all" class="filter-button" @click="change('tab', 'all')">查看全部</button></div>
         <div v-else class="video-grid">
@@ -47,7 +47,7 @@ import { displayTitle } from '../utils/displayTitle'
 import { filterWeekly, selectionTabs, saveBrowseContext, readBrowseContext } from '../utils/weeklyFilters'
 export default {
     name: 'WeeklyView',
-    data: () => ({ weeklyItems: [], selections: {}, favorites: [], loading: true, error: '', tabs: selectionTabs, loaded: false }),
+    data: () => ({ weeklyItems: [], selections: {}, favorites: [], loading: true, error: '', tabs: selectionTabs, loaded: false, lastWeeklyLoadedAt: 0, loadRequestId: 0 }),
     computed: {
         query() { return this.$route.query },
         activeTab() { return ['unwatched', 'watched', 'all'].includes(this.query.tab) ? this.query.tab : 'unwatched' },
@@ -59,27 +59,37 @@ export default {
         tabCounts() { return Object.fromEntries(this.tabs.map(([tab]) => [tab, filterWeekly(this.weeklyItems, {...this.query, tab}, this.selections, this.favorites).length])) }
     },
     async created() {
-        window.addEventListener('av-garden-weekly-refresh', this.loadData)
+        window.addEventListener('av-garden-weekly-refresh', this.onWeeklyRefresh)
+        window.addEventListener('av-garden-refresh-status', this.invalidateWeekly)
         window.addEventListener('av-garden-selection', this.onSelection)
         await this.loadData()
     },
     async activated() { if (this.loaded) await this.loadData() },
     beforeUnmount() {
-        window.removeEventListener('av-garden-weekly-refresh', this.loadData)
+        window.removeEventListener('av-garden-weekly-refresh', this.onWeeklyRefresh)
+        window.removeEventListener('av-garden-refresh-status', this.invalidateWeekly)
         window.removeEventListener('av-garden-selection', this.onSelection)
     },
     methods: {
         onSelection(event) { this.selections = {...this.selections, [event.detail.id]: event.detail} },
-        async loadData() {
+        invalidateWeekly() { this.lastWeeklyLoadedAt = 0 },
+        onWeeklyRefresh() { return this.loadData(true) },
+        async loadData(force = false) {
+            const requestId = ++this.loadRequestId
             this.error = ''
             try {
+                const fetchWeekly = force === true || Date.now() - this.lastWeeklyLoadedAt > 60000
                 const [items, states, favs] = await Promise.allSettled([
-                    fetch('/api/weekly').then(r => { if (!r.ok) throw Error('推荐列表加载失败'); return r.json() }),
+                    fetchWeekly
+                        ? fetch('/api/weekly').then(r => { if (!r.ok) throw Error('推荐列表加载失败'); return r.json() })
+                        : Promise.resolve(this.weeklyItems),
                     loadSelections(),
                     fetch('/api/fav-actress/').then(r => { if (!r.ok) throw Error('收藏演员加载失败'); return r.json() })
                 ])
+                if (requestId !== this.loadRequestId) return
                 if (items.status !== 'fulfilled') throw items.reason
                 this.weeklyItems = Array.isArray(items.value) ? items.value : []
+                if (fetchWeekly) this.lastWeeklyLoadedAt = Date.now()
                 if (states.status === 'fulfilled') this.selections = states.value
                 if (favs.status === 'fulfilled') this.favorites = favs.value
                 if (states.status !== 'fulfilled' || favs.status !== 'fulfilled') {
@@ -88,8 +98,8 @@ export default {
                 const context = readBrowseContext()
                 await this.$nextTick()
                 if (context && JSON.stringify(context.query) === JSON.stringify(this.query)) window.scrollTo(0, context.scroll || 0)
-            } catch(e) { this.error = e.message }
-            finally { this.loading = false; this.loaded = true }
+            } catch(e) { if (requestId === this.loadRequestId) this.error = e.message }
+            finally { if (requestId === this.loadRequestId) { this.loading = false; this.loaded = true } }
         },
         change(key, value) {
             const query = {...this.query}

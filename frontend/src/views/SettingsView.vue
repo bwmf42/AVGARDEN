@@ -311,6 +311,7 @@ export default {
                     this.currentList.push(v)
                 }
                 this.newItem = ''
+                window.dispatchEvent(new CustomEvent('av-garden-weekly-refresh'))
             } catch (e) { window.dispatchEvent(new CustomEvent('av-garden-toast', { detail: { msg: e.message || '保存失败', type: 'warn' } })) }
         },
         async removeItem(item) {
@@ -320,6 +321,7 @@ export default {
                 if (!resp.ok) throw new Error(`移除失败 (${resp.status})`)
                 const idx = this.currentList.indexOf(item)
                 if (idx >= 0) this.currentList.splice(idx, 1)
+                window.dispatchEvent(new CustomEvent('av-garden-weekly-refresh'))
             } catch (e) { window.dispatchEvent(new CustomEvent('av-garden-toast', { detail: { msg: e.message || '移除失败', type: 'warn' } })) }
         },
         async runWeeklyScrape() {
