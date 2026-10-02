@@ -6,6 +6,7 @@
 
 ## Unreleased
 
+- Added durable removal for blocked actresses, genres, keywords, and favorite actresses. Settings now uses explicit DELETE requests, reports save failures, keeps each list beside its tab, and the server refreshes folded actress lookups immediately after changes.
 - Made queue deletion fail closed when qB is unavailable, a matching task is active, or removal fails; explicit file deletion now validates the exact query and media directory before touching files. Completion follow-ups retry failed writes, old completions stay out of the one-week view, qB outages preserve registrations, 115 submissions keep their own terminal state, and prolonged qB status failures no longer hold the Worker indefinitely.
 - Removed the redundant “看预览图” jump link from Weekly details; preview images remain directly below the metadata.
 - Added daily recommendation filters for browsing state, subtitles, actors and favorites, tags, duration, release date, and local availability, with the filtered order carried into detail browsing. Existing watched records remain browsed records. Removed the extra want-to-watch and not-interested choices and restored qB/115 controls below the metadata; legacy intent fields remain readable, but new choices cannot be created.

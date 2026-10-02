@@ -1994,15 +1994,39 @@ func blockActressHandler(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(keys)
 		return
 	}
-	if name == "" || r.Method != http.MethodPost {
+	if name == "" || (r.Method != http.MethodPost && r.Method != http.MethodDelete) {
 		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if err := appendBlockedActress(name); err != nil {
-		httpError(w, "Failed to block", http.StatusInternalServerError)
+	if r.Method == http.MethodDelete {
+		blockedListsMtx.Lock()
+		delete(blockedActresses, name)
+		err := rewriteActiveList(blockedActressesFile, blockedActresses)
+		if err != nil {
+			blockedActresses[name] = true
+		} else {
+			rebuildActressFoldMaps()
+		}
+		blockedListsMtx.Unlock()
+		if err != nil {
+			httpError(w, "Failed to unblock", http.StatusInternalServerError)
+			return
+		}
+		invalidateWeeklyCache()
+		json.NewEncoder(w).Encode(map[string]string{"status": "unblocked", "name": name})
 		return
 	}
 	blockedListsMtx.Lock()
+	if blockedActresses[name] {
+		blockedListsMtx.Unlock()
+		json.NewEncoder(w).Encode(map[string]string{"status": "blocked", "name": name})
+		return
+	}
+	if err := appendBlockedActress(name); err != nil {
+		blockedListsMtx.Unlock()
+		httpError(w, "Failed to block", http.StatusInternalServerError)
+		return
+	}
 	blockedActresses[name] = true
 	// keep fold index in sync so renamed/extracted spellings still match
 	if blockedActressFolds == nil {
@@ -2034,18 +2058,48 @@ func blockGenreHandler(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(keys)
 		return
 	}
-	if name == "" || r.Method != http.MethodPost {
+	if name == "" || (r.Method != http.MethodPost && r.Method != http.MethodDelete) {
 		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		blockedListsMtx.Lock()
+		delete(blockedGenres, name)
+		err := rewriteActiveList(blockedGenresFile, blockedGenres)
+		if err != nil {
+			blockedGenres[name] = true
+		}
+		blockedListsMtx.Unlock()
+		if err != nil {
+			httpError(w, "Failed to unblock", http.StatusInternalServerError)
+			return
+		}
+		invalidateWeeklyCache()
+		json.NewEncoder(w).Encode(map[string]string{"status": "unblocked", "name": name})
+		return
+	}
+	blockedListsMtx.Lock()
+	if blockedGenres[name] {
+		blockedListsMtx.Unlock()
+		json.NewEncoder(w).Encode(map[string]string{"status": "blocked", "name": name})
 		return
 	}
 	f, err := os.OpenFile(blockedGenresFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
+		blockedListsMtx.Unlock()
 		httpError(w, "Failed to block", http.StatusInternalServerError)
 		return
 	}
-	defer f.Close()
-	f.WriteString(name + "\n")
-	blockedListsMtx.Lock()
+	_, err = f.WriteString(name + "\n")
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		blockedListsMtx.Unlock()
+		httpError(w, "Failed to block", http.StatusInternalServerError)
+		return
+	}
 	blockedGenres[name] = true
 	blockedListsMtx.Unlock()
 	invalidateWeeklyCache()
@@ -2300,20 +2354,29 @@ func blockKeywordHandler(w http.ResponseWriter, r *http.Request) {
 		httpError(w, "Invalid keyword", http.StatusBadRequest)
 		return
 	}
-	if r.Method == http.MethodPost {
+	if r.Method == http.MethodPost || r.Method == http.MethodDelete {
 		blockedListsMtx.Lock()
-		if blockedKeywords[name] {
+		wasBlocked := blockedKeywords[name]
+		if wasBlocked || r.Method == http.MethodDelete {
 			delete(blockedKeywords, name)
 		} else {
 			blockedKeywords[name] = true
-			f, err := os.OpenFile(blockedKeywordsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err == nil {
-				f.WriteString(name + "\n")
-				f.Close()
+		}
+		err := rewriteActiveList(blockedKeywordsFile, blockedKeywords)
+		if err != nil {
+			if wasBlocked {
+				blockedKeywords[name] = true
+			} else {
+				delete(blockedKeywords, name)
 			}
 		}
 		blocked := blockedKeywords[name]
 		blockedListsMtx.Unlock()
+		if err != nil {
+			httpError(w, "Failed to save keyword", http.StatusInternalServerError)
+			return
+		}
+		invalidateWeeklyCache()
 		logger.Printf("Blocked keyword toggled: %s = %v", name, blocked)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(map[string]interface{}{"keyword": name, "blocked": blocked})
@@ -2342,21 +2405,31 @@ func favActressHandler(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]bool{"favorited": favActresses[name]})
 		return
 	}
-	if r.Method == http.MethodPost {
+	if r.Method == http.MethodPost || r.Method == http.MethodDelete {
 		blockedListsMtx.Lock()
-		if favActresses[name] {
-			favActresses[name] = false
-			rewriteFavFile(favActresses)
+		wasFavorite := favActresses[name]
+		if wasFavorite || r.Method == http.MethodDelete {
+			delete(favActresses, name)
 		} else {
 			favActresses[name] = true
-			f, err := os.OpenFile(favActressesFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err == nil {
-				f.WriteString(name + "\n")
-				f.Close()
+		}
+		err := rewriteActiveList(favActressesFile, favActresses)
+		if err != nil {
+			if wasFavorite {
+				favActresses[name] = true
+			} else {
+				delete(favActresses, name)
 			}
+		} else {
+			rebuildActressFoldMaps()
 		}
 		favorited := favActresses[name]
 		blockedListsMtx.Unlock()
+		if err != nil {
+			httpError(w, "Failed to save favorite", http.StatusInternalServerError)
+			return
+		}
+		invalidateWeeklyCache()
 		logger.Printf("Favorite actress toggled: %s = %v", name, favorited)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(map[string]interface{}{"name": name, "favorited": favorited})
@@ -2826,15 +2899,51 @@ func queueStatusHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-func rewriteFavFile(m map[string]bool) {
-	f, err := os.Create(favActressesFile)
-	if err != nil {
-		return
+func rewriteActiveList(path string, values map[string]bool) error {
+	keys := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	prior, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
 	}
-	defer f.Close()
-	for name, v := range m {
-		if v {
-			f.WriteString(name + "\n")
+	for _, raw := range strings.Split(string(prior), "\n") {
+		name := strings.TrimSpace(raw)
+		if values[name] && !seen[name] {
+			keys = append(keys, name)
+			seen[name] = true
 		}
 	}
+	extras := make([]string, 0)
+	for name, active := range values {
+		if active && !seen[name] {
+			extras = append(extras, name)
+		}
+	}
+	sort.Strings(extras)
+	keys = append(keys, extras...)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".avgarden-list-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if info, statErr := os.Stat(path); statErr == nil {
+		if err = tmp.Chmod(info.Mode().Perm()); err != nil {
+			tmp.Close()
+			return err
+		}
+	}
+	for _, name := range keys {
+		if _, err = tmp.WriteString(name + "\n"); err != nil {
+			tmp.Close()
+			return err
+		}
+	}
+	if err = tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }

@@ -3,9 +3,29 @@
         <h1 class="page-title">设置</h1>
 
         <div class="tabs">
-            <button v-for="t in tabs" :key="t.key" :class="['tab', { active: activeTab === t.key }]" @click="activeTab = t.key">
+            <button v-for="t in tabs" :key="t.key" :class="['tab', { active: activeTab === t.key }]" @click="activeTab = t.key; newItem = ''">
                 {{ t.label }}
             </button>
+        </div>
+
+        <div class="section">
+            <div class="add-row">
+                <input v-model="newItem" :placeholder="'添加' + currentTab.label" class="add-input"
+                    @keyup.enter="addItem" />
+                <button class="add-btn" @click="addItem">添加</button>
+            </div>
+
+            <div class="list">
+                <div v-for="item in currentList" :key="item" class="list-item">
+                    <span
+                        :class="{ 'item-link': activeTab === 'genres' }"
+                        :title="activeTab === 'genres' ? '浏览该标签作品' : undefined"
+                        @click="activeTab === 'genres' && browseGenre(item)"
+                    >{{ item }}</span>
+                    <button class="del-btn" @click="removeItem(item)">移除</button>
+                </div>
+                <div v-if="currentList.length === 0" class="empty">暂无</div>
+            </div>
         </div>
 
         <div class="section scrape-section">
@@ -101,25 +121,6 @@
             </button>
         </div>
 
-        <div class="section">
-            <div class="add-row">
-                <input v-model="newItem" :placeholder="'添加' + currentTab.label" class="add-input"
-                    @keyup.enter="addItem" />
-                <button class="add-btn" @click="addItem">添加</button>
-            </div>
-
-            <div class="list">
-                <div v-for="item in currentList" :key="item" class="list-item">
-                    <span
-                        :class="{ 'item-link': activeTab === 'genres' }"
-                        :title="activeTab === 'genres' ? '浏览该标签作品' : undefined"
-                        @click="activeTab === 'genres' && browseGenre(item)"
-                    >{{ item }}</span>
-                    <button class="del-btn" @click="removeItem(item)">移除</button>
-                </div>
-                <div v-if="currentList.length === 0" class="empty">暂无</div>
-            </div>
-        </div>
     </div>
 </template>
 
@@ -297,9 +298,11 @@ export default {
         async addItem() {
             const v = this.newItem.trim()
             if (!v) return
+            if (this.currentList.includes(v)) { this.newItem = ''; return }
             const url = ENDPOINTS[this.activeTab]
             try {
-                await fetch(url + encodeURIComponent(v), { method: 'POST' })
+                const resp = await fetch(url + encodeURIComponent(v), { method: 'POST' })
+                if (!resp.ok) throw new Error(`保存失败 (${resp.status})`)
                 if (this.activeTab === 'actresses') {
                     const idx = this.actresses.indexOf(v)
                     if (idx >= 0) this.actresses.splice(idx, 1)
@@ -308,15 +311,16 @@ export default {
                     this.currentList.push(v)
                 }
                 this.newItem = ''
-            } catch (e) { }
+            } catch (e) { window.dispatchEvent(new CustomEvent('av-garden-toast', { detail: { msg: e.message || '保存失败', type: 'warn' } })) }
         },
         async removeItem(item) {
             const url = ENDPOINTS[this.activeTab]
             try {
-                await fetch(url + encodeURIComponent(item), { method: 'POST' })
+                const resp = await fetch(url + encodeURIComponent(item), { method: 'DELETE' })
+                if (!resp.ok) throw new Error(`移除失败 (${resp.status})`)
                 const idx = this.currentList.indexOf(item)
                 if (idx >= 0) this.currentList.splice(idx, 1)
-            } catch (e) { }
+            } catch (e) { window.dispatchEvent(new CustomEvent('av-garden-toast', { detail: { msg: e.message || '移除失败', type: 'warn' } })) }
         },
         async runWeeklyScrape() {
             if (this.scrapeRunning) return

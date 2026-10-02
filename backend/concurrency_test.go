@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -73,5 +74,57 @@ func TestBlockActressResponseEscapesJSON(t *testing.T) {
 	}
 	if payload["name"] != `A"B` {
 		t.Fatalf("name = %q", payload["name"])
+	}
+}
+
+func TestPreferencesPersistRemovalAndRefreshFoldIndex(t *testing.T) {
+	configureBlockedListTestFiles(t)
+	request := func(method, path string, handler http.HandlerFunc) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler(response, httptest.NewRequest(method, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s %s: %d %s", method, path, response.Code, response.Body.String())
+		}
+	}
+	for _, entry := range []struct {
+		path, file string
+		handler    http.HandlerFunc
+	}{
+		{"/api/block-actress/Example", blockedActressesFile, blockActressHandler},
+		{"/api/block-genre/Example", blockedGenresFile, blockGenreHandler},
+	} {
+		request(http.MethodPost, entry.path, entry.handler)
+		request(http.MethodDelete, entry.path, entry.handler)
+		content, err := os.ReadFile(entry.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(content) != 0 {
+			t.Fatalf("unblocked entry remained in %s: %q", entry.file, content)
+		}
+	}
+	request(http.MethodPost, "/api/block-keyword/Example", blockKeywordHandler)
+	request(http.MethodDelete, "/api/block-keyword/Example", blockKeywordHandler)
+	content, err := os.ReadFile(blockedKeywordsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(content) != 0 {
+		t.Fatalf("keyword remained after removal: %q", content)
+	}
+	request(http.MethodPost, "/api/fav-actress/Example", favActressHandler)
+	if !isFavActressName("Example") {
+		t.Fatal("favorite fold index did not update on add")
+	}
+	request(http.MethodDelete, "/api/fav-actress/Example", favActressHandler)
+	if isFavActressName("Example") {
+		t.Fatal("favorite fold index remained after removal")
+	}
+	loadBlockedLists()
+	blockedListsMtx.RLock()
+	defer blockedListsMtx.RUnlock()
+	if blockedActresses["Example"] || blockedGenres["Example"] || blockedKeywords["Example"] || favActresses["Example"] {
+		t.Fatal("removed preference returned after reload")
 	}
 }
