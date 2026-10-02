@@ -6,7 +6,7 @@ AV/GARDEN Queue API v7 —
 """
 import contextlib, os, sys, json, signal, time, subprocess, re, shutil, threading, uuid
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from process_control import cancel_request_age, cleanup_stale_cancel_requests, clear_cancel_request, request_cancel
 from main_video import find_main_video
@@ -89,7 +89,7 @@ ACTIVE_STATE_STATUSES = frozenset({"queued", "downloading", "processing"})
 # Terminal rows explicitly end a lifecycle: they win over the short
 # "recently accepted" race-window protection.
 TERMINAL_STATE_STATUSES = frozenset(
-    {"done", "failed", "error", "cancelled", "canceled", "completed", "complete", "skipped"}
+    {"done", "failed", "error", "cancelled", "canceled", "completed", "complete", "skipped", "submitted_to_115"}
 )
 
 
@@ -709,12 +709,13 @@ def qb_api(endpoint):
     return qb_request(endpoint)
 
 
-def qb_remove_code(code, delete_files=False):
-    """Remove qBittorrent tasks for a code with safety checks."""
+def qb_remove_code(code, delete_files=False, *, detailed=False):
+    """Remove matching qB tasks. Detailed result distinguishes absence from failure."""
     torrents = qb_api("/api/v2/torrents/info")
     if not isinstance(torrents, list):
-        return False
+        return "unavailable" if detailed else False
     hashes = []
+    refused = False
     for torrent in torrents:
         tags = {tag.strip().upper() for tag in str(torrent.get("tags", "")).split(",") if tag.strip()}
         candidates = set()
@@ -728,16 +729,19 @@ def qb_remove_code(code, delete_files=False):
                         candidates.add(normalized)
         if code in tags or code in candidates:
             torrent_hash = str(torrent.get("hash", "")).strip()
+            if delete_files and not torrent_hash:
+                refused = True
             if torrent_hash:
                 # Safety check before allowing file deletion
                 if delete_files:
                     state = str(torrent.get("state", ""))
                     content_path = str(torrent.get("content_path", ""))
-                    save_path_env = os.environ.get("SAVE_PATH", "/data")
+                    save_path_env = SAVE_PATH
 
                     # Refuse deletion if torrent is active or seeding
-                    if state in ("downloading", "stalledDL", "metaDL", "checkingDL", "checkingResumeData", "uploading", "stalledUP", "queuedUP", "checkingUP", "forcedUP"):
+                    if state not in ("stoppedDL", "pausedDL", "stoppedUP", "pausedUP", "error", "missingFiles"):
                         log(f"Refuse to delete files for active/seeding torrent {code} (state={state})")
+                        refused = True
                         continue
 
                     # Verify content_path is within SAVE_PATH
@@ -747,25 +751,48 @@ def qb_remove_code(code, delete_files=False):
                             real_content = os.path.realpath(content_path)
                             if os.path.commonpath([real_save, real_content]) != real_save:
                                 log(f"Refuse to delete files outside SAVE_PATH: {content_path}")
-                                delete_files = False
+                                refused = True
                         except (ValueError, OSError) as e:
                             log(f"Path validation failed for {content_path}: {e}")
-                            delete_files = False
+                            refused = True
 
                     # Check if content_path is used by other torrents
-                    if content_path and delete_files:
+                    if content_path:
                         for other in torrents:
                             if other.get("hash") == torrent_hash:
                                 continue
                             other_path = str(other.get("content_path", ""))
                             if other_path and os.path.realpath(other_path) == os.path.realpath(content_path):
                                 log(f"Refuse to delete {content_path}: shared by torrent {other.get('hash', 'unknown')[:12]}")
-                                delete_files = False
+                                refused = True
                                 break
 
                 hashes.append(torrent_hash)
+    if refused:
+        return "refused" if detailed else False
+    if delete_files:
+        code_dir = os.path.realpath(get_code_dir(code))
+        real_save = os.path.realpath(SAVE_PATH)
+        try:
+            inside_save = os.path.commonpath([real_save, code_dir]) == real_save
+        except (ValueError, OSError):
+            inside_save = False
+        if not inside_save:
+            return "refused" if detailed else False
+        for torrent in torrents:
+            if str(torrent.get("hash") or "") in hashes:
+                continue
+            for key in ("content_path", "save_path"):
+                path = str(torrent.get(key) or "")
+                try:
+                    overlaps = bool(path) and os.path.commonpath([code_dir, os.path.realpath(path)]) == code_dir
+                except (ValueError, OSError):
+                    overlaps = True
+                if overlaps:
+                    log(f"Refuse to delete {code_dir}: used by another torrent")
+                    return "refused" if detailed else False
     if not hashes:
-        return False
+        return "not_found" if detailed else False
 
     # Audit log before deletion
     if delete_files:
@@ -773,12 +800,10 @@ def qb_remove_code(code, delete_files=False):
 
     result = qb_request(
         "/api/v2/torrents/delete",
-        {"hashes": "|".join(hashes), "deleteFiles": "true" if delete_files else "false"},
+        {"hashes": "|".join(hashes), "deleteFiles": "false"},
     )
-    if delete_files and result is True:
-        log(f"Deleted qB task(s) for {code} with files (hashes={len(hashes)})")
-        log_write("Cleanup", f"{code} qB任务及文件已删除 (hashes={len(hashes)})")
-    return result is True
+    status = "removed" if result is True else "failed"
+    return status if detailed else status == "removed"
 
 
 def get_qb_progress(save_dir, torrents=None):
@@ -880,6 +905,15 @@ def is_recent_timestamp(value):
         return True
     return ts >= time.time() - HISTORY_RETENTION_DAYS * 86400
 
+def recent_main_video_path(code):
+    path = find_mp4_path(code)
+    if not path:
+        return None
+    try:
+        return path if os.path.getmtime(path) >= time.time() - HISTORY_RETENTION_DAYS * 86400 else None
+    except OSError:
+        return None
+
 def prune_history(items):
     if not isinstance(items, list):
         return []
@@ -900,13 +934,18 @@ def append_history(code, size):
     """追加一条完成记录（去重）"""
     history = load_history()
     if code in [h["code"] for h in history]:
-        return
+        return True
+    main_video = find_mp4_path(code)
+    completed_at = os.path.getmtime(main_video) if main_video else time.time()
+    if not is_recent_timestamp(completed_at):
+        return True
     history.append({
         "code": code,
         "size": size,
-        "completed_at": time.strftime("%Y-%m-%d %H:%M:%S")
+        "completed_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(completed_at))
     })
     save_history(history)
+    return True
 
 def run_post_download_actions(code, size):
     """Idempotent post-download side effects (safe to repeat after a crash).
@@ -1014,6 +1053,7 @@ def start_weekly_scrape():
 def clear_failure_record(code):
     """重新入队时清理旧失败/重试记录，避免刚添加就显示失败。"""
     code = code.upper().strip()
+    succeeded = True
     try:
         update_json(
             FAILED_QUEUE_JSON_PATH,
@@ -1023,11 +1063,13 @@ def clear_failure_record(code):
         )
     except Exception as e:
         log(f"Failed to clear failed_queue.json for {code}: {e}")
+        succeeded = False
 
     try:
         remove_code(FAILED_QUEUE_PATH, code)
     except Exception as e:
         log(f"Failed to clear failed_queue.txt for {code}: {e}")
+        succeeded = False
 
     try:
         def clear_retry_value(retries):
@@ -1037,6 +1079,8 @@ def clear_failure_record(code):
         update_json(RETRY_PATH, {}, clear_retry_value)
     except Exception as e:
         log(f"Failed to clear retry count for {code}: {e}")
+        succeeded = False
+    return succeeded
 
 
 def load_failure_codes():
@@ -1217,7 +1261,7 @@ def get_ts_duration_seconds(ts_path):
 def update_weekly_json_downloaded(code):
     """Update weekly.json: set downloaded=true for this code"""
     if not os.path.exists(WEEKLY_JSON):
-        return False
+        return None
     changed = False
     try:
         def mark_downloaded(items):
@@ -1234,9 +1278,10 @@ def update_weekly_json_downloaded(code):
         if changed:
             log(f"Updated weekly.json: {code} downloaded=true")
             return True
+        return None
     except Exception as e:
         log(f"Failed to update weekly.json: {e}")
-    return False
+        return False
 
 def write_to_missav_db(code):
     """Write to AV/GARDEN SQLite MissAV table so it shows on homepage"""
@@ -1281,7 +1326,7 @@ def write_to_missav_db(code):
         act_list = json.loads(actresses) if isinstance(actresses, str) else actresses
         if any(_actress_is_blocked(a) for a in (act_list or [])):
             log(f"Blocked: {code} (actress in blocklist)")
-            return False
+            return True  # Intentional skip, not a transient database failure.
 
         # Insert into MissAV table
         now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -1849,7 +1894,8 @@ class QueueHandler(BaseHTTPRequestHandler):
 
         # Phase B — slow/external work runs unlocked; one qB snapshot per request.
         qb_torrents = qb_api("/api/v2/torrents/info")
-        if not isinstance(qb_torrents, list):
+        qb_available = isinstance(qb_torrents, list)
+        if not qb_available:
             qb_torrents = []
         mutations = []
         
@@ -1969,7 +2015,7 @@ class QueueHandler(BaseHTTPRequestHandler):
             if c in result:
                 continue  # Already in result from queue.txt or qB
 
-            if is_stale_heal_ghost(
+            if qb_available and is_stale_heal_ghost(
                 item, qb_codes=qb_codes, is_locked=is_locked, current_code=current_code
             ):
                 log(f"Removing stale heal ghost: {c} (status={item.get('status')})")
@@ -1987,11 +2033,14 @@ class QueueHandler(BaseHTTPRequestHandler):
                 if item.get("status") != "done":
                     mutations.append(("mark_done", c, item.get("status")))
                     item["status"] = "done"
+            elif item.get("status") == "submitted_to_115":
+                if is_recent_timestamp(item.get("submitted_at") or item.get("added_at")):
+                    result[c] = {"code": c, "status": "submitted_to_115", "target": "115", "size": 0, "speed": 0, "progress_pct": 0}
             elif item.get("status") == "downloading" and not is_locked:
                 # Stale download: no mp4, no active lock, not in qB → clean
                 has_ts = find_ts_path(c) is not None
                 dir_size = get_dir_size(get_code_dir(c)) if os.path.isdir(get_code_dir(c)) else 0
-                if not has_ts and dir_size == 0 and c not in qb_codes:
+                if qb_available and not has_ts and dir_size == 0 and c not in qb_codes:
                     log(f"Removing stale download state: {c} (no files, no lock, not in qB)")
                     mutations.append(("remove_state", c, item.get("status"), item.get("added_at")))
                     state = [s for s in state if s["code"] != c]
@@ -2001,7 +2050,7 @@ class QueueHandler(BaseHTTPRequestHandler):
                     result[c] = {"code": c, "status": item.get("status", "queued"), **info}
             elif item.get("status") == "queued" and c not in queue_codes:
                 # Keep registration if still in qB (e.g. queuedDL) or worker current
-                if c in qb_codes or c == current_code:
+                if not qb_available or c in qb_codes or c == current_code:
                     result[c] = {
                         "code": c,
                         "status": "queued",
@@ -2021,7 +2070,7 @@ class QueueHandler(BaseHTTPRequestHandler):
                     }
                     continue
                 # Orphan: only scraped sidecar under __weekly__ etc., no real job
-                if find_ts_path(c) is None:
+                if qb_available and find_ts_path(c) is None:
                     log(f"Removing stale queued state: {c} (not in queue/qB/current)")
                     mutations.append(("remove_state", c, item.get("status"), item.get("added_at")))
                     state = [s for s in state if s["code"] != c]
@@ -2040,6 +2089,8 @@ class QueueHandler(BaseHTTPRequestHandler):
         # Check for newly completed items → trigger post-download actions
         for c in list(result.keys()):
             if result[c]["status"] == "done":
+                if not recent_main_video_path(c):
+                    continue  # Legacy completion; preserve state without replaying old side effects.
                 # Decide only — the completion mark is written *after* the
                 # (idempotent) side effects so a crash can never skip them.
                 state_item = next((s for s in state if s["code"] == c), None)
@@ -2069,8 +2120,15 @@ class QueueHandler(BaseHTTPRequestHandler):
                 }
         
         # Sort: downloading, queued, done
-        order = {"downloading": 0, "queued": 1, "done": 2}
-        sorted_result = sorted(result.values(), key=lambda x: order.get(x["status"], 9))
+        order = {"downloading": 0, "queued": 1, "submitted_to_115": 2, "done": 3}
+        visible = []
+        for entry in result.values():
+            if entry["status"] == "done":
+                if not recent_main_video_path(entry["code"]):
+                    continue
+                entry["local_available"] = True
+            visible.append(entry)
+        sorted_result = sorted(visible, key=lambda x: order.get(x["status"], 9))
 
         # Phase C — commit only revalidated local mutations under a short lock;
         # the heavier post-download writes then run unlocked.
@@ -2082,13 +2140,16 @@ class QueueHandler(BaseHTTPRequestHandler):
         # Phase B2 — post-download side effects, unlocked and idempotent.
         # The completion mark is *not* written yet: if the process dies here the
         # next GET simply repeats these (safe to repeat) operations.
+        succeeded_actions = []
         for code, size in post_actions:
             log(f"Post-download actions for {code}")
-            run_post_download_actions(code, size)
-        if post_actions:
+            results = run_post_download_actions(code, size)
+            if all(results.get(name) is not False for name in ("weekly", "db", "history", "clear_failure")):
+                succeeded_actions.append((code, size))
+        if succeeded_actions:
             # Phase C2 — revalidate and finalise the completion mark.
             with queue_state_critical("get.post_done"):
-                self._mark_post_done(post_actions, snapshot)
+                self._mark_post_done(succeeded_actions, snapshot)
 
         self._json(sorted_result)
 
@@ -2381,12 +2442,14 @@ class QueueHandler(BaseHTTPRequestHandler):
             else:
                 existing["status"] = "queued"
                 existing["target"] = target
-                if not existing.get("added_at"):
-                    existing["added_at"] = time.time()
+                existing["added_at"] = time.time()  # New lifecycle for GET revalidation.
                 # New lifecycle: let the next completion run post-download
                 # actions again (they are idempotent).
                 existing.pop("_post_done", None)
                 existing.pop("_post_done_pending", None)
+                existing.pop("_post_done_at", None)
+                existing.pop("_post_done_size", None)
+                existing.pop("submitted_at", None)
             return state
 
         update_state(add_or_update_code)
@@ -2422,19 +2485,22 @@ class QueueHandler(BaseHTTPRequestHandler):
         if not code:
             self._json({"error": "invalid code"}, 400)
             return
-        delete_files = "delete_files=1" in (parsed.query or "")
+        values = parse_qs(parsed.query, keep_blank_values=True)
+        if any(key != "delete_files" for key in values) or values.get("delete_files", ["0"]) not in (["0"], ["1"]):
+            self._json({"error": "invalid query"}, 400)
+            return
+        delete_files = values.get("delete_files") == ["1"]
+        if delete_files and get_lock():
+            self._json({"error": "active worker; cannot delete files"}, 409)
+            return
         request_cancel(code)
-        qb_removed = qb_remove_code(code, delete_files=delete_files)
+        qb_status = qb_remove_code(code, delete_files=delete_files, detailed=True)
+        if qb_status in ("unavailable", "refused", "failed"):
+            clear_cancel_request(code)
+            self._json({"error": f"qB task removal {qb_status}"}, 409 if qb_status == "refused" else 503)
+            return
+        qb_removed = qb_status == "removed"
 
-        def remove_code_from_state(state):
-            return [s for s in state if s["code"] != code]
-        update_state(remove_code_from_state)
-
-        remove_code(QUEUE_PATH, code)
-        clear_download_target(DOWNLOAD_TARGETS_PATH, code)
-
-        clear_current_download(code)
-        
         # 默认只移出队列/状态；显式 delete_files=1 才删除磁盘文件。
         files_deleted = False
         delete_error = ""
@@ -2443,15 +2509,27 @@ class QueueHandler(BaseHTTPRequestHandler):
                 # 忽略系统目录
                 code_dir = get_code_dir(code)
                 dirname = os.path.basename(code_dir.rstrip("/"))
-                if dirname in ("__weekly__", "thumb"):
-                    log(f"Cannot delete system directory: {dirname}")
-                else:
-                    shutil.rmtree(code_dir)
-                    log(f"Deleted files: {code_dir}")
-                    files_deleted = True
+                real_save = os.path.realpath(SAVE_PATH)
+                real_dir = os.path.realpath(code_dir)
+                if dirname in ("__weekly__", "thumb") or os.path.islink(code_dir) or os.path.commonpath([real_save, real_dir]) != real_save:
+                    raise ValueError(f"unsafe media directory: {code_dir}")
+                shutil.rmtree(code_dir)
+                log(f"Deleted files: {code_dir}")
+                files_deleted = True
             except Exception as e:
                 log(f"Delete failed: {e}")
                 delete_error = str(e)
+
+        if delete_error:
+            self._json({"error": "file deletion failed", "detail": delete_error, "code": code, "qb_removed": qb_removed}, 500)
+            return
+
+        def remove_code_from_state(state):
+            return [s for s in state if s["code"] != code]
+        update_state(remove_code_from_state)
+        remove_code(QUEUE_PATH, code)
+        clear_download_target(DOWNLOAD_TARGETS_PATH, code)
+        clear_current_download(code)
         
         self._json({
             "status": "removed",

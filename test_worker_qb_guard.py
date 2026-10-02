@@ -13,6 +13,20 @@ except (ImportError, OSError):
 
 
 class WorkerQBGuardTest(unittest.TestCase):
+    @unittest.skipUnless(worker is not None, "requires the Worker container runtime")
+    def test_qb_status_outage_stops_waiting_after_total_timeout(self):
+        def qb(method, endpoint, data=None):
+            return True if method == "POST" else None
+        ticks = iter([0, 7201])
+        with mock.patch.object(worker, "qbittorrent_api", side_effect=qb), mock.patch.object(
+            worker, "is_cancel_requested", return_value=False
+        ), mock.patch.object(worker.time, "time", side_effect=lambda: next(ticks, 7201)), mock.patch.object(
+            worker.time, "sleep"
+        ) as sleep:
+            status, _ = worker.try_magnet_download("HUNTC-583", "/data/HUNTC-583", "magnet:?xt=urn:btih:test")
+        self.assertEqual(status, worker.MAGNET_PENDING)
+        sleep.assert_not_called()
+
     def test_shutdown_leaves_qb_torrent_user_cancel_still_drops(self):
         self.assertEqual(magnet_watch_interrupt(False, True), "")
         self.assertEqual(magnet_watch_interrupt(True, True), "cancel")

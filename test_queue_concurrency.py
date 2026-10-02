@@ -170,7 +170,11 @@ class QueueConcurrencyTest(unittest.TestCase):
             conn.close()
         original_find = queue_api.find_mp4_path
         original_size = queue_api.get_file_size
-        queue_api.find_mp4_path = lambda c: f"/virtual/{c}.mp4" if str(c).upper() == code.upper() else None
+        video_path = os.path.join(queue_api.SAVE_PATH, code, "main.mp4")
+        os.makedirs(os.path.dirname(video_path), exist_ok=True)
+        with open(video_path, "wb") as handle:
+            handle.write(b"test")
+        queue_api.find_mp4_path = lambda c: video_path if str(c).upper() == code.upper() else None
         queue_api.get_file_size = lambda path: size
         self.addCleanup(setattr, queue_api, "find_mp4_path", original_find)
         self.addCleanup(setattr, queue_api, "get_file_size", original_size)
@@ -485,6 +489,26 @@ class QueueConcurrencyTest(unittest.TestCase):
         self.assertEqual(len(self.history()), 1)
         self.assertEqual(self.db_rows(code), 1)
         self.assertNotIn("Post-download actions for", buf.getvalue())
+
+    def test_post_done_waits_for_database_success_then_retries(self):
+        code = "SYN-803"
+        self.seed_completed_sources(code)
+        self.write_state([{"code": code, "status": "queued", "added_at": time.time()}])
+        original = queue_api.write_to_missav_db
+        calls = {"count": 0}
+        def fail_once(value):
+            calls["count"] += 1
+            return False if calls["count"] == 1 else original(value)
+        queue_api.write_to_missav_db = fail_once
+        try:
+            self.queue_payload()
+            self.assertFalse(self.state_item(code).get("_post_done"))
+            self.queue_payload()
+            self.assertTrue(self.state_item(code).get("_post_done"))
+            self.assertEqual(calls["count"], 2)
+            self.assertEqual(self.db_rows(code), 1)
+        finally:
+            queue_api.write_to_missav_db = original
 
     # -- N: terminal state vs recent_accept --------------------------
     def test_n1_terminal_state_allows_requeue_within_accept_window(self):

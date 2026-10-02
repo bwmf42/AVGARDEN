@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 import urllib.request
+import urllib.error
 import time
 import sqlite3
 from contextlib import ExitStack
@@ -174,13 +175,124 @@ class QueueAPITest(unittest.TestCase):
     def test_delete_requests_cancel_and_removes_queue_record(self):
         append_unique(self.queue_path, "OMG-032")
         write_json(self.state_path, [{"code": "OMG-032", "status": "queued"}])
-        with patch.object(queue_api, "qb_remove_code", return_value=True):
+        with patch.object(queue_api, "qb_remove_code", return_value="removed"):
             status, payload = self.request("/api/queue/OMG032", method="DELETE")
         self.assertEqual(status, 200)
         self.assertTrue(payload["cancel_requested"])
         self.assertTrue(payload["qb_removed"])
         self.assertEqual(read_queue(self.queue_path), [])
         self.assertTrue(os.path.exists(os.path.join(self.temp_dir.name, "cancel_requests", "OMG-032")))
+
+    def test_delete_files_rejects_active_qb_task_without_mutating_queue_or_disk(self):
+        code = "OMG-032"
+        append_unique(self.queue_path, code)
+        write_json(self.state_path, [{"code": code, "status": "queued"}])
+        code_dir = os.path.join(self.save_path, code)
+        os.makedirs(code_dir)
+        with open(os.path.join(code_dir, "main.mp4"), "wb") as handle:
+            handle.write(b"keep")
+        torrents = [{"hash": "active", "tags": code, "state": "downloading", "content_path": code_dir}]
+        with patch.object(queue_api, "qb_api", return_value=torrents), patch.object(queue_api, "qb_request") as remove:
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request(f"/api/queue/{code}?delete_files=1", method="DELETE")
+        self.assertEqual(error.exception.code, 409)
+        remove.assert_not_called()
+        self.assertEqual(read_queue(self.queue_path), [code])
+        self.assertTrue(os.path.exists(os.path.join(code_dir, "main.mp4")))
+
+    def test_delete_rejects_qb_outage_and_malformed_query(self):
+        code = "OMG-032"
+        append_unique(self.queue_path, code)
+        with patch.object(queue_api, "qb_api", return_value=None):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request(f"/api/queue/{code}", method="DELETE")
+        self.assertEqual(error.exception.code, 503)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request(f"/api/queue/{code}?not_delete_files=1", method="DELETE")
+        self.assertEqual(error.exception.code, 400)
+        self.assertEqual(read_queue(self.queue_path), [code])
+
+    def test_delete_rejects_qb_removal_failure(self):
+        code = "OMG-032"
+        append_unique(self.queue_path, code)
+        write_json(self.state_path, [{"code": code, "status": "queued"}])
+        with patch.object(queue_api, "qb_api", return_value=[{"hash": "matching", "tags": code, "state": "stoppedDL"}]), patch.object(
+            queue_api, "qb_request", return_value=None
+        ):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request(f"/api/queue/{code}", method="DELETE")
+        self.assertEqual(error.exception.code, 503)
+        self.assertEqual(read_queue(self.queue_path), [code])
+        self.assertEqual(len(queue_api.load_state()), 1)
+
+    def test_delete_files_without_qb_task_removes_only_code_directory(self):
+        code = "OMG-032"
+        append_unique(self.queue_path, code)
+        code_dir = os.path.join(self.save_path, code)
+        os.makedirs(code_dir)
+        with open(os.path.join(code_dir, "main.mp4"), "wb") as handle:
+            handle.write(b"delete")
+        sibling = os.path.join(self.save_path, "OTHER-001")
+        os.makedirs(sibling)
+        with patch.object(queue_api, "qb_api", return_value=[]):
+            status, payload = self.request(f"/api/queue/{code}?delete_files=1", method="DELETE")
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["files_deleted"])
+        self.assertFalse(os.path.exists(code_dir))
+        self.assertTrue(os.path.isdir(sibling))
+
+    def test_delete_files_removes_stopped_qb_record_before_local_directory(self):
+        code = "OMG-032"
+        code_dir = os.path.join(self.save_path, code)
+        os.makedirs(code_dir)
+        with open(os.path.join(code_dir, "main.mp4"), "wb") as handle:
+            handle.write(b"delete")
+        torrent = {"hash": "stopped", "tags": code, "state": "stoppedDL", "content_path": code_dir}
+        with patch.object(queue_api, "qb_api", return_value=[torrent]), patch.object(
+            queue_api, "qb_request", return_value=True
+        ) as remove:
+            status, payload = self.request(f"/api/queue/{code}?delete_files=1", method="DELETE")
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["qb_removed"])
+        self.assertTrue(payload["files_deleted"])
+        self.assertEqual(remove.call_args.args[1]["deleteFiles"], "false")
+        self.assertFalse(os.path.exists(code_dir))
+
+    def test_qb_outage_preserves_old_queued_registration(self):
+        code = "OMG-032"
+        write_json(self.state_path, [{"code": code, "status": "queued", "added_at": time.time() - 3600}])
+        with patch.object(queue_api, "qb_api", return_value=None):
+            status, payload = self.request("/api/queue/")
+        self.assertEqual(status, 200)
+        self.assertEqual([item["code"] for item in payload], [code])
+        self.assertEqual(len(queue_api.load_state()), 1)
+
+    def test_submitted_115_stays_visible_without_local_video(self):
+        code = "OMG-032"
+        write_json(self.state_path, [{"code": code, "status": "submitted_to_115", "target": "115", "added_at": time.time() - 3600}])
+        with patch.object(queue_api, "qb_api", return_value=[]):
+            status, payload = self.request("/api/queue/")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload[0]["status"], "submitted_to_115")
+        self.assertEqual(len(queue_api.load_state()), 1)
+
+    def test_old_completed_video_is_hidden_without_deleting_state(self):
+        code = "OMG-032"
+        video = os.path.join(self.save_path, code, "main.mp4")
+        os.makedirs(os.path.dirname(video))
+        with open(video, "wb") as handle:
+            handle.write(b"old")
+        old = time.time() - 10 * 86400
+        os.utime(video, (old, old))
+        write_json(self.state_path, [{"code": code, "status": "done", "added_at": old}])
+        with patch.object(queue_api, "qb_api", return_value=[]), patch.object(queue_api, "find_mp4_path", return_value=video), patch.object(
+            queue_api, "run_post_download_actions"
+        ) as post_actions:
+            status, payload = self.request("/api/queue/")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, [])
+        self.assertEqual(len(queue_api.load_state()), 1)
+        post_actions.assert_not_called()
 
     def test_qb_removal_uses_exact_code_match(self):
         torrents = [

@@ -707,6 +707,10 @@ def try_magnet_download(avid, save_dir, magnet=None, target="qb"):
         # 查询所有 torrent 状态
         torrents = qbittorrent_api("GET", "/api/v2/torrents/info?category=AV_GARDEN")
         if torrents is None:
+            if elapsed > 7200:
+                _last_magnet_reason = "qB 状态查询持续失败超过 2 小时，已停止等待；种子保留在 qB"
+                logger.warning(f"[Magnet] {avid} {_last_magnet_reason}")
+                return (MAGNET_PENDING, torrent_hash)
             time.sleep(5)
             continue
 
@@ -944,6 +948,16 @@ def download_video(avid):
                         f"{avid} 已交 qB 后台继续下载"
                         + (f"（{_last_magnet_reason}）" if _last_magnet_reason else ""),
                     )
+                if download_target == "115":
+                    state_path = os.environ.get("STATE_PATH", "/db/queue_state.json")
+                    def mark_cloud_submitted(items):
+                        for item in items if isinstance(items, list) else []:
+                            if str(item.get("code") or "").upper() == avid.upper():
+                                item["status"] = "submitted_to_115"
+                                item["submitted_at"] = time.time()
+                                break
+                        return items
+                    update_json(state_path, [], mark_cloud_submitted)
                 clear_download_target(download_targets_path, avid)
                 release_lock()
                 return False
