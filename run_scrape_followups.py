@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -13,6 +14,7 @@ from src.scrape_pipeline import (
     finish_pipeline,
     read_status,
     set_phase,
+    write_status,
 )
 
 APP = os.environ.get("AVGARDEN_APP", "/app")
@@ -32,18 +34,53 @@ def _script_path(name: str) -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
 
 
+def followup_budget(total: int) -> int:
+    # Allow the shared 31/60s search slot plus network overhead. Loading the
+    # candidates gets the one-hour floor; large batches must not hit that floor.
+    return max(3600, max(0, int(total)) * 90 + 1800)
+
+
+def run_with_budget(path: str) -> int:
+    started = time.monotonic()
+    budget = followup_budget(0)
+    timeout_error = ""
+    with subprocess.Popen([PYTHON, path]) as proc:
+        try:
+            while True:
+                progress = read_status().get("progress") or {}
+                new_budget = followup_budget(progress.get("total") or 0)
+                if new_budget > budget:
+                    budget = new_budget
+                    log(f"candidate budget: total={progress.get('total')} timeout={budget}s")
+                remaining = budget - (time.monotonic() - started)
+                if remaining <= 0:
+                    # set_progress announces the current attempt before searching.
+                    completed = max(0, int(progress.get("current") or 0) - 1)
+                    total = int(progress.get("total") or 0)
+                    timeout_error = f"未看中文补链超时（{budget // 60} 分钟，已检查 {completed}/{total}）"
+                    return 124
+                try:
+                    return proc.wait(timeout=min(5, remaining))
+                except subprocess.TimeoutExpired:
+                    continue
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            if timeout_error:
+                write_status({"last_error": timeout_error})
+
+
 def main() -> int:
     path = _script_path("unwatched_chinese_refill.py")
     set_phase(PHASE_UNWATCHED_CN)
     log(f"start {path}")
     try:
-        proc = subprocess.run([PYTHON, path], timeout=3600, check=False)
-        rc = int(proc.returncode or 0)
-    except subprocess.TimeoutExpired:
-        rc = 124
+        rc = run_with_budget(path)
     except Exception as exc:
         rc = 1
         log(f"error: {exc}")
+        write_status({"last_error": f"未看中文补链运行失败：{exc}"[:300]})
 
     current = read_status()
     stats = current.get("stats") if isinstance(current.get("stats"), dict) else {}

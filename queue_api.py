@@ -989,7 +989,7 @@ def _watch_weekly_scrape(proc):
             log_write("ManualScrape", "刮削完成 (weekly_updater)")
             followup = subprocess.run(
                 ["/app/venv/bin/python3", "/app/run_scrape_followups.py"],
-                timeout=3900,
+                # The follow-up owns its candidate-scaled timeout and child cleanup.
                 check=False,
             )
             if followup.returncode == 0:
@@ -997,12 +997,13 @@ def _watch_weekly_scrape(proc):
                 log_write("ManualScrape", "未看中文补链完成")
             else:
                 log(f"Manual scrape follow-up failed (exit {followup.returncode})")
-                log_write("ManualScrape", f"未看中文补链失败 (exit {followup.returncode})")
                 status = read_scrape_status()
+                error = str(status.get("last_error") or f"未看中文补链失败 (exit {followup.returncode})")
+                log_write("ManualScrape", f"未看中文补链失败：{error}")
                 if status.get("running"):
                     finish_pipeline(
                         summary="每日推荐已更新，但未看中文补链未完成",
-                        error=str(status.get("last_error") or f"follow-up exit={followup.returncode}"),
+                        error=error,
                         stats=status.get("stats") if isinstance(status.get("stats"), dict) else {},
                     )
         else:

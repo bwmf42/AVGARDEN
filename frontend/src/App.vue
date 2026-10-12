@@ -126,6 +126,9 @@
                   <span class="system-check-msg" :title="check.msg || ''">{{ checkStatusText(name, check) }}</span>
                 </div>
               </div>
+              <p v-if="systemStatus.reportTs" class="muted-line">
+                失败记录更新：{{ systemStatus.reportTs }}（每日更新）
+              </p>
               <div v-if="systemStatus.failEvents.length" class="system-status-fails">
                 <strong>24h 失败</strong>
                 <p v-for="(ev, idx) in systemStatus.failEvents.slice(0, 6)" :key="idx" class="fail-line" :title="ev.msg || ''">
@@ -188,7 +191,7 @@
 <script>
 import { normalizeVideoId } from './utils/videoId'
 import { scrapeStatusMessage } from './scrapeStatus'
-import { summarizeCheckMessage } from './utils/statusMessage'
+import { summarizeCheckMessage, p115HealthCheck, recentFailureEvents } from './utils/statusMessage'
 
 function normalizeStatusID(id) {
   return String(id || '').trim().toUpperCase()
@@ -223,6 +226,7 @@ export default {
         versionBehind: false,
         checks: {},
         failEvents: [],
+        reportTs: '',
         diskLines: [],
         queueLine: '',
         hasData: false,
@@ -403,7 +407,8 @@ export default {
           ts: runtimeVersion?.server_time || health.ts || daily.ts || '',
           versionBehind: !!versionCheck.behind,
           checks,
-          failEvents: Array.isArray(daily.fail_events) ? daily.fail_events : [],
+          failEvents: recentFailureEvents(daily.fail_events, runtimeVersion?.server_time),
+          reportTs: String(daily.ts || '').replace('T', ' ').slice(0, 16),
           diskLines,
           queueLine,
           hasData
@@ -431,12 +436,7 @@ export default {
         if (!p115 || !(p115.enabled || p115.has_cookies)) return
         const checks = {
           ...this.systemStatus.checks,
-          p115: {
-            ok: !!p115.available,
-            msg: p115.available
-              ? (p115.message || '')
-              : (p115.message || 'Cookie 已失效，请到设置重新测试连接')
-          }
+          p115: p115HealthCheck(p115)
         }
         this.applySystemChecks(checks)
       } catch (e) {}
@@ -465,6 +465,7 @@ export default {
     },
     checkStatusText(name, check) {
       if (!check?.ok) return summarizeCheckMessage(check?.msg)
+      if (name === 'p115' && check.msg) return check.msg
       if ((name === 'translation' || name === 'deepseek') && check.msg) {
         const text = String(check.msg).replace('model=', '').trim()
         return text.length > 28 ? `${text.slice(0, 26)}…` : text

@@ -269,7 +269,7 @@ def run_refill() -> Dict[str, Any]:
     chinese_forum.set_proxy(PROXY)
     client = chinese_forum.ForumClient()
     if not client.ensure_safe():
-        raise RuntimeError("98堂安全验证失败")
+        raise RuntimeError(getattr(client, "safe_error", "") or "98堂安全验证失败")
 
     for index, item in enumerate(candidates, start=1):
         code = normalize_video_id(item.get("id") or item.get("code") or "")

@@ -6,6 +6,9 @@
 
 ## Unreleased
 
+- Fixed false 115 Cookie warnings when cloud-download controls are disabled; valid Cookies now remain healthy and explicitly show that the feature is off. Activity failure records expire against the current NAS clock and display their daily snapshot time.
+- Scaled unwatched Chinese-link follow-up timeouts to the candidate count, with one supervisor for manual and scheduled runs, child cleanup on expiry, and actual SSL/timeout reasons plus timeout progress in activity logs. The shared 31/60-second search pacing and download selection rules are unchanged.
+
 - Reuse the Weekly list for one minute when returning from details, while refreshing watched/favorite state and invalidating the list immediately after preference changes or successful queue additions. Ordinary detail status checks leave the list cache intact.
 - Clarified Weekly and download browsing: show tab counts and retryable load errors, keep partial search results and include tags, make preview and card actions keyboard/touch accessible, prioritize metadata on narrow detail screens, and keep qB/115 controls compact below it. Download management now separates cloud submissions, recent failures, and verified local completions; unknown progress is shown as indeterminate and local links use the real detail route.
 - Added durable removal for blocked actresses, genres, keywords, and favorite actresses. Settings now uses explicit DELETE requests, reports save failures, keeps each list beside its tab, and the server refreshes folded actress lookups immediately after changes.

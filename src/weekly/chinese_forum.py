@@ -415,6 +415,7 @@ class ForumClient:
 
     def ensure_safe(self) -> bool:
         """Pass Discuz safe gate. Network/SSL errors are retried, never raise."""
+        self.safe_error = ""
         url = self.list_url(1)
         last_err = None
         hard_ssl = 0
@@ -475,6 +476,10 @@ class ForumClient:
                     pass
                 time.sleep(min(12.0, 1.5 ** attempt + random.uniform(0.5, 2)))
         _log(f"safe gate failed after retries: {last_err}")
+        self.safe_error = (
+            "98堂 SSL 连接失败" if self._is_hard_ssl_error(str(last_err))
+            else "98堂安全验证失败"
+        )
         return False
 
     def _cookie_header(self) -> str:

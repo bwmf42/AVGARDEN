@@ -1,3 +1,26 @@
+export function p115HealthCheck(config) {
+  const ok = !!config.has_cookies && !!config.verified
+  return {
+    ok,
+    msg: ok
+      ? (config.enabled ? 'Cookie 有效' : 'Cookie 有效 · 功能未启用')
+      : (config.message || 'Cookie 已失效，请到设置重新测试连接'),
+  }
+}
+
+export function recentFailureEvents(events, serverTime = '') {
+  const now = Date.parse(serverTime) || Date.now()
+  // Log timestamps omit their zone. Use the API clock's zone, even when the
+  // browser is abroad, rather than interpreting NAS timestamps as browser time.
+  const zone = String(serverTime).match(/(Z|[+-]\d{2}:\d{2})$/)?.[1] || ''
+  return (Array.isArray(events) ? events : []).filter(event => {
+    let raw = String(event?.ts || '').replace(' ', 'T')
+    if (!/(Z|[+-]\d{2}:\d{2})$/.test(raw)) raw += zone
+    const ts = Date.parse(raw)
+    return Number.isFinite(ts) && ts >= now - 24 * 3600 * 1000 && ts <= now
+  })
+}
+
 function extractJsonMessage(raw) {
   const text = String(raw || '').trim()
   if (!text) return ''

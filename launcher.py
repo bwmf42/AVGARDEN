@@ -543,7 +543,7 @@ def daily_updater():
         try:
             followup = subprocess.run(
                 ["/app/venv/bin/python3", "/app/run_scrape_followups.py"],
-                timeout=3900,
+                # The follow-up owns its candidate-scaled timeout and child cleanup.
                 check=False,
             )
             if followup.returncode == 0:
@@ -551,17 +551,15 @@ def daily_updater():
                 log_write("DailyUpdater", "刮削完成（含未看中文补链）")
             else:
                 log(f"unwatched Chinese follow-up failed: exit={followup.returncode}")
-                log_write("DailyUpdater", f"未看中文补链失败: exit={followup.returncode}")
                 status = read_scrape_status()
+                error = str(status.get("last_error") or f"未看中文补链失败: exit={followup.returncode}")
+                log_write("DailyUpdater", f"未看中文补链失败：{error}")
                 if status.get("running"):
                     finish_pipeline(
                         summary="每日推荐已更新，但未看中文补链未完成",
-                        error=str(status.get("last_error") or f"follow-up exit={followup.returncode}"),
+                        error=error,
                         stats=status.get("stats") if isinstance(status.get("stats"), dict) else {},
                     )
-        except subprocess.TimeoutExpired:
-            finish_pipeline(summary="每日推荐已更新", error="未看中文补链超时 3900s")
-            log("unwatched Chinese follow-up timed out after 3900s")
         except Exception as e:
             finish_pipeline(summary="每日推荐已更新", error=f"未看中文补链异常: {e}")
             log(f"unwatched Chinese follow-up failed: {e}")
