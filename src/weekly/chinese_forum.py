@@ -8,12 +8,13 @@
 """
 from __future__ import annotations
 
+import html as html_lib
+import json
 import os
 import random
 import re
 import sys
 import time
-import html as html_lib
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote_plus, urljoin
@@ -37,6 +38,12 @@ THREAD_DELAY_MAX = float(os.environ.get("CHINESE_FORUM_THREAD_DELAY_MAX", "40"))
 MAX_PAGE_RETRIES = int(os.environ.get("CHINESE_FORUM_PAGE_RETRIES", "4"))
 MAX_CONSEC_FAILS = int(os.environ.get("CHINESE_FORUM_MAX_CONSEC_FAILS", "3"))
 DAILY_PAGES = int(os.environ.get("CHINESE_FORUM_DAILY_PAGES", "2"))
+SAFE_SESSION_PATH = os.environ.get(
+    "CHINESE_FORUM_SAFE_SESSION_PATH", "/db/chinese_forum_safe_session.json"
+)
+SAFE_SESSION_TTL_SECONDS = int(
+    os.environ.get("CHINESE_FORUM_SAFE_SESSION_TTL_SECONDS", "600")
+)
 # Rotate TLS fingerprints when SSL handshake flakes through proxy
 _IMPERSONATE_FALLBACKS = tuple(
     x.strip()
@@ -121,6 +128,45 @@ def _proxies():
 
 def _log(msg: str):
     print(f"[ChineseForum] {msg}", flush=True)
+
+
+def _load_safe_token(base: str) -> str:
+    # Load a short-lived safe-gate cookie from shared worker state.
+    try:
+        with open(SAFE_SESSION_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if data.get("base") != base:
+            return ""
+        saved_at = float(data.get("saved_at") or 0)
+        if not saved_at or time.time() - saved_at > SAFE_SESSION_TTL_SECONDS:
+            return ""
+        return str(data.get("safe_token") or "").strip()
+    except (OSError, ValueError, TypeError):
+        return ""
+
+
+def _save_safe_token(base: str, token: str):
+    # Persist only the short-lived safe cookie, never credentials.
+    token = str(token or "").strip()
+    if not token:
+        return
+    parent = os.path.dirname(SAFE_SESSION_PATH) or "."
+    tmp = f"{SAFE_SESSION_PATH}.{os.getpid()}.tmp"
+    try:
+        os.makedirs(parent, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(
+                {"base": base, "safe_token": token, "saved_at": time.time()},
+                fh,
+                ensure_ascii=False,
+            )
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, SAFE_SESSION_PATH)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def _strip_tags(html: str) -> str:
@@ -365,7 +411,10 @@ class ForumClient:
         self.fid = str(fid)
         self.session = requests.Session()
         self._safe_ok = False
-        self._safe_token = ""
+        self._safe_token = _load_safe_token(self.base)
+        if self._safe_token:
+            host = re.sub(r"^https?://", "", self.base).split("/")[0]
+            self.session.cookies.set("_safe", self._safe_token, domain=host, path="/")
         self._last_url = f"{self.base}/forum-{self.fid}-1.html"
 
     def list_url(self, page: int) -> str:
@@ -434,9 +483,17 @@ class ForumClient:
                 if not self._is_safe_gate(html) and "Discuz" in html:
                     self._safe_ok = True
                     self._last_url = url
+                    _save_safe_token(self.base, self._safe_token)
                     return True
                 sid = self._extract_safeid(html)
                 if not sid:
+                    if self._safe_token:
+                        self._safe_token = ""
+                        try:
+                            os.unlink(SAFE_SESSION_PATH)
+                        except OSError:
+                            pass
+                        self.session = requests.Session()
                     last_err = f"no safeid (status={r.status_code}, len={len(html)}, tls={imp})"
                     _log(f"safe gate: {last_err}")
                     time.sleep(min(20.0, 2 ** attempt + random.uniform(1, 3)))
@@ -456,6 +513,7 @@ class ForumClient:
                     continue
                 self._safe_ok = True
                 self._last_url = url
+                _save_safe_token(self.base, self._safe_token)
                 _log(f"safe gate passed (tls={imp})")
                 return True
             except Exception as e:

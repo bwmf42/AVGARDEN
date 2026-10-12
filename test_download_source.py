@@ -53,6 +53,27 @@ class SukebeiSelectionTest(unittest.TestCase):
         self.assertTrue(selected["is_cn"])
 
 
+class ChineseForumSessionTest(unittest.TestCase):
+    def test_shared_cookie_expires_and_cannot_cross_forum_hosts(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(chinese_forum, "SAFE_SESSION_PATH", os.path.join(directory, "safe.json")), \
+             mock.patch.object(chinese_forum.time, "time", return_value=1000) as clock:
+            chinese_forum._save_safe_token("https://forum.example", "test-token")
+            self.assertEqual(chinese_forum._load_safe_token("https://forum.example"), "test-token")
+            self.assertEqual(chinese_forum._load_safe_token("https://other.example"), "")
+            self.assertEqual(os.stat(chinese_forum.SAFE_SESSION_PATH).st_mode & 0o777, 0o600)
+            clock.return_value = 1001 + chinese_forum.SAFE_SESSION_TTL_SECONDS
+            self.assertEqual(chinese_forum._load_safe_token("https://forum.example"), "")
+
+    def test_client_restores_cookie_without_claiming_gate_is_verified(self):
+        session = mock.Mock()
+        with mock.patch.object(chinese_forum, "_load_safe_token", return_value="test-token"), \
+             mock.patch.object(chinese_forum.requests, "Session", return_value=session):
+            client = chinese_forum.ForumClient(base="https://forum.example")
+        session.cookies.set.assert_called_once_with("_safe", "test-token", domain="forum.example", path="/")
+        self.assertFalse(client._safe_ok)
+
+
 class ChineseForumSearchTest(unittest.TestCase):
     def test_existing_thread_magnet_wrapper_still_fetches(self):
         with mock.patch.object(

@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Synced the existing NAS hotfix that reuses the short-lived 98堂 safe-gate session across Worker processes; this preserves the already-running SSL recovery improvement during subsequent deployments.
+
 - Fixed false 115 Cookie warnings when cloud-download controls are disabled; valid Cookies now remain healthy and explicitly show that the feature is off. Activity failure records expire against the current NAS clock and display their daily snapshot time.
 - Scaled unwatched Chinese-link follow-up timeouts to the candidate count, with one supervisor for manual and scheduled runs, child cleanup on expiry, and actual SSL/timeout reasons plus timeout progress in activity logs. The shared 31/60-second search pacing and download selection rules are unchanged.
 
