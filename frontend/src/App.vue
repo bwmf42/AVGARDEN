@@ -148,7 +148,7 @@
         </div>
 
         <div v-if="primaryActiveItem" class="activity-card">
-          <strong>下载中的条目</strong>
+          <strong>进行中的任务</strong>
           <button type="button" class="activity-code" @click="openStatusDetail(primaryActiveItem)">
             {{ statusDisplayID(primaryActiveItem.id) }}
           </button>
@@ -158,8 +158,8 @@
           <p>{{ statusText(primaryActiveItem) }}<span v-if="!isCloudTask(primaryActiveItem) && progressPercent(primaryActiveItem) > 0"> · {{ progressPercent(primaryActiveItem) }}%</span><span v-if="primaryActiveItem.speed > 0"> · {{ formatSpeed(primaryActiveItem.speed) }}</span></p>
         </div>
         <div v-else class="activity-card muted-card">
-          <strong>下载中的条目</strong>
-          <p>暂无进行中的下载。</p>
+          <strong>进行中的任务</strong>
+          <p>暂无进行中的任务。</p>
         </div>
 
         <div class="activity-card">
@@ -257,7 +257,8 @@ export default {
       return this.statusBar.items.filter(item => item.status === 'failed')
     },
     primaryActiveItem() {
-      return this.activeStatusItems.find(item => item.status === 'downloading') || this.activeStatusItems[0] || null
+      const running = this.activeStatusItems.filter(item => item.status === 'downloading')
+      return running.find(item => !isCloudTask(item)) || running[0] || this.activeStatusItems[0] || null
     },
     visibleQueueItems() {
       return [...this.activeStatusItems, ...this.failedStatusItems].slice(0, 6)
@@ -1008,7 +1009,7 @@ body {
 
 .queue-mini-row {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: max-content minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   padding: 10px 0;

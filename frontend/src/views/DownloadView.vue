@@ -51,8 +51,10 @@
             <div v-if="failedItems.length" class="section">
                 <h2 class="section-title">最近失败 ({{ failedItems.length }})</h2>
                 <div class="queue-list"><div v-for="item in failedItems" :key="item.id" class="queue-item failed">
+                    <div class="item-main">
                     <div class="item-top"><span class="status-badge failed">失败</span><span class="code">{{ item.id }}</span></div>
                     <p v-if="item.message" class="done-info">{{ item.message }}</p>
+                    </div>
                     <router-link class="btn-view" :to="{ name: 'weekly-detail', params: { id: item.id } }">查看详情</router-link>
                 </div></div>
             </div>

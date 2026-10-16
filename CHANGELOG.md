@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Fit full transfer-channel labels in the activity rail without overlapping video IDs, keep cloud submissions under the “active tasks” heading, and prefer actual local transfers in the highlighted task when both lanes are running.
+
 - Let 115 jobs submit through an independent serial lane in Queue API while local/qB/online-stream downloads continue. Queue registration publishes the channel before either consumer can claim it; lifecycle checks protect cancellation/re-addition, and in-flight remote submissions retain their result instead of disappearing mid-request. Existing per-code duplicate protection and shared source/search pacing remain in force.
 - Display the actual qB, online-stream, or 115 channel throughout download status; show cloud resolution/submission separately, surface real failure reasons, and restore retry controls for failed details. Growing-TS duration probes now use a two-second deadline and a shared 30-second cache so queue polling no longer routinely exceeds the Go proxy deadline.
 
