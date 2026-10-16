@@ -8,7 +8,7 @@ import contextlib, os, sys, json, signal, time, subprocess, re, shutil, threadin
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, unquote, urlparse
 
-from process_control import cancel_request_age, cleanup_stale_cancel_requests, clear_cancel_request, request_cancel
+from process_control import cancel_request_age, cleanup_stale_cancel_requests, clear_cancel_request, is_cancel_requested, request_cancel
 from main_video import find_main_video
 from queue_store import (
     append_many_unique,
@@ -17,6 +17,7 @@ from queue_store import (
     clear_download_target,
     get_download_target,
     normalize_download_target,
+    pop_first_matching,
     read_json,
     read_queue,
     remove_code,
@@ -91,6 +92,124 @@ ACTIVE_STATE_STATUSES = frozenset({"queued", "downloading", "processing"})
 TERMINAL_STATE_STATUSES = frozenset(
     {"done", "failed", "error", "cancelled", "canceled", "completed", "complete", "skipped", "submitted_to_115"}
 )
+cloud_queue_wake = threading.Event()
+_ts_duration_cache = {}
+_ts_duration_lock = threading.Lock()
+
+
+def _cloud_update(job, changes):
+    """Commit only to this claimed lifecycle; deletion/re-addition wins."""
+    updated = False
+    with queue_state_critical("cloud.commit"):
+        def apply(items):
+            nonlocal updated
+            for item in items:
+                if (item.get("code") == job["code"]
+                        and item.get("added_at") == job.get("added_at")
+                        and item.get("status") == "downloading"
+                        and not is_cancel_requested(job["code"])):
+                    item.update(changes)
+                    updated = True
+                    break
+            return items
+        update_state(apply)
+    return updated
+
+
+def _cloud_fail(job, reason, retry=True):
+    code = job["code"]
+    with queue_state_critical("cloud.fail"):
+        # A cancelled or replaced job must never return to the queue.
+        if not _cloud_update(job, {"cloud_phase": "failed", "message": reason}):
+            return
+        def increment(counts):
+            counts[code] = int(counts.get(code) or 0) + 1
+            return counts
+        count = update_json(RETRY_PATH, {}, increment)[code]
+        if retry and count < 3:
+            _cloud_update(job, {"status": "queued", "cloud_phase": "", "message": reason})
+            append_unique(QUEUE_PATH, code)
+            log(f"[Cloud115] {code} retry {count}/3: {reason}")
+            return
+        _cloud_update(job, {"status": "failed", "cloud_phase": "", "message": reason})
+        def record(items):
+            items = [x for x in items if x.get("code") != code]
+            items.append({"code": code, "failed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                          "retries": count, "reason": reason, "recoverable": False})
+            return items
+        update_json(FAILED_QUEUE_JSON_PATH, [], record)
+        clear_download_target(DOWNLOAD_TARGETS_PATH, code)
+        log_write("Cloud115", f"{code} 115 提交失败：{reason}")
+
+
+def process_cloud_once():
+    """Submit one already-registered 115 job without the local download lock."""
+    with queue_state_critical("cloud.claim"):
+        eligible = {x["code"]: x for x in load_state()
+                    if x.get("target") == "115" and x.get("status") == "queued"}
+        code = pop_first_matching(QUEUE_PATH, lambda c: c in eligible)
+        if not code:
+            return False
+        job = eligible[code]
+        def claim(items):
+            for item in items:
+                if item.get("code") == code:
+                    item.update(status="downloading", transport="115", cloud_phase="resolving")
+            return items
+        update_state(claim)
+    log(f"[Cloud115] {code} resolving magnet")
+    try:
+        from src import p115_offline as p115
+        from download_source import resolve_download_source
+
+        config = p115.load_config()
+        if not config.get("enabled"):
+            raise RuntimeError("115 离线未启用")
+        ok, message = p115.probe_cached()
+        if not ok:
+            raise RuntimeError(message or "115 Cookie 不可用")
+        source = resolve_download_source(code, proxy=ONLINE_PROXY)
+        magnet = str(source.get("magnet") or "").strip()
+        if not magnet.lower().startswith("magnet:"):
+            raise RuntimeError("无可用磁链（115 仅支持磁链云下载）")
+        # DELETE can remove a resolving job. Once submitting, it must wait for
+        # the remote result instead of losing an already-sent cloud request.
+        if not _cloud_update(job, {"cloud_phase": "submitting"}):
+            return True
+        log(f"[Cloud115] {code} submitting to 115")
+        ok, message, _ = p115.submit_magnet(magnet)
+        if not ok:
+            raise RuntimeError(message or "115 拒绝了任务")
+        with queue_state_critical("cloud.finish"):
+            if _cloud_update(job, {"status": "submitted_to_115", "cloud_phase": "",
+                                   "submitted_at": time.time(), "message": message}):
+                clear_download_target(DOWNLOAD_TARGETS_PATH, code)
+                log_write("Cloud115", f"{code} 已提交 115 云下载")
+                log(f"[Cloud115] {code} submitted")
+    except Exception as exc:
+        _cloud_fail(job, str(exc)[:300])
+    return True
+
+
+def cloud_queue_loop():
+    # One cloud submitter across Queue API processes; the local Worker keeps
+    # its own serial download lock. Neither lane holds a state lock over HTTP.
+    with queue_store._locked(QUEUE_PATH + ".115"):
+        for item in load_state():
+            if (item.get("target") == "115" and item.get("status") == "downloading"
+                    and item.get("cloud_phase")):
+                if item["cloud_phase"] == "submitting":
+                    _cloud_fail(item, "115 提交时服务中断，请先在 115 确认结果后重试", retry=False)
+                elif _cloud_update(item, {"status": "queued", "cloud_phase": ""}):
+                    append_unique(QUEUE_PATH, item["code"])
+        while True:
+            try:
+                processed = process_cloud_once()
+            except Exception as exc:
+                log(f"[Cloud115] queue error: {type(exc).__name__}")
+                processed = False
+            cloud_queue_wake.wait(1 if processed else 2)
+            cloud_queue_wake.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -1245,15 +1364,27 @@ def get_duration_from_weekly(code):
     return None
 
 def get_ts_duration_seconds(ts_path):
+    # A growing TS can make ffprobe run until its deadline. Status requests
+    # share a short sample instead of each blocking the Go proxy for 15s.
+    now = time.monotonic()
+    with _ts_duration_lock:
+        previous = _ts_duration_cache.get(ts_path)
+        if previous and now - previous[0] < 30:
+            return previous[1]
+        if len(_ts_duration_cache) > 128:
+            _ts_duration_cache.clear()
+        _ts_duration_cache[ts_path] = (now, previous[1] if previous else None)
     try:
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "csv=p=0", ts_path],
-            capture_output=True, text=True, timeout=15
+            capture_output=True, text=True, timeout=2
         )
         if r.returncode == 0 and r.stdout.strip():
             val = float(r.stdout.strip())
             if val > 0:
+                with _ts_duration_lock:
+                    _ts_duration_cache[ts_path] = (now, val)
                 return val
     except:
         pass
@@ -1356,7 +1487,7 @@ def get_download_info(code, torrents=None):
     save_dir = get_code_dir(code)
     qb_progress = get_qb_progress(save_dir, torrents=torrents)
     if qb_progress:
-        return qb_progress
+        return {**qb_progress, "transport": "qb"}
 
     mp4_path = find_mp4_path(code)
     if mp4_path:
@@ -1404,7 +1535,8 @@ def get_download_info(code, torrents=None):
         est_total = 1.5 * 1024**3
         progress_pct = min(99, int(current / est_total * 100))
 
-    return {"size": current, "speed": speed, "progress_pct": progress_pct}
+    return {"size": current, "speed": speed, "progress_pct": progress_pct,
+            "transport": "online" if ts_path else ""}
 
 def read_queue_file():
     try:
@@ -1901,13 +2033,30 @@ class QueueHandler(BaseHTTPRequestHandler):
         mutations = []
         
         result = {}
+        # Cloud jobs never use the media-directory/qB completion heuristics.
+        # Their only completion signal is 115 accepting the submitted magnet.
+        for item in state:
+            if item.get("target") != "115":
+                continue
+            status = item.get("status")
+            if status not in ("queued", "downloading", "submitted_to_115"):
+                continue
+            if status == "submitted_to_115" and not is_recent_timestamp(item.get("submitted_at") or item.get("added_at")):
+                continue
+            result[item["code"]] = {"code": item["code"], "status": status,
+                                    "target": "115", "transport": "115",
+                                    "phase": item.get("cloud_phase", ""),
+                                    "message": item.get("message", ""),
+                                    "size": 0, "speed": 0, "progress_pct": 0}
         
         # Items in queue.txt → queued（先用 qB 数据覆盖）
         for c in queue_codes:
+            if c in result:
+                continue
             result[c] = {"code": c, "status": "queued", "size": 0, "speed": 0, "progress_pct": 0}
             qb_info = get_qb_progress(get_code_dir(c), qb_torrents)
             if qb_info:
-                result[c] = {"code": c, "status": "downloading", **qb_info}
+                result[c] = {"code": c, "status": "downloading", "transport": "qb", **qb_info}
         
         # Current download
         if is_locked and current_code:
@@ -1985,11 +2134,14 @@ class QueueHandler(BaseHTTPRequestHandler):
                         already_key = k
                         break
                 if already_key:
+                    if result[already_key].get("target") == "115":
+                        continue
                     # Upgrade queued → downloading if qB is actively transferring
                     if status == "downloading" and result[already_key].get("status") == "queued":
                         result[already_key] = {
                             "code": already_key,
                             "status": "downloading",
+                            "transport": "qb",
                             "size": t.get("completed", 0),
                             "speed": t.get("dlspeed", 0),
                             "progress_pct": min(99, int(t.get("progress", 0) * 100)),
@@ -2004,6 +2156,7 @@ class QueueHandler(BaseHTTPRequestHandler):
                 result[code] = {
                     "code": code,
                     "status": status,
+                    "transport": "qb",
                     "size": t.get("completed", 0),
                     "speed": t.get("dlspeed", 0) if status == "downloading" else 0,
                     "progress_pct": progress_pct if status != "done" else 100,
@@ -2124,6 +2277,8 @@ class QueueHandler(BaseHTTPRequestHandler):
         order = {"downloading": 0, "queued": 1, "submitted_to_115": 2, "done": 3}
         visible = []
         for entry in result.values():
+            registered = next((s for s in state if s.get("code") == entry["code"]), {})
+            entry.setdefault("target", registered.get("target") or "qb")
             if entry["status"] == "done":
                 if not recent_main_video_path(entry["code"]):
                     continue
@@ -2426,7 +2581,6 @@ class QueueHandler(BaseHTTPRequestHandler):
             return
 
         clear_failure_record(code)
-        append_unique(QUEUE_PATH, code)
         set_download_target(DOWNLOAD_TARGETS_PATH, code, target)
 
         # Registration file is UI source of truth (write-through on add)
@@ -2451,9 +2605,16 @@ class QueueHandler(BaseHTTPRequestHandler):
                 existing.pop("_post_done_at", None)
                 existing.pop("_post_done_size", None)
                 existing.pop("submitted_at", None)
+                for field in ("transport", "cloud_phase", "message"):
+                    existing.pop(field, None)
             return state
 
         update_state(add_or_update_code)
+        # Publish the queue entry last so either consumer sees its channel and
+        # registration before it can claim the work.
+        append_unique(QUEUE_PATH, code)
+        if target == "115":
+            cloud_queue_wake.set()
         payload = {
             "status": "added",
             "code": code,
@@ -2493,6 +2654,10 @@ class QueueHandler(BaseHTTPRequestHandler):
         delete_files = values.get("delete_files") == ["1"]
         if delete_files and get_lock():
             self._json({"error": "active worker; cannot delete files"}, 409)
+            return
+        if any(item.get("code") == code and item.get("cloud_phase") == "submitting"
+               for item in load_state()):
+            self._json({"error": "115 submission in progress", "code": code}, 409)
             return
         request_cancel(code)
         qb_status = qb_remove_code(code, delete_files=delete_files, detailed=True)
@@ -2558,6 +2723,7 @@ def main():
     except Exception as e:
         log(f"Download source startup cleanup failed: {e}")
     threading.Thread(target=online_cleanup_loop, daemon=True).start()
+    threading.Thread(target=cloud_queue_loop, daemon=True, name="cloud-115").start()
     
     server = QueueHTTPServer(("0.0.0.0", port), QueueHandler)
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))

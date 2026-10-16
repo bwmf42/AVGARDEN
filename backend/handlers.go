@@ -694,10 +694,14 @@ type WeeklyWatchedStore struct {
 var weeklyWatchedMtx sync.Mutex
 
 type queueStatusItem struct {
-	ID       string `json:"id"`
-	Status   string `json:"status"`
-	Progress int    `json:"progress"`
-	Speed    int64  `json:"speed"`
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	Progress  int    `json:"progress"`
+	Speed     int64  `json:"speed"`
+	Target    string `json:"target,omitempty"`
+	Transport string `json:"transport,omitempty"`
+	Phase     string `json:"phase,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
 
 type queueStatusResponse struct {
@@ -711,6 +715,10 @@ type queueAPIItem struct {
 	Size        int64   `json:"size"`
 	Speed       float64 `json:"speed"`
 	ProgressPct int     `json:"progress_pct"`
+	Target      string  `json:"target,omitempty"`
+	Transport   string  `json:"transport,omitempty"`
+	Phase       string  `json:"phase,omitempty"`
+	Message     string  `json:"message,omitempty"`
 }
 
 type FailedAckStore struct {
@@ -2143,6 +2151,7 @@ type FailedQueueRecord struct {
 	Code     string `json:"code"`
 	FailedAt string `json:"failed_at"`
 	Retries  int    `json:"retries,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 func parseFailedTime(raw string, fallback time.Time) time.Time {
@@ -2829,7 +2838,7 @@ func fallbackActiveQueueStatus() ([]queueStatusItem, map[string]bool) {
 		if s, ok := t["dlspeed"].(float64); ok {
 			speed = int64(s)
 		}
-		result = append(result, queueStatusItem{ID: codeMatch, Status: status, Progress: progress, Speed: speed})
+		result = append(result, queueStatusItem{ID: codeMatch, Status: status, Progress: progress, Speed: speed, Target: "qb", Transport: "qb"})
 	}
 
 	if data, err := ioutil.ReadFile(queuePath); err == nil {
@@ -2867,10 +2876,13 @@ func queueStatusHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			seen[code] = true
 			result.Active = append(result.Active, queueStatusItem{
-				ID:       code,
-				Status:   status,
-				Progress: item.ProgressPct,
-				Speed:    int64(item.Speed),
+				ID:        code,
+				Status:    status,
+				Progress:  item.ProgressPct,
+				Speed:     int64(item.Speed),
+				Target:    item.Target,
+				Transport: item.Transport,
+				Phase:     item.Phase,
 			})
 		}
 	} else {
@@ -2879,6 +2891,15 @@ func queueStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	acked := loadFailedAckIDs()
+	failureMessages := map[string]string{}
+	if body, err := os.ReadFile(filepath.Join(filepath.Dir(queuePath), "failed_queue.json")); err == nil {
+		var records []FailedQueueRecord
+		if json.Unmarshal(body, &records) == nil {
+			for _, record := range records {
+				failureMessages[strings.ToUpper(record.Code)] = record.Reason
+			}
+		}
+	}
 	for code := range recentFailedCodes(7 * 24 * time.Hour) {
 		if acked[code] {
 			continue
@@ -2888,7 +2909,7 @@ func queueStatusHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !hasSeenQueueCode(seen, code) {
-			result.Failed = append(result.Failed, queueStatusItem{ID: code, Status: "failed"})
+			result.Failed = append(result.Failed, queueStatusItem{ID: code, Status: "failed", Message: failureMessages[code]})
 		}
 	}
 	sort.Slice(result.Failed, func(i, j int) bool {

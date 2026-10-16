@@ -109,13 +109,13 @@
                             </div>
 
                             <div class="action-row">
-                                <template v-if="!video.downloaded && (queueState === 'idle' || queueState === 'error')">
+                                <template v-if="!video.downloaded && (queueState === 'idle' || queueState === 'error' || queueState === 'failed')">
                                     <button
                                         class="btn-download"
                                         :class="{ error: queueState === 'error' }"
                                         @click="addToQueue('qb')"
                                         :disabled="queueBusy">
-                                        {{ queueState === 'error' ? '重试 qB' : '加入 qB' }}
+                                        {{ queueState === 'error' || queueState === 'failed' ? '重试 qB' : '加入 qB' }}
                                     </button>
                                     <button
                                         class="btn-download btn-115"
@@ -123,7 +123,7 @@
                                         @click="addToQueue('115')"
                                         :disabled="queueBusy || !p115Available"
                                         :title="p115Available ? '提交 115 云端离线' : '115 Cookie 已失效，请到设置重新测试连接'">
-                                        {{ queueState === 'error' ? '重试 115' : '加入 115' }}
+                                        {{ queueState === 'error' || queueState === 'failed' ? '重试 115' : '加入 115' }}
                                     </button>
                                 </template>
                                 <button v-if="queueState === 'adding'" class="btn-download" disabled>添加中...</button>
@@ -136,11 +136,11 @@
                                 </div>
                                 <div v-if="queueState === 'submitted_to_115'" class="btn-download queued">已提交 115 云端</div>
                                 <div v-if="queueState === 'downloading'" class="btn-download downloading">
-                                    下载中 {{ queueProgress }}%
+                                    {{ queueStateLabel }}
                                 </div>
                                 <a v-if="queueState === 'failed'" class="btn-download error"
                                     :href="'https://www.javbus.com/' + encodeURIComponent(this.id)" target="_blank">
-                                    所有源均失败，去 JavBus
+                                    查看 JavBus 资料
                                 </a>
                                 <a v-if="video.downloaded" class="btn-play" @click="$router.push({ name: 'detail', params: { id: video.id } })">
                                     查看本地详情
@@ -207,6 +207,7 @@
 
 <script>
 import { loadSelections, recordWeeklyView } from '../api/weeklySelection'
+import { downloadStatusText } from '../utils/downloadStatus'
 import { filterWeekly, readBrowseContext } from '../utils/weeklyFilters'
 import {
     recordWatchedOrderID,
@@ -244,6 +245,8 @@ export default {
             allVideos: [],
             currentIndex: -1,
             queueState: 'idle',
+            queueTransport: '',
+            queuePhase: '',
             queueProgress: 0,
             queueSubmittedAt: 0,
             queueSubmittedId: '',
@@ -295,8 +298,10 @@ export default {
             return this.queueState === 'adding' || this.queueState === 'waiting_ready'
         },
         queueStateLabel() {
-            if (this.queueState === 'downloading') return `下载中 ${this.queueProgress}%`
-            if (this.queueState === 'queued') return '等待中'
+            if (this.queueState === 'downloading' || this.queueState === 'queued') {
+                const label = downloadStatusText({ status: this.queueState, target: this.lastQueueTarget, transport: this.queueTransport, phase: this.queuePhase })
+                return this.queueState === 'downloading' && this.lastQueueTarget !== '115' && this.queueProgress > 0 ? `${label} ${this.queueProgress}%` : label
+            }
             if (this.queueState === 'submitted_to_115') return '已提交 115 云端'
             if (this.queueState === 'failed') return '下载失败'
             if (this.queueState === 'adding') return '添加中'
@@ -309,7 +314,7 @@ export default {
         },
         queueHintText() {
             if (this.queueHint) return this.queueHint
-            if (this.queueState === 'error' && this.queueErrorReason) {
+            if ((this.queueState === 'error' || this.queueState === 'failed') && this.queueErrorReason) {
                 return this.queueErrorReason
             }
             if (this.queueState === 'waiting_ready') {
@@ -618,6 +623,8 @@ export default {
         },
         resetQueueState() {
             this.queueState = 'idle'
+            this.queueTransport = ''
+            this.queuePhase = ''
             this.queueProgress = 0
             this.queueSubmittedAt = 0
             this.queueSubmittedId = ''
@@ -827,6 +834,9 @@ export default {
                 return
             }
             this.queueProgress = current.progress || 0
+            this.queueTransport = current.transport || ''
+            this.queuePhase = current.phase || ''
+            this.lastQueueTarget = current.target || this.lastQueueTarget
             // Server already has this code — clear transient add errors
             if (this.queueState === 'error' || this.queueState === 'waiting_ready' || this.queueState === 'adding') {
                 this.queueErrorReason = ''
@@ -842,6 +852,8 @@ export default {
                     return
                 }
                 this.queueState = 'failed'
+                this.queueErrorReason = current.message || '上次任务失败，可重新选择通道重试'
+                this.queueHint = ''
             } else {
                 this.queueState = current.status
             }

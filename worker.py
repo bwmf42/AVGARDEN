@@ -28,7 +28,7 @@ from queue_store import (
     clear_if_matches,
     clear_download_target,
     get_download_target,
-    pop_first,
+    pop_first_matching,
     read_json,
     read_queue,
     update_json,
@@ -95,7 +95,10 @@ signal.signal(signal.SIGINT, signal_handler)
 def read_queue_first_line():
     """读取队列第一行并返回"""
     try:
-        return pop_first(queue_path)
+        return pop_first_matching(
+            queue_path,
+            lambda code: get_download_target(download_targets_path, code) != "115",
+        )
     except Exception as e:
         logger.error(f"[Worker] Error reading queue: {e}")
         return None

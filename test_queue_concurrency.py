@@ -46,6 +46,35 @@ def _json_post(url, payload, timeout=30):
 
 
 class QueueConcurrencyTest(unittest.TestCase):
+    def test_cloud_submit_and_new_cloud_post_continue_during_local_download(self):
+        from unittest.mock import patch
+        self.post("BBB-002", target="115", request_id="cloud-first")
+        queue_api.write_current_download("AAA-001")
+        entered, release = threading.Event(), threading.Event()
+        def submit(*args):
+            entered.set()
+            release.wait(4)
+            return True, "accepted", {}
+        with patch("src.p115_offline.load_config", return_value={"enabled": True}), \
+             patch("src.p115_offline.probe_cached", return_value=(True, "ok")), \
+             patch("src.p115_offline.submit_magnet", side_effect=submit), \
+             patch("download_source.resolve_download_source", return_value={"magnet": "magnet:?xt=urn:btih:test"}):
+            thread = threading.Thread(target=queue_api.process_cloud_once)
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                started = time.monotonic()
+                status, _ = self.post("CCC-003", target="115", request_id="cloud-next")
+                self.assertEqual(status, 200)
+                self.assertLess(time.monotonic() - started, 1)
+                status, payload = self.post("BBB-002", target="qb", request_id="cloud-duplicate")
+                self.assertEqual(status, 409)
+                self.assertEqual(queue_api.read_current_download(), "AAA-001")
+            finally:
+                release.set()
+                thread.join(3)
+        self.assertFalse(thread.is_alive())
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="queue-concurrency-")
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)

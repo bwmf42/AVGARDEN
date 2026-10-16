@@ -6,6 +6,9 @@
 
 ## Unreleased
 
+- Let 115 jobs submit through an independent serial lane in Queue API while local/qB/online-stream downloads continue. Queue registration publishes the channel before either consumer can claim it; lifecycle checks protect cancellation/re-addition, and in-flight remote submissions retain their result instead of disappearing mid-request. Existing per-code duplicate protection and shared source/search pacing remain in force.
+- Display the actual qB, online-stream, or 115 channel throughout download status; show cloud resolution/submission separately, surface real failure reasons, and restore retry controls for failed details. Growing-TS duration probes now use a two-second deadline and a shared 30-second cache so queue polling no longer routinely exceeds the Go proxy deadline.
+
 - Synced the existing NAS hotfix that reuses the short-lived 98堂 safe-gate session across Worker processes; this preserves the already-running SSL recovery improvement during subsequent deployments.
 
 - Fixed false 115 Cookie warnings when cloud-download controls are disabled; valid Cookies now remain healthy and explicitly show that the feature is off. Activity failure records expire against the current NAS clock and display their daily snapshot time.

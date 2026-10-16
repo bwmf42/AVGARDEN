@@ -21,7 +21,8 @@
                                 <span class="status-badge" :class="item.status">{{ statusText(item) }}</span>
                                 <span class="code">{{ item.code }}</span>
                             </div>
-                            <div v-if="item.status === 'downloading'" class="progress-section">
+                            <p v-if="isCloudTask(item) && item.status === 'downloading'" class="done-info">{{ item.phase === 'resolving' ? '正在查找可用磁链，本地下载可继续进行' : '正在提交 115 云下载，请稍候' }}</p>
+                            <div v-if="item.status === 'downloading' && !isCloudTask(item)" class="progress-section">
                                 <div class="progress-bar" :class="{ indeterminate: !hasProgress(item) }">
                                     <div class="progress-fill" :style="{ width: hasProgress(item) ? item.progress_pct + '%' : '35%' }"></div>
                                 </div>
@@ -51,6 +52,7 @@
                 <h2 class="section-title">最近失败 ({{ failedItems.length }})</h2>
                 <div class="queue-list"><div v-for="item in failedItems" :key="item.id" class="queue-item failed">
                     <div class="item-top"><span class="status-badge failed">失败</span><span class="code">{{ item.id }}</span></div>
+                    <p v-if="item.message" class="done-info">{{ item.message }}</p>
                     <router-link class="btn-view" :to="{ name: 'weekly-detail', params: { id: item.id } }">查看详情</router-link>
                 </div></div>
             </div>
@@ -81,6 +83,7 @@
 </template>
 
 <script>
+import { downloadStatusText, isCloudTask } from '../utils/downloadStatus'
 export default {
     name: 'DownloadView',
     data() {
@@ -134,9 +137,9 @@ export default {
             this.loading = false
         },
         statusText(item) {
-            const map = { 'queued': '等待中', 'downloading': 'qB 下载中', 'failed': '失败', 'submitted_to_115': '已提交 115' }
-            return map[item.status] || item.status
+            return downloadStatusText(item)
         },
+        isCloudTask,
         hasProgress(item) {
             return Number.isFinite(item.progress_pct) && item.progress_pct > 0
         },
@@ -162,7 +165,7 @@ export default {
                 const resp = await fetch(`/api/queue/${encodeURIComponent(code)}`, { method: 'DELETE' })
                 if (!resp.ok) {
                     const payload = await resp.json().catch(() => ({}))
-                    throw new Error(payload.error === 'qB task removal unavailable' ? 'qB 暂不可用，请稍后重试' : `移出失败 (${resp.status})`)
+                    throw new Error(payload.error === '115 submission in progress' ? '115 正在提交，请完成后再移出' : payload.error === 'qB task removal unavailable' ? 'qB 暂不可用，请稍后重试' : `移出失败 (${resp.status})`)
                 }
                 this.items = this.items.filter(i => i.code !== code)
                 window.dispatchEvent(new CustomEvent('av-garden-toast', {

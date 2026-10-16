@@ -276,6 +276,28 @@ class QueueAPITest(unittest.TestCase):
         self.assertEqual(payload[0]["status"], "submitted_to_115")
         self.assertEqual(len(queue_api.load_state()), 1)
 
+    def test_cloud_job_is_visible_without_local_files_or_qb_task(self):
+        code = "OMG-032"
+        write_json(self.state_path, [{"code": code, "status": "downloading", "target": "115", "cloud_phase": "resolving", "added_at": time.time()}])
+        with patch.object(queue_api, "qb_api", return_value=[]), patch.object(
+            queue_api, "get_download_info", side_effect=AssertionError("cloud must not probe local media")
+        ):
+            status, payload = self.request("/api/queue/")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload[0]["transport"], "115")
+        self.assertEqual(payload[0]["phase"], "resolving")
+        self.assertEqual(len(queue_api.load_state()), 1)
+
+    def test_cannot_drop_cloud_request_while_remote_result_is_pending(self):
+        code = "OMG-032"
+        write_json(self.state_path, [{"code": code, "status": "downloading", "target": "115", "cloud_phase": "submitting", "added_at": time.time()}])
+        with patch.object(queue_api, "qb_remove_code") as remove:
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request(f"/api/queue/{code}", method="DELETE")
+        self.assertEqual(error.exception.code, 409)
+        remove.assert_not_called()
+        self.assertEqual(queue_api.load_state()[0]["cloud_phase"], "submitting")
+
     def test_old_completed_video_is_hidden_without_deleting_state(self):
         code = "OMG-032"
         video = os.path.join(self.save_path, code, "main.mp4")

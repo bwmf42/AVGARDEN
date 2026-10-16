@@ -52,9 +52,9 @@
             <button type="button" class="status-code" @click="openStatusDetail(item)">
               {{ statusDisplayID(item.id) }}
             </button>
-            <template v-if="item.status === 'queued'">等待中</template>
+            <template v-if="item.status === 'queued'">{{ statusText(item) }}</template>
             <template v-if="item.status === 'downloading'">
-              {{ progressPercent(item) }}%
+              {{ statusText(item) }}<span v-if="!isCloudTask(item) && progressPercent(item) > 0"> {{ progressPercent(item) }}%</span>
               <span v-if="item.speed > 0"> {{ formatSpeed(item.speed) }}</span>
             </template>
             <template v-if="item.status === 'failed'">下载失败</template>
@@ -152,10 +152,10 @@
           <button type="button" class="activity-code" @click="openStatusDetail(primaryActiveItem)">
             {{ statusDisplayID(primaryActiveItem.id) }}
           </button>
-          <div class="rail-progress">
+          <div v-if="!isCloudTask(primaryActiveItem)" class="rail-progress">
             <span :style="{ width: progressPercent(primaryActiveItem) + '%' }"></span>
           </div>
-          <p>{{ progressPercent(primaryActiveItem) }}%<span v-if="primaryActiveItem.speed > 0"> · {{ formatSpeed(primaryActiveItem.speed) }}</span></p>
+          <p>{{ statusText(primaryActiveItem) }}<span v-if="!isCloudTask(primaryActiveItem) && progressPercent(primaryActiveItem) > 0"> · {{ progressPercent(primaryActiveItem) }}%</span><span v-if="primaryActiveItem.speed > 0"> · {{ formatSpeed(primaryActiveItem.speed) }}</span></p>
         </div>
         <div v-else class="activity-card muted-card">
           <strong>下载中的条目</strong>
@@ -192,6 +192,7 @@
 import { normalizeVideoId } from './utils/videoId'
 import { scrapeStatusMessage } from './scrapeStatus'
 import { summarizeCheckMessage, p115HealthCheck, recentFailureEvents } from './utils/statusMessage'
+import { downloadStatusText, isCloudTask } from './utils/downloadStatus'
 
 function normalizeStatusID(id) {
   return String(id || '').trim().toUpperCase()
@@ -498,9 +499,9 @@ export default {
       return normalizeVideoCode(id)
     },
     statusText(item) {
-      const map = { queued: '等待', downloading: 'qB', failed: '失败' }
-      return map[item.status] || item.status
+      return downloadStatusText(item)
     },
+    isCloudTask,
     progressPercent(item) {
       const raw = item.progress_pct ?? item.progress ?? 0
       const value = Number(raw)

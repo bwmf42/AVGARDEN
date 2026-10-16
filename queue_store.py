@@ -246,10 +246,15 @@ def clear_if_matches(path, item):
 
 
 def pop_first(path):
+    return pop_first_matching(path, lambda _: True)
+
+
+def pop_first_matching(path, predicate):
+    """Claim one matching entry atomically, preserving other lanes' order."""
     with _locked(path):
         items = _read_unlocked(path)
-        if not items:
-            return None
-        first = items[0]
-        _write_unlocked(path, items[1:])
-        return first
+        for index, item in enumerate(items):
+            if predicate(item):
+                _write_unlocked(path, items[:index] + items[index + 1:])
+                return item
+        return None
