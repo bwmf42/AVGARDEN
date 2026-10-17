@@ -134,12 +134,19 @@ def normalize_performer_fields(item: dict, meta=None) -> bool:
         # Repair older ingestion that stripped age/job text into an apparent
         # actress name. An explicit structured actress credit takes precedence.
         certified = clean_actresses(meta.get("actresses") or [])
+        credits = meta.get("actresses") or []
+        if (credits and all(str(value or "").strip().lower() in _BAD_EXACT for value in credits)
+                and item.get("metaSource") not in ("mgs", "mgs+dmm", "javdatabase")):
+            profiles += [name for name in names if is_uncertain_title_name(name)]
         aliases = set()
         for value in profiles:
             text = str(value or "").strip()
             match = re.search(r"[（(]?\s*\d{1,3}\s*(?:歳|才|岁|さい|[）)])", text)
             prefix = text[:match.start()].strip(" -‐–—・:：()（）[]【】") if match else text
             aliases.add(prefix.split()[-1] if match and prefix else prefix.split()[0] if prefix else "")
+            # Older parsers kept pairs such as Nちゃん＆Yちゃん after stripping
+            # each age. A pair label is still one product description.
+            aliases.add(re.sub(r"[（(]\s*\d{1,3}\s*[）)]", "", text))
         names = [name for name in names if name not in aliases or name in certified]
     for value in profiles:
         text = re.sub(r"\s+", " ", str(value or "")).strip()

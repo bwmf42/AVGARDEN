@@ -35,6 +35,19 @@ class TestActresses(unittest.TestCase):
         a.ensure_actresses(official)
         self.assertEqual(official['actresses'], ['めぐり'])
 
+    def test_explicit_uncredited_source_and_paired_profiles(self):
+        uncredited = {'actresses': ['まり'], 'metaSource': 'dmm'}
+        a.normalize_performer_fields(uncredited, {'actresses': ['----']})
+        self.assertEqual(uncredited['actresses'], [])
+        self.assertEqual(uncredited['performerNotes'], ['まり'])
+        pair = {'actresses': ['Nちゃん＆Yちゃん'], 'metaSource': 'mgs'}
+        a.normalize_performer_fields(pair, {'performerNotes': ['Nちゃん(20)＆Yちゃん(20)']})
+        self.assertEqual(pair['actresses'], [])
+        self.assertEqual(pair['performerNotes'], ['Nちゃん(20)＆Yちゃん(20)'])
+        formal = {'actresses': ['めぐり'], 'metaSource': 'javdatabase'}
+        a.normalize_performer_fields(formal, {'actresses': ['----']})
+        self.assertEqual(formal['actresses'], ['めぐり'])
+
     def test_clean_dash(self):
         self.assertEqual(a.clean_actresses(["----", "小島みこ", ""]), ["小島みこ"])
         self.assertEqual(a.clean_actresses(["---", "--", "-"]), [])
