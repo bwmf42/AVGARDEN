@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Separate product-specific nicknames, age/job profiles, and DMM amateur credits from actress identities. Preserve them as plain performer descriptions without actor favorite/block/navigation controls; keep formal credits and reject new profile labels in actor preference APIs. New MGS metadata also repairs previously stripped nicknames without guessing a person's identity.
+
 - Preserve media-directory date anchors through metadata scraping and Chinese merges, record first local download completions independently, and restore registered dates during existing health checks. Add a signed, reversible directory-date repair tool with explicit download/release provenance; video-file timestamps stay intact.
 
 - Load Weekly detail previews immediately instead of waiting for the browser's lazy-loading trigger, reducing blank preview tiles after detail navigation.

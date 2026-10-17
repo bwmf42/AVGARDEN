@@ -100,6 +100,11 @@ class TestGenreZh(unittest.TestCase):
 
 
 class TestMgsParse(unittest.TestCase):
+    def test_mgs_product_nicknames_remain_notes(self):
+        names, notes = mgs.partition_cast_labels(['レナちゃん', '社内不倫ちゃん', '鈴村あいり'])
+        self.assertEqual(names, ['鈴村あいり'])
+        self.assertEqual(notes, ['レナちゃん', '社内不倫ちゃん'])
+
     def test_normalize_known_amateur_profile_labels(self):
         cases = {
             "きれい 24歳 パチンコ店副店長": "きれい",
@@ -171,7 +176,8 @@ class TestMgsParse(unittest.TestCase):
         self.assertEqual(meta["releaseDate"], "2026-07-22")
         self.assertIn("独占配信", meta["genres"])
         self.assertIn("素人", meta["genres"])
-        self.assertEqual(meta["actresses"], ["しおり"])
+        self.assertEqual(meta["actresses"], [])
+        self.assertEqual(meta["performerNotes"], ["しおり 21歳 ファミレスでバイト"])
         self.assertIn("pb_e_siro-5711", meta["cover"])
         self.assertEqual(len(meta["samples"]), 1)
         zh = genre_zh.translate_genres(meta["genres"])
@@ -231,7 +237,8 @@ class TestDmmMetadata(unittest.TestCase):
             "https://video.dmm.co.jp/amateur/content/?id=peep180",
             "peep180",
         )
-        self.assertEqual(meta["actresses"], ["彩月"])
+        self.assertEqual(meta["actresses"], [])
+        self.assertEqual(meta["performerNotes"], ["彩月"])
         self.assertEqual(meta["duration"], "54分钟")
         self.assertEqual(meta["releaseDate"], "2026-04-17")
         self.assertEqual(meta["genres"], ["盗撮・のぞき", "巨乳"])

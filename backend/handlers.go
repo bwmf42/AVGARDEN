@@ -1124,6 +1124,7 @@ func filterWeeklyItems(items []map[string]interface{}, mp4Index map[string]bool,
 	filtered := make([]map[string]interface{}, 0)
 	for _, item := range items {
 		id, _ := item["id"].(string)
+		normalizePerformerFields(item)
 		title, _ := item["title"].(string)
 		if title == "" {
 			title, _ = item["titleJp"].(string)
@@ -1337,6 +1338,7 @@ func byGenreHandler(w http.ResponseWriter, r *http.Request) {
 	matched := make([]map[string]interface{}, 0)
 	for _, item := range items {
 		genres, ok := item["genres"].([]interface{})
+		normalizePerformerFields(item)
 		if !ok {
 			continue
 		}
@@ -1596,7 +1598,7 @@ func blockListNameFromPath(path, prefix string) string {
 // cleanActressNameForBlock trims junk labels used as placeholders in library/NFO.
 func cleanActressNameForBlock(name string) string {
 	name = strings.TrimSpace(name)
-	if name == "" || name == "----" || name == "未知" || name == "不明" {
+	if name == "" || name == "----" || name == "未知" || name == "不明" || isPerformerProfile(name) {
 		return ""
 	}
 	return name
@@ -1994,6 +1996,10 @@ func sourceLabel(source string) string {
 // blockActressHandler 添加演员到屏蔽列表
 func blockActressHandler(w http.ResponseWriter, r *http.Request) {
 	name := blockListNameFromPath(r.URL.Path, "/api/block-actress/")
+	if r.Method == http.MethodPost && isPerformerProfile(name) {
+		httpError(w, "人物描述不能作为演员身份", http.StatusBadRequest)
+		return
+	}
 	if r.Method == http.MethodGet {
 		blockedListsMtx.RLock()
 		keys := orderedActiveValuesNewestFirst(blockedActressesFile, blockedActresses)
@@ -2396,6 +2402,10 @@ func blockKeywordHandler(w http.ResponseWriter, r *http.Request) {
 
 func favActressHandler(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/fav-actress/")
+	if r.Method == http.MethodPost && isPerformerProfile(name) {
+		httpError(w, "人物描述不能作为演员身份", http.StatusBadRequest)
+		return
+	}
 	if r.Method == http.MethodGet {
 		blockedListsMtx.RLock()
 		defer blockedListsMtx.RUnlock()

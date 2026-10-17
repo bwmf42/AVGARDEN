@@ -96,7 +96,7 @@ def cover_meets_min_size(url, min_width=_MIN_COVER_WIDTH, min_height=_MIN_COVER_
     return bool(ok)
 
 
-_PROFILE_AGE_RE = re.compile(r"(?:[（(]\s*)?\d{1,3}\s*歳(?:\s*[）)])?")
+_PROFILE_AGE_RE = re.compile(r"(?:[（(]\s*)?\d{1,3}\s*(?:歳|才|岁|さい|[）)])(?:\s*[）)])?")
 _PROFILE_SUFFIX_PATTERNS = (
     re.compile(r"^(\S+)\s+新規\s+\d+\s*分コース(?:\s.*)?$"),
     re.compile(r"^(\S+)\s+腋もアナルも綺麗(?:\s.*)?$"),
@@ -130,6 +130,8 @@ def normalize_actresses(values):
     out = []
     seen = set()
     for value in values or []:
+        if actress_util.is_performer_profile(value):
+            continue
         name = normalize_actress_label(value)
         if not actress_util.is_valid_actress_name(name):
             continue
@@ -137,6 +139,19 @@ def normalize_actresses(values):
             seen.add(name)
             out.append(name)
     return out
+
+
+def partition_cast_labels(values):
+    """MGS product nicknames are not a cross-product actress identity."""
+    from . import actresses as actress_util
+    names, notes = actress_util.partition_performers(values)
+    formal = []
+    for name in names:
+        if re.search(r"(?:ちゃん|さん)$", name):
+            notes.append(name)
+        else:
+            formal.append(name)
+    return normalize_actresses(formal), notes
 
 
 def _code_token(code):
@@ -340,10 +355,9 @@ def parse_metadata(html: str, code: str = "") -> dict:
 
     cover, samples = _classify(_extract_urls(html), code)
 
-    # Drop device/review noise, then reduce amateur profile labels to nicknames.
-    actresses = normalize_actresses(
-        a for a in actresses if a and "Windows" not in a and "レビュー" not in a
-    )
+    # Keep age/job profiles as product descriptions, not actress identities.
+    actresses, performer_notes = partition_cast_labels(
+        a for a in actresses if a and "Windows" not in a and "レビュー" not in a)
 
     out = {
         "source": "mgs",
@@ -353,6 +367,7 @@ def parse_metadata(html: str, code: str = "") -> dict:
         "cover": cover or "",
         "samples": samples or [],
         "actresses": actresses,
+        "performerNotes": performer_notes,
         "genres": genres,  # Japanese; caller translates
         "duration": _parse_duration(duration_raw),
         "releaseDate": _parse_date(date_raw),
@@ -361,7 +376,7 @@ def parse_metadata(html: str, code: str = "") -> dict:
         "label": label,
     }
     meaningful = (
-        "title", "cover", "samples", "actresses", "genres", "duration",
+        "title", "cover", "samples", "actresses", "performerNotes", "genres", "duration",
         "releaseDate", "maker", "series", "label",
     )
     if not any(out.get(key) for key in meaningful):

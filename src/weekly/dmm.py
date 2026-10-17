@@ -248,8 +248,7 @@ def parse_digital_metadata(payload, code="", page="", cid=""):
     amateur_actress = content.get("amateurActress")
     amateur_name = amateur_actress.get("name") if isinstance(amateur_actress, dict) else ""
     amateur_name = str(amateur_name or "").strip()
-    if amateur_name and amateur_name not in actresses:
-        actresses.append(amateur_name)
+    performer_notes = [amateur_name] if amateur_name and amateur_name not in actresses else []
     genres = []
     for genre in content.get("genres") or []:
         name = genre.get("name") if isinstance(genre, dict) else ""
@@ -275,6 +274,7 @@ def parse_digital_metadata(payload, code="", page="", cid=""):
         "code": expected_code,
         "cid": cid or str(content.get("id") or ""),
         "actresses": actresses,
+        "performerNotes": performer_notes,
         "genres": genres,
         "duration": _digital_duration(content.get("duration")),
         "releaseDate": _digital_release_date(content.get("deliveryStartDate")),

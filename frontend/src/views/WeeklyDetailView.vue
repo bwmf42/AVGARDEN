@@ -51,10 +51,10 @@
 
                     <aside class="detail-side">
                         <div class="info-section">
-                            <div v-if="video.actresses && video.actresses.length" class="section">
+                            <div v-if="performers.names.length" class="section">
                                 <h3>演员</h3>
                                 <div class="tags">
-                                    <span v-for="a in video.actresses" class="tag actress">
+                                    <span v-for="a in performers.names" :key="a" class="tag actress">
                                         <button class="actress-link" @click="browseActor(a)">{{ a }}</button>
                                         <button class="fav-btn"
                                             :class="{ faved: favActresses[a] }"
@@ -69,6 +69,14 @@
                                         </template>
                                         <button v-else class="block-btn" :disabled="blockInFlight" @click.stop="blockingName = a" title="屏蔽此女优">屏蔽</button>
                                     </span>
+                                </div>
+                            </div>
+
+                            <div v-if="performers.notes.length" class="section performer-notes">
+                                <h3>作品人物描述</h3>
+                                <p class="metadata-unknown">作品内称呼或人物介绍，未确认为演员身份。</p>
+                                <div class="tags">
+                                    <span v-for="note in performers.notes" :key="note" class="tag performer-note">{{ note }}</span>
                                 </div>
                             </div>
 
@@ -87,7 +95,7 @@
                                 </div>
                             </div>
 
-                            <p v-if="!video.actresses?.length" class="metadata-unknown">演员：未知</p>
+                            <p v-if="!performers.names.length" class="metadata-unknown">演员：未确认</p>
                             <p v-if="!video.genres?.length" class="metadata-unknown">标签：未知</p>
                             <div class="info-grid">
                                 <div class="info-item">
@@ -208,6 +216,7 @@
 <script>
 import { loadSelections, recordWeeklyView } from '../api/weeklySelection'
 import { downloadStatusText } from '../utils/downloadStatus'
+import { partitionPerformers } from '../utils/performers'
 import { filterWeekly, readBrowseContext } from '../utils/weeklyFilters'
 import {
     recordWatchedOrderID,
@@ -276,6 +285,9 @@ export default {
         }
     },
     computed: {
+        performers() {
+            return partitionPerformers(this.video || {})
+        },
         isOnlineSource() {
             return this.$route.query.source === 'online'
         },
@@ -691,8 +703,8 @@ export default {
             this.$router.push({ name: 'weekly', query: tab === 'watched' ? { tab: 'watched' } : {} })
         },
         loadFavActresses() {
-            if (!this.video?.actresses) return
-            const actresses = [...this.video.actresses]
+            const actresses = [...this.performers.names]
+            if (!actresses.length) return
             fetch('/api/fav-actress/')
                 .then(r => { if (!r.ok) throw new Error('favorites unavailable'); return r.json() })
                 .then(names => {
@@ -1616,6 +1628,15 @@ export default {
   background: #fff4f8;
   border-color: var(--rose-line);
   color: var(--secondary-color);
+}
+
+.tag.performer-note {
+  background: var(--surface);
+  color: var(--muted-color);
+  font-weight: 600;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .tag.genre {

@@ -93,6 +93,58 @@ _ZH_NAME_TAIL = re.compile(
 )
 # Trailing "show all" garbage from some sources
 _SHOW_ALL_TAIL = re.compile(r"\s*▼\s*すべて表示する\s*$")
+_PERFORMER_PROFILE_RE = re.compile(
+    r"\d{1,3}\s*(?:歳|才|岁|さい|years?\s*old)|[（(]\s*\d{1,3}\s*[）)]|"
+    r"大学生|女子大生|専門学生|学生モデル|モデル|会社員|専業主婦|主婦|"
+    r"フリーター|アルバイト|職業|职业|看護師|护士|保育士|店員|受付|"
+    r"新規\s*\d+\s*分コース|腋もアナルも綺麗", re.I
+)
+
+
+def is_performer_profile(value: str) -> bool:
+    """An age/job/product-profile label is not a reusable actress identity."""
+    return bool(_PERFORMER_PROFILE_RE.search(str(value or "")))
+
+
+def partition_performers(values):
+    names, notes = [], []
+    for value in values or []:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        target = notes if is_performer_profile(text) else names
+        if text and text not in target:
+            target.append(text)
+    return names, notes
+
+
+def normalize_performer_fields(item: dict, meta=None) -> bool:
+    """Preserve profile text separately; never promote a stripped nickname."""
+    before_names = list(item.get("actresses") or [])
+    before_notes = list(item.get("performerNotes") or [])
+    names, profiles = partition_performers(before_names)
+    notes = list(before_notes)
+    if meta:
+        _, incoming_profiles = partition_performers(meta.get("actresses") or [])
+        profiles += incoming_profiles + list(meta.get("performerNotes") or [])
+        # Repair older ingestion that stripped age/job text into an apparent
+        # actress name. An explicit structured actress credit takes precedence.
+        certified = clean_actresses(meta.get("actresses") or [])
+        aliases = set()
+        for value in profiles:
+            text = str(value or "").strip()
+            match = re.search(r"[（(]?\s*\d{1,3}\s*(?:歳|才|岁|さい|[）)])", text)
+            prefix = text[:match.start()].strip(" -‐–—・:：()（）[]【】") if match else text
+            aliases.add(prefix.split()[-1] if match and prefix else prefix.split()[0] if prefix else "")
+        names = [name for name in names if name not in aliases or name in certified]
+    for value in profiles:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if text and text not in notes:
+            notes.append(text)
+    if meta:
+        notes = [note for note in notes if note not in certified]
+    item["actresses"] = names
+    if notes or "performerNotes" in item:
+        item["performerNotes"] = notes
+    return before_names != names or before_notes != notes
 _TITLE_BRACKETS = {
     "「": "」",
     "『": "』",
@@ -156,6 +208,8 @@ def is_valid_actress_name(name: str) -> bool:
     """Reject placeholders and title/plot fragments mistaken for actresses."""
     s = re.sub(r"\s+", " ", str(name or "")).strip()
     if not s:
+        return False
+    if is_performer_profile(s):
         return False
     low = s.lower()
     if low in _BAD_EXACT or s in _BAD_EXACT:
@@ -419,9 +473,10 @@ def snap_to_blocked_actress(name: str) -> str:
 
 def ensure_actresses(item: dict) -> bool:
     """Clean actresses; if empty, try title tail; snap to blocked spelling."""
+    fields_changed = normalize_performer_fields(item)
     before = list(item.get("actresses") or [])
     cleaned = clean_actresses(before)
-    if not cleaned:
+    if not cleaned and not item.get("performerNotes"):
         _, names = extract_trailing_actresses(item.get("title") or "")
         cleaned = clean_actresses(names)
     # Align spelling with blocked_actresses.txt so Go exact/fold stay consistent
@@ -437,7 +492,7 @@ def ensure_actresses(item: dict) -> bool:
         item["actresses"] = out
         return True
     item["actresses"] = out
-    return out != before
+    return fields_changed or out != before
 
 
 def title_for_translate(title: str, actresses: Sequence[str] | None = None) -> Tuple[str, List[str]]:

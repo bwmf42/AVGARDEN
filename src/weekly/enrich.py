@@ -53,7 +53,7 @@ def apply_mgs_meta(item: dict, meta: dict) -> bool:
     """Apply MGS detail fields onto item. Returns True if anything changed."""
     if not meta:
         return False
-    changed = False
+    changed = actress_util.normalize_performer_fields(item, meta)
     avid = (item.get("id") or "").upper()
 
     if meta.get("title") and (not item.get("title") or item.get("title") == avid):
@@ -163,7 +163,7 @@ def apply_dmm_meta(item: dict, meta: dict) -> bool:
     """Fill only empty metadata fields from an exact DMM product."""
     if not meta:
         return False
-    changed = False
+    changed = actress_util.normalize_performer_fields(item, meta)
 
     if meta.get("actresses"):
         before = list(item.get("actresses") or [])
@@ -359,7 +359,7 @@ def enrich_item(
 
 def needs_enrich(item: dict) -> bool:
     """True if missing core SOAV fields."""
-    if not actress_util.clean_actresses(item.get("actresses") or []):
+    if not actress_util.clean_actresses(item.get("actresses") or []) and not item.get("performerNotes"):
         return True
     genres = item.get("genres") or []
     if not genres:

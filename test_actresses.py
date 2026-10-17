@@ -6,6 +6,26 @@ from src.weekly import actresses as a
 
 
 class TestActresses(unittest.TestCase):
+    def test_profiles_are_not_actor_identities(self):
+        for value in ['京香 大学生モデル', '真央 19さい', '美優 19才', '専業主婦', '結城りえ(24)']:
+            with self.subTest(value=value):
+                item = {'actresses': [value], 'title': '作品タイトル 京香'}
+                self.assertTrue(a.ensure_actresses(item))
+                self.assertEqual(item['actresses'], [])
+                self.assertEqual(item['performerNotes'], [value])
+                self.assertFalse(a.ensure_actresses(item))
+
+    def test_new_metadata_repairs_old_nicknames_without_losing_formal_credit(self):
+        item = {'actresses': ['しおり', '鈴村あいり']}
+        meta = {'actresses': ['鈴村あいり'], 'performerNotes': ['しおり 21歳 ファミレスでバイト']}
+        self.assertTrue(a.normalize_performer_fields(item, meta))
+        self.assertEqual(item['actresses'], ['鈴村あいり'])
+        self.assertEqual(item['performerNotes'], meta['performerNotes'])
+        self.assertFalse(a.normalize_performer_fields(item, meta))
+        confirmed = {'actresses': ['彩月'], 'performerNotes': ['彩月']}
+        a.normalize_performer_fields(confirmed, {'actresses': ['彩月']})
+        self.assertEqual(confirmed, {'actresses': ['彩月'], 'performerNotes': []})
+
     def test_clean_dash(self):
         self.assertEqual(a.clean_actresses(["----", "小島みこ", ""]), ["小島みこ"])
         self.assertEqual(a.clean_actresses(["---", "--", "-"]), [])
