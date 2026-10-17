@@ -159,7 +159,7 @@
                     <h3>预览图</h3>
                     <div class="fanarts-grid">
                         <button v-for="(img, i) in fanartList" :key="`${video.id}-${i}-${img}`" class="fanart-item" type="button" :aria-label="`查看第 ${i + 1} 张预览图`" @click="openLightbox(i)">
-                            <img :src="img" loading="lazy" class="fanart-img" alt="">
+                            <img :src="img" loading="eager" decoding="async" class="fanart-img" alt="">
                         </button>
                     </div>
                     <!-- Lightbox (like AV/GARDEN DetailView) -->
