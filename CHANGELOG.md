@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Keep Weekly details open after saving actor/tag blocks so multiple choices can be made. Show saved choices, require explicit completion or a departure confirmation before removing the current title, and continue within the original filtered browsing order.
+
 - Separate product-specific nicknames, age/job profiles, and DMM amateur credits from actress identities. Preserve them as plain performer descriptions without actor favorite/block/navigation controls; keep formal credits and reject new profile labels in actor preference APIs. New MGS metadata also repairs previously stripped nicknames without guessing a person's identity.
 - Keep short given names inferred only from a title as unconfirmed product descriptions; explicit structured actress credits remain valid even when their stage name is short.
 - Treat generic cast categories such as personal filming and couples as product descriptions as well, rather than actor identities.

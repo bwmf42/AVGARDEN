@@ -51,6 +51,14 @@
 
                     <aside class="detail-side">
                         <div class="info-section">
+                            <div v-if="hasPendingBlocks" class="block-summary" role="status">
+                                <strong>已保存 {{ savedBlockCount }} 项屏蔽，当前作品暂时保留</strong>
+                                <p>可以继续屏蔽其他演员或标签，完成后再移出这部作品。</p>
+                                <p v-if="savedBlockedActresses.length">演员：{{ savedBlockedActresses.join('、') }}</p>
+                                <p v-if="savedBlockedGenres.length">标签：{{ savedBlockedGenres.join('、') }}</p>
+                                <button class="page-btn" :disabled="blockInFlight" @click="finishBlocking">完成屏蔽，移出当前作品</button>
+                            </div>
+                            <p v-if="blockError" class="block-error" role="alert">{{ blockError }}</p>
                             <div v-if="performers.names.length" class="section">
                                 <h3>演员</h3>
                                 <div class="tags">
@@ -62,7 +70,8 @@
                                             :title="favActresses[a] ? '取消收藏' : '收藏此女优'">
                                             {{ favActresses[a] ? '已收' : '收藏' }}
                                         </button>
-                                        <template v-if="blockingName === a">
+                                        <span v-if="savedBlockedActresses.includes(a)" class="blocked-label">已屏蔽</span>
+                                        <template v-else-if="blockingName === a">
                                             <span class="block-confirm">屏蔽?</span>
                                             <button class="block-yes" :disabled="blockInFlight" @click.stop="doBlock(a)">确认</button>
                                             <button class="block-no" :disabled="blockInFlight" @click.stop="blockingName = null">取消</button>
@@ -85,7 +94,8 @@
                                 <div class="tags">
                                     <span v-for="g in video.genres" :key="g" class="tag genre">
                                         {{ g }}
-                                        <template v-if="blockingGenre === g">
+                                        <span v-if="savedBlockedGenres.includes(g)" class="blocked-label">已屏蔽</span>
+                                        <template v-else-if="blockingGenre === g">
                                             <span class="block-confirm">屏蔽?</span>
                                             <button class="block-yes" :disabled="blockInFlight" @click.stop="doBlockGenre(g)">确认</button>
                                             <button class="block-no" :disabled="blockInFlight" @click.stop="blockingGenre = null">取消</button>
@@ -217,6 +227,7 @@
 import { loadSelections, recordWeeklyView } from '../api/weeklySelection'
 import { downloadStatusText } from '../utils/downloadStatus'
 import { partitionPerformers } from '../utils/performers'
+import { filterBlockedVideos, nextRemainingVideo } from '../utils/weeklyBlocks'
 import { filterWeekly, readBrowseContext } from '../utils/weeklyFilters'
 import {
     recordWatchedOrderID,
@@ -266,6 +277,9 @@ export default {
             lastDirectQueueCheckAt: 0,
             p115Available: false,
             blockInFlight: false,
+            savedBlockedActresses: [],
+            savedBlockedGenres: [],
+            blockError: '',
             blockingName: null,
             blockingGenre: null,
             hoverGenre: null,
@@ -285,6 +299,12 @@ export default {
         }
     },
     computed: {
+        savedBlockCount() {
+            return this.savedBlockedActresses.length + this.savedBlockedGenres.length
+        },
+        hasPendingBlocks() {
+            return this.savedBlockCount > 0
+        },
         performers() {
             return partitionPerformers(this.video || {})
         },
@@ -340,6 +360,7 @@ export default {
         window.dispatchEvent(new CustomEvent('av-garden-refresh-status'))
         window.addEventListener('keydown', this.handlePageKeydown, true)
         window.addEventListener('keyup', this.handlePageKeyup, true)
+        window.addEventListener('beforeunload', this.handleBlockUnload)
         this.unlockPageScroll()
         this.loadP115Availability()
         this.loadWatched()
@@ -356,6 +377,12 @@ export default {
         await this.loadRoute(this.id)
     },
     async beforeRouteUpdate(to, from, next) {
+        const departure = this.confirmBlockDeparture(to)
+        if (departure !== true) {
+            this.navInFlight = false
+            next(departure)
+            return
+        }
         if (from.query?.source === 'online' &&
             (to.query?.source !== 'online' || normalizeVideoID(to.params.id) !== normalizeVideoID(from.params.id))) {
             await this.cleanupOnlineDetail()
@@ -368,12 +395,18 @@ export default {
     beforeUnmount() {
         window.removeEventListener('keydown', this.handlePageKeydown, true)
         window.removeEventListener('keyup', this.handlePageKeyup, true)
+        window.removeEventListener('beforeunload', this.handleBlockUnload)
         window.removeEventListener('av-garden-status', this.handleGlobalStatus)
         this.unlockPageScroll()
         if (this.genreHoverTimer) clearTimeout(this.genreHoverTimer)
         if (this.isOnlineSource) this.cleanupOnlineDetail()
     },
     async beforeRouteLeave(to, from, next) {
+        if (this.confirmBlockDeparture(to) !== true) {
+            this.navInFlight = false
+            next(false)
+            return
+        }
         if (from.query?.source === 'online') {
             await this.cleanupOnlineDetail()
         }
@@ -870,111 +903,116 @@ export default {
                 this.queueState = current.status
             }
         },
-        async doBlock(name) {
-            if (this.blockInFlight) return
-            this.blockingName = null
+        savedBlockFilters() {
+            return { actresses: [...this.savedBlockedActresses], genres: [...this.savedBlockedGenres] }
+        },
+        clearSavedBlocks() {
+            this.savedBlockedActresses = []
+            this.savedBlockedGenres = []
+            this.blockError = ''
+        },
+        recordSavedBlock(kind, name) {
+            const field = kind === 'actress' ? 'savedBlockedActresses' : 'savedBlockedGenres'
+            if (!this[field].includes(name)) this[field] = [...this[field], name]
+            weeklyDetailCache = { items: null, fetchedAt: 0, promise: null }
+            this.clearBrowseState()
+            window.dispatchEvent(new CustomEvent('av-garden-weekly-refresh'))
+        },
+        handleBlockUnload(event) {
+            if (!this.hasPendingBlocks && !this.blockInFlight) return
+            event.preventDefault()
+            event.returnValue = ''
+        },
+        confirmBlockDeparture(to) {
+            if (this.blockInFlight) return false
+            if (!this.hasPendingBlocks) return true
+            if (!window.confirm('屏蔽设置已保存。是否已完成选择，确认离开当前作品？取消可留在这里继续屏蔽。')) return false
+            const previous = this.allVideos
+            const remaining = filterBlockedVideos(previous, this.savedBlockFilters())
+            this.allVideos = remaining
+            this.clearSavedBlocks()
+            // A neighbouring title can match one of the same blocks too.
+            if (to.name === 'weekly-detail' && !remaining.some(item => normalizeVideoID(item.id) === normalizeVideoID(to.params.id))) {
+                const requested = previous.findIndex(item => normalizeVideoID(item.id) === normalizeVideoID(to.params.id))
+                const anchor = previous[(requested - 1 + previous.length) % previous.length]?.id
+                const target = nextRemainingVideo(previous, anchor, remaining)
+                if (!target) return { name: 'weekly', query: { ...to.query }, replace: true }
+                return { ...to, params: { ...to.params, id: target.id }, replace: true }
+            }
+            return true
+        },
+        async saveBlock(kind, name) {
+            const saved = kind === 'actress' ? this.savedBlockedActresses : this.savedBlockedGenres
+            if (this.blockInFlight || saved.includes(name)) return
             this.blockInFlight = true
+            this.blockError = ''
             try {
-                const resp = await fetch('/api/block-actress/' + encodeURIComponent(name), {
+                const endpoint = kind === 'actress' ? '/api/block-actress/' : '/api/block-genre/'
+                const resp = await fetch(endpoint + encodeURIComponent(name), {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${import.meta.env.VITE_API_KEY || ''}` }
                 })
-                if (resp.ok) await this.afterBlockRefresh({ actress: name })
+                if (!resp.ok) throw new Error('屏蔽未保存，请重试。')
+                this.recordSavedBlock(kind, name)
+                this.blockingName = null
+                this.blockingGenre = null
             } catch (e) {
+                this.blockError = '屏蔽未保存，请重试。'
             } finally {
                 this.blockInFlight = false
             }
         },
-        /**
-         * After block: drop filtered titles, then rotate so "next" becomes page 1/N.
-         * Avoids staying at high index (e.g. 12/N) and double-block on the next card.
-         */
-        async afterBlockRefresh({ genre, actress } = {}) {
-            if (this.isOnlineSource) {
-                this.$router.replace({ name: 'search' })
-                return
-            }
-            const prevIndex = Math.max(this.currentIndex, 0)
-            const prevId = normalizeVideoID(this.video?.id || this.id)
-
-            // Optimistic: remove matching items from current browse list
-            if (genre) {
-                this.allVideos = this.allVideos.filter(
-                    v => !(Array.isArray(v.genres) && v.genres.includes(genre))
-                )
-            }
-            if (actress) {
-                this.allVideos = this.allVideos.filter(
-                    v => !(Array.isArray(v.actresses) && v.actresses.includes(actress))
-                )
-            }
-
-            // Force server list (block handlers invalidate weekly cache)
+        doBlock(name) {
+            return this.saveBlock('actress', name)
+        },
+        doBlockGenre(name) {
+            return this.saveBlock('genre', name)
+        },
+        async finishBlocking() {
+            if (this.blockInFlight || !this.hasPendingBlocks) return
+            const filters = this.savedBlockFilters()
+            this.blockInFlight = true
             try {
-                const items = await this.getWeeklyItems(true)
-                this.clearBrowseState()
-                const tab = this.$route.query.tab || 'unwatched'
-                const undownloaded = (items || []).filter(v => !v.downloaded)
-                if (tab === 'watched') {
-                    this.allVideos = undownloaded.filter(v => this.isWatched(v.id))
-                } else {
-                    this.allVideos = undownloaded.filter(v => !this.isWatched(v.id))
-                }
-            } catch (e) {
-                // keep optimistic list
+                await this.afterBlockRefresh(filters)
+            } finally {
+                this.blockInFlight = false
             }
-
+        },
+        async afterBlockRefresh(filters) {
+            const previous = [...this.allVideos]
+            const previousId = this.video?.id || this.id
+            let remaining = filterBlockedVideos(previous, filters)
+            if (!this.isOnlineSource) {
+                try {
+                    const fresh = new Map((await this.getWeeklyItems(true)).map(item => [normalizeVideoID(item.id), item]))
+                    // Preserve the selected browsing scope and order, including genre/filter views.
+                    remaining = remaining.filter(item => fresh.has(normalizeVideoID(item.id)))
+                        .map(item => fresh.get(normalizeVideoID(item.id)))
+                } catch (e) { /* saved blocks still apply locally when refresh is unavailable */ }
+            }
+            this.clearSavedBlocks()
+            this.clearBrowseState()
             window.dispatchEvent(new CustomEvent('av-garden-weekly-refresh'))
-
-            if (!this.allVideos.length) {
-                this.clearBrowseState()
+            // Navigation guards may run as soon as replace/push is called.
+            this.blockInFlight = false
+            if (this.isOnlineSource) {
+                await this.$router.replace({ name: 'search' })
+                return
+            }
+            const target = nextRemainingVideo(previous, previousId, remaining)
+            if (!target) {
+                this.allVideos = []
                 this.goBackToWeekly()
                 return
             }
-
-            // Pick the item that should become the new "page 1"
-            const remaining = this.allVideos
-            const prevPos = remaining.findIndex(v => normalizeVideoID(v.id) === prevId)
-            let pivot = 0
-            if (prevPos >= 0) {
-                // Current still allowed (e.g. blocked a tag it doesn't have): stay, as 1/N
-                // If user blocked something that removed others but not this, keep current as first.
-                // Prefer advancing when the blocked key matches current (actress/genre on this card).
-                const current = remaining[prevPos]
-                const blockedSelf =
-                    (actress && Array.isArray(current.actresses) && current.actresses.includes(actress)) ||
-                    (genre && Array.isArray(current.genres) && current.genres.includes(genre))
-                pivot = blockedSelf
-                    ? (prevPos + 1) % remaining.length
-                    : prevPos
-            } else {
-                // Current removed: item that slid into prevIndex is the old "next page"
-                pivot = Math.min(prevIndex, remaining.length - 1)
-            }
-
-            // Rotate so pivot is index 0 → UI shows 1/N
+            const pivot = remaining.findIndex(item => item.id === target.id)
             this.allVideos = remaining.slice(pivot).concat(remaining.slice(0, pivot))
-            const tab = this.$route.query.tab || 'unwatched'
-            this.saveBrowseState(this.browseStateKey(tab), this.allVideos)
-
-            const first = this.allVideos[0]
-            if (!first?.id) {
-                this.goBackToWeekly()
-                return
-            }
-            if (normalizeVideoID(first.id) === prevId) {
-                this.setVideoFromCurrentList(first.id)
-                return
-            }
-            this.$router.replace({
+            this.saveBrowseState(this.browseStateKey(this.$route.query.tab), this.allVideos)
+            await this.$router.replace({
                 name: 'weekly-detail',
-                params: { id: first.id },
+                params: { id: target.id },
                 query: { ...this.$route.query }
             })
-        },
-        goNextAfterBlock() {
-            // legacy entry: treat as refresh without extra filter key
-            this.afterBlockRefresh()
         },
         async toggleFav(name) {
             try {
@@ -984,21 +1022,6 @@ export default {
                     this.favActresses = { ...this.favActresses, [name]: data.favorited }
                 }
             } catch(e) {}
-        },
-        async doBlockGenre(name) {
-            if (this.blockInFlight) return
-            this.blockingGenre = null
-            this.blockInFlight = true
-            try {
-                const resp = await fetch('/api/block-genre/' + encodeURIComponent(name), {
-                    method: 'POST',
-                    headers: { 'Authorization': `Bearer ${import.meta.env.VITE_API_KEY || ''}` }
-                })
-                if (resp.ok) await this.afterBlockRefresh({ genre: name })
-            } catch (e) {
-            } finally {
-                this.blockInFlight = false
-            }
         },
         sleep(ms) {
             return new Promise(resolve => setTimeout(resolve, ms))
@@ -1318,6 +1341,36 @@ export default {
 
 .detail-header {
   margin-bottom: 18px;
+}
+
+.block-summary {
+  padding: 12px;
+  margin-bottom: 18px;
+  background: var(--surface-2);
+  border: 1px solid var(--rose-line);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.block-summary p {
+  margin: 8px 0;
+  font-size: 13px;
+  color: var(--muted-color);
+}
+
+.block-summary .page-btn {
+  max-width: 100%;
+  white-space: normal;
+}
+
+.blocked-label {
+  font-size: 12px;
+  color: var(--secondary-color);
+}
+
+.block-error {
+  color: var(--danger-color);
+  font-size: 13px;
 }
 
 .header-top {
