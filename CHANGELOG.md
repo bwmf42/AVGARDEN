@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Preserve media-directory date anchors through metadata scraping and Chinese merges, record first local download completions independently, and restore registered dates during existing health checks. Add a signed, reversible directory-date repair tool with explicit download/release provenance; video-file timestamps stay intact.
+
 - Load Weekly detail previews immediately instead of waiting for the browser's lazy-loading trigger, reducing blank preview tiles after detail navigation.
 
 - Fit full transfer-channel labels in the activity rail without overlapping video IDs, keep cloud submissions under the “active tasks” heading, and prefer actual local transfers in the highlighted task when both lanes are running.

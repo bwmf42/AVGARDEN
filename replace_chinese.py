@@ -10,6 +10,7 @@ import base64, json, os, re, time, random, shutil, subprocess, sys, urllib.parse
 from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.log_writer import write as log_write, cleanup as log_cleanup
+from src.media_dates import preserve_directory, preserve_library_dates
 from main_video import (
     collect_main_video_candidates,
     find_main_video,
@@ -752,6 +753,7 @@ def scan_library(save_path=None):
         "no_nfo_date": no_nfo_date,
     }
 
+@preserve_library_dates
 def merge_completed_chinese():
     """检查已下载完成的中文字幕版，合并到原文件夹"""
     import urllib.request
@@ -1039,6 +1041,19 @@ def should_keep_file(abs_path, rel, avid, keep_video_paths, delete_untracked_vid
 
 
 def cleanup_original(
+    avid,
+    target_dirname=None,
+    keep_paths=None,
+    force=False,
+    protected_dirs=None,
+    delete_untracked_videos=True,
+):
+    with preserve_directory(os.path.join(SAVE_PATH, target_dirname or avid)):
+        return _cleanup_original(avid, target_dirname, keep_paths, force,
+                                 protected_dirs, delete_untracked_videos)
+
+
+def _cleanup_original(
     avid,
     target_dirname=None,
     keep_paths=None,

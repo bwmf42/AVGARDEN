@@ -1075,6 +1075,18 @@ def run_post_download_actions(code, size):
     after these return, so a crash in between re-runs them instead of losing
     them permanently.
     """
+    try:
+        from src.media_dates import register_download, restore_registered
+        video = find_mp4_path(code)
+        if video:
+            root = os.path.realpath(SAVE_PATH)
+            relative = os.path.relpath(os.path.realpath(video), root)
+            folder = relative.split(os.sep)[0]
+            if folder != os.pardir:
+                register_download(root, folder, code)
+                restore_registered(root, [folder])
+    except Exception as exc:
+        log(f"Media date record failed for {code}: {exc}")
     results = {}
     actions = (
         ("weekly", lambda: update_weekly_json_downloaded(code)),

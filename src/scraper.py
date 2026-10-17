@@ -6,6 +6,7 @@ from dataclasses import dataclass, asdict, field
 from typing import Optional, List, Dict
 from pathlib import Path
 from .comm import *
+from .media_dates import preserve_directory
 from curl_cffi import requests
 from PIL import Image
 from datetime import datetime
@@ -102,6 +103,10 @@ class Sracper:
         self.output_subdir = output_subdir
 
     def scrape(self, avid: str) -> Optional[AVMetadata]:
+        with preserve_directory(os.path.join(self.path, self.output_subdir or avid)):
+            return self._scrape(avid)
+
+    def _scrape(self, avid: str) -> Optional[AVMetadata]:
         # 获取html
         url= f"https://{self.domain}/{avid.upper()}"
         logger.info(url)

@@ -59,3 +59,26 @@ metadata until its watched timestamp expires. Each apply backs up both
   SQLite state before applying an already-reviewed manifest.
 
 Production scripts copied into the Worker image remain at the repository root.
+
+Media directory dates use `/db/media_directory_dates.json`. On the current NAS,
+SMB derives creation time from POSIX directory dates, so repairs anchor directory
+atime/mtime without changing video timestamps. Metadata scraping and Chinese
+merges preserve these dates; the existing heal pass restores external drift.
+New verified local completions get an immutable completion anchor. A release-date
+fallback is labelled `release_date`, never presented as an actual download date.
+
+For historical repair, prepare a JSON proposal array with `folder`, `code`,
+timezone-bearing `date`, `basis` (`release_date` or `download_completed`), and
+`source` (exact release-page URL or verified completion-log reference). Then:
+
+```bash
+python3 tools/maintenance/media_dates.py --dates dates.json --manifest /db/maintenance/media-dates.json
+python3 tools/maintenance/media_dates.py --apply /db/maintenance/media-dates.json
+python3 tools/maintenance/media_dates.py --rollback /db/maintenance/media-dates.json.result.json
+```
+
+Review the manifest first. Apply rechecks its hash, directory identity, timestamps
+and direct-child signatures before changes. The result preserves the previous
+registry and directory dates for rollback. Internal caches, hidden folders,
+symlinks and replaced directory inodes are excluded. Never infer a release date
+from a forum posting date, a file mtime or an inexact product search hit.

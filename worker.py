@@ -81,6 +81,16 @@ current_download_path = os.environ.get("CURRENT_PATH", os.path.join(queue_dir, "
 running = True
 
 
+def _record_local_completion(avid, directory):
+    try:
+        from src.media_dates import register_download, restore_registered
+        root, folder = os.path.split(os.path.abspath(directory))
+        register_download(root, folder, avid)
+        restore_registered(root, [folder])
+    except Exception as exc:
+        logger.warning(f"[MediaDates] {avid}: {exc}")
+
+
 def signal_handler(sig, frame):
     global running
     logger.info("[Worker] Received signal, shutting down...")
@@ -930,6 +940,7 @@ def download_video(avid):
                 clear_download_target(download_targets_path, avid)
                 return False
             if magnet_status == MAGNET_COMPLETED:
+                _record_local_completion(avid, save_dir)
                 gen_nfo()
                 logger.info(f"[Worker] {avid} 磁链下载完成!")
                 clear_retry(avid)
@@ -1027,6 +1038,7 @@ def download_video(avid):
 
         if downloaded:
             logger.info(f"[Worker] {avid} 下载完成，开始刮削元数据")
+            _record_local_completion(avid, save_dir)
             gen_nfo()
             clear_retry(avid)
             logger.info(f"[Worker] {avid} 全部完成!")

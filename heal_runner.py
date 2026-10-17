@@ -797,6 +797,14 @@ def run_once(do_heal: bool = True) -> dict:
 
     actions = []
     if do_heal:
+        try:
+            from src.media_dates import restore_registered
+            restored_dates = restore_registered(SAVE_PATH)
+            if restored_dates:
+                log(f"Restored stable directory dates: {len(restored_dates)}")
+                actions.append("media_dates")
+        except Exception as exc:
+            log(f"Media date restore failed: {exc}")
         heal_lock_note(diag)
         if heal_titlezh(state, int(diag.get("titlezh_gaps") or 0)):
             actions.append("titlezh")
