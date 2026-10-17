@@ -7,7 +7,7 @@ from src.weekly import actresses as a
 
 class TestActresses(unittest.TestCase):
     def test_profiles_are_not_actor_identities(self):
-        for value in ['京香 大学生モデル', '真央 19さい', '美優 19才', '専業主婦', '結城りえ(24)']:
+        for value in ['京香 大学生モデル', '真央 19さい', '美優 19才', '専業主婦', '結城りえ(24)', '個人撮影', 'カップル']:
             with self.subTest(value=value):
                 item = {'actresses': [value], 'title': '作品タイトル 京香'}
                 self.assertTrue(a.ensure_actresses(item))

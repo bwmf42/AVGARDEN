@@ -8,6 +8,7 @@
 
 - Separate product-specific nicknames, age/job profiles, and DMM amateur credits from actress identities. Preserve them as plain performer descriptions without actor favorite/block/navigation controls; keep formal credits and reject new profile labels in actor preference APIs. New MGS metadata also repairs previously stripped nicknames without guessing a person's identity.
 - Keep short given names inferred only from a title as unconfirmed product descriptions; explicit structured actress credits remain valid even when their stage name is short.
+- Treat generic cast categories such as personal filming and couples as product descriptions as well, rather than actor identities.
 
 - Preserve media-directory date anchors through metadata scraping and Chinese merges, record first local download completions independently, and restore registered dates during existing health checks. Add a signed, reversible directory-date repair tool with explicit download/release provenance; video-file timestamps stay intact.
 

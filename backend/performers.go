@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-var performerProfilePattern = regexp.MustCompile(`(?i)[0-9]{1,3}\s*(?:歳|才|岁|さい|years?\s*old)|[（(]\s*[0-9]{1,3}\s*[）)]|大学生|女子大生|専門学生|学生モデル|モデル|会社員|専業主婦|主婦|フリーター|アルバイト|職業|职业|看護師|护士|保育士|店員|受付|新規\s*[0-9]+\s*分コース|腋もアナルも綺麗`)
+var performerProfilePattern = regexp.MustCompile(`(?i)[0-9]{1,3}\s*(?:歳|才|岁|さい|years?\s*old)|[（(]\s*[0-9]{1,3}\s*[）)]|大学生|女子大生|専門学生|学生モデル|モデル|会社員|専業主婦|主婦|フリーター|アルバイト|職業|职业|看護師|护士|保育士|店員|受付|新規\s*[0-9]+\s*分コース|腋もアナルも綺麗|^(?:個人撮影|カップル)$`)
 
 func isPerformerProfile(value string) bool {
 	return performerProfilePattern.MatchString(value)
