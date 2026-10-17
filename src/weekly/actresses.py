@@ -116,6 +116,12 @@ def partition_performers(values):
     return names, notes
 
 
+def is_uncertain_title_name(value: str) -> bool:
+    """A short title-only given name is not evidence of actress identity."""
+    return bool(re.fullmatch(r"[\u3040-\u309f\u30a0-\u30ff]{1,6}|[\u4e00-\u9fff]{1,2}", value)
+                or re.search(r"(?:ちゃん|さん)$", value))
+
+
 def normalize_performer_fields(item: dict, meta=None) -> bool:
     """Preserve profile text separately; never promote a stripped nickname."""
     before_names = list(item.get("actresses") or [])
@@ -478,7 +484,11 @@ def ensure_actresses(item: dict) -> bool:
     cleaned = clean_actresses(before)
     if not cleaned and not item.get("performerNotes"):
         _, names = extract_trailing_actresses(item.get("title") or "")
-        cleaned = clean_actresses(names)
+        uncertain = [name for name in names if is_uncertain_title_name(name)]
+        cleaned = clean_actresses(name for name in names if name not in uncertain)
+        if uncertain:
+            item["performerNotes"] = uncertain
+            fields_changed = True
     # Align spelling with blocked_actresses.txt so Go exact/fold stay consistent
     snapped = [snap_to_blocked_actress(n) for n in cleaned]
     # de-dupe after snap

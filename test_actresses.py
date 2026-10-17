@@ -26,6 +26,15 @@ class TestActresses(unittest.TestCase):
         a.normalize_performer_fields(confirmed, {'actresses': ['彩月']})
         self.assertEqual(confirmed, {'actresses': ['彩月'], 'performerNotes': []})
 
+    def test_title_only_given_name_needs_explicit_credit(self):
+        item = {'title': 'CHUC-193 テストタイトル まり', 'actresses': ['----']}
+        self.assertTrue(a.ensure_actresses(item))
+        self.assertEqual(item['actresses'], [])
+        self.assertEqual(item['performerNotes'], ['まり'])
+        official = {'title': '作品タイトル', 'actresses': ['めぐり']}
+        a.ensure_actresses(official)
+        self.assertEqual(official['actresses'], ['めぐり'])
+
     def test_clean_dash(self):
         self.assertEqual(a.clean_actresses(["----", "小島みこ", ""]), ["小島みこ"])
         self.assertEqual(a.clean_actresses(["---", "--", "-"]), [])
