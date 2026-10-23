@@ -1968,6 +1968,33 @@ class QueueHandler(BaseHTTPRequestHandler):
             self._json(item)
             return
 
+        if path == "/api/resolve" or path.startswith("/api/resolve/"):
+            raw_code = parsed.path[len("/api/resolve/"):]
+            code = normalize_video_id(unquote(raw_code))
+            if not code:
+                self._json({"error": "invalid code"}, 400)
+                return
+            try:
+                from download_source import resolve_download_source
+
+                source = resolve_download_source(code, proxy=ONLINE_PROXY)
+                item = {
+                    "code": code,
+                    "kind": source["kind"],
+                    "source": source["source"],
+                    "magnet": (source.get("magnet") or "") if source["kind"] == "magnet" else "",
+                    "title": source.get("title") or "",
+                    "size_gib": float(source.get("size_gib") or 0),
+                    "published_at": source.get("published_at") or "",
+                    "forum_url": source.get("forum_url") or "",
+                }
+            except Exception:
+                log(f"Download source resolve failed for {code}")
+                self._json({"error": "resolve failed"}, 502)
+                return
+            self._json(item)
+            return
+
         if path.startswith("/api/resolve-actresses/"):
             raw_code = path.replace("/api/resolve-actresses/", "", 1)
             item, error = resolve_actresses_remote(raw_code)

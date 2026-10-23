@@ -1460,6 +1460,40 @@ func queueHandler(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
+func resolveHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	_ = http.NewResponseController(w).SetWriteDeadline(
+		time.Now().Add(onlineSearchWriteTimeout),
+	)
+
+	targetURL := strings.TrimRight(queueAPI, "/") + r.URL.EscapedPath()
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
+	proxyReq, err := http.NewRequest(http.MethodGet, targetURL, nil)
+	if err != nil {
+		httpError(w, "Proxy error", http.StatusInternalServerError)
+		return
+	}
+	proxyReq.Header = r.Header.Clone()
+	resp, err := onlineQueueHTTPClient.Do(proxyReq)
+	if err != nil {
+		httpError(w, "Queue service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+	for k, v := range resp.Header {
+		for _, vv := range v {
+			w.Header().Add(k, vv)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
 func onlineSearchHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodDelete {
 		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)
