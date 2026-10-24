@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Keep the legacy web UI enabled by default; explicitly set `AVGARDEN_WEB_UI=off` to return uncached 404 responses for UI routes while preserving API and file access, including `/api/version`.
+
 - Add read-only `GET /api/resolve/<code>` to return the selected magnet or stream source without creating queue tasks or submitting cloud downloads. Reuse the existing source-selection rules, cache, and search pacing unchanged.
 
 - Keep Weekly details open after saving actor/tag blocks so multiple choices can be made. Show saved choices, require explicit completion or a departure confirmation before removing the current title, and continue within the original filtered browsing order.

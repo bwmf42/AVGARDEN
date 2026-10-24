@@ -322,7 +322,7 @@ func appendBlockedActress(name string) error {
 }
 
 // 前端静态文件目录
-const frontendDir = "/app/frontend/dist"
+var frontendDir = "/app/frontend/dist"
 
 // 全局缓存
 var (
@@ -542,6 +542,45 @@ func main() {
 	mux.HandleFunc("/api/scrape-status", scrapeStatusHandler)
 	mux.HandleFunc("/api/weekly/scrape", weeklyScrapeHandler)
 
+	registerWebUI(mux, os.Getenv)
+
+	// CORS + gzip 中间件
+	handler := gzipMiddleware(enableCORS(mux))
+
+	port := strings.TrimPrefix(serverPort, ":")
+
+	// 双栈监听（IPv4 + IPv6）
+	listener4, err4 := net.Listen("tcp4", "0.0.0.0:"+port)
+	listener6, err6 := net.Listen("tcp6", "[::]:"+port)
+
+	if err4 != nil && err6 != nil {
+		logger.Fatalf("Failed to listen on any interface: %v / %v", err4, err6)
+	}
+
+	if err4 == nil {
+		go serveHTTPListener("IPv4", port, listener4, handler)
+	}
+	if err6 == nil {
+		go serveHTTPListener("IPv6", port, listener6, handler)
+	}
+
+	select {}
+}
+
+func webUIEnabled(getenv func(string) string) bool {
+	return !strings.EqualFold(strings.TrimSpace(getenv("AVGARDEN_WEB_UI")), "off")
+}
+
+func registerWebUI(mux *http.ServeMux, getenv func(string) string) {
+	if !webUIEnabled(getenv) {
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
+			http.Error(w, "旧网页界面已关闭，请使用 Peach", http.StatusNotFound)
+		})
+		logger.Println("Legacy web UI disabled by AVGARDEN_WEB_UI=off; use Peach")
+		return
+	}
+
 	// 前端静态文件 — 如果存在则 serve SPA (with Vue Router fallback)
 	if _, err := os.Stat(frontendDir); err == nil {
 		fs := http.FileServer(http.Dir(frontendDir))
@@ -569,28 +608,6 @@ func main() {
 			w.Write([]byte("AV/GARDEN Server API is running.\nFrontend not available — build the Vue project first."))
 		})
 	}
-
-	// CORS + gzip 中间件
-	handler := gzipMiddleware(enableCORS(mux))
-
-	port := strings.TrimPrefix(serverPort, ":")
-
-	// 双栈监听（IPv4 + IPv6）
-	listener4, err4 := net.Listen("tcp4", "0.0.0.0:"+port)
-	listener6, err6 := net.Listen("tcp6", "[::]:"+port)
-
-	if err4 != nil && err6 != nil {
-		logger.Fatalf("Failed to listen on any interface: %v / %v", err4, err6)
-	}
-
-	if err4 == nil {
-		go serveHTTPListener("IPv4", port, listener4, handler)
-	}
-	if err6 == nil {
-		go serveHTTPListener("IPv6", port, listener6, handler)
-	}
-
-	select {}
 }
 
 const (
