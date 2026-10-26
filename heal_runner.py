@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or "/app")
 
+from translate_settings import effective_relay, redact_credentials, open_translation_request
 from src.log_writer import cleanup as log_cleanup
 from src.log_writer import write as log_write
 
@@ -297,8 +298,9 @@ def _chat_endpoint(base: str) -> str:
 def _translation_probe_candidates() -> List[Tuple[str, str, str, str]]:
     """(label, base, key, model) in preference order — same as Weekly."""
     out: List[Tuple[str, str, str, str]] = []
-    if TRANSLATE_API_BASE and TRANSLATE_API_KEY:
-        out.append(("翻译中继", TRANSLATE_API_BASE, TRANSLATE_API_KEY, TRANSLATE_MODEL))
+    base, key, model = effective_relay((TRANSLATE_API_BASE, TRANSLATE_API_KEY, TRANSLATE_MODEL))
+    if base and key:
+        out.append(("翻译中继", base, key, model))
     if DS_API_KEY:
         out.append(("DeepSeek", "https://api.deepseek.com", DS_API_KEY, DS_MODEL))
     return out
@@ -310,7 +312,9 @@ def probe_translation() -> Tuple[bool, str]:
     if not candidates:
         return False, "未配置翻译 API"
     last_err = ""
+    secrets = [key for _label, _base, key, _model in candidates]
     for label, base, key, model in candidates:
+        display_model = redact_credentials(model, secrets)
         payload = json.dumps({
             "model": model,
             "messages": [{"role": "user", "content": "ping"}],
@@ -326,7 +330,7 @@ def probe_translation() -> Tuple[bool, str]:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=25) as resp:
+            with open_translation_request(req, timeout=25) as resp:
                 data = json.loads(resp.read().decode())
             if label == "DeepSeek":
                 try:
@@ -338,15 +342,14 @@ def probe_translation() -> Tuple[bool, str]:
             if content is None:
                 last_err = f"{label}: empty content"
                 continue
-            return True, f"{label} · model={model}"
+            return True, f"{label} · model={display_model}"
         except urllib.error.HTTPError as e:
-            body = e.read().decode(errors="replace")[:160]
-            last_err = f"HTTP {e.code}: {body}"
-            log(f"translation probe {label}/{model} failed: HTTP {e.code}")
+            last_err = f"HTTP {e.code}"
+            log(f"translation probe {label}/{display_model} failed: HTTP {e.code}")
             continue
-        except Exception as e:
-            last_err = str(e)[:160]
-            log(f"translation probe {label}/{model} failed: {last_err}")
+        except Exception:
+            last_err = "translation request failed"
+            log(f"translation probe {label}/{display_model} failed: {last_err}")
             continue
     return False, last_err or "translation probe failed"
 

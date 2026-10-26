@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.weekly import actresses as actress_util, sources, javbus, sukebei, merge, artwork, enrich, chinese_forum, blocking
 from weekly_store import atomic_write_json, weekly_update_lock
+from translate_settings import effective_relay, redact_credentials, TRANSLATION_MAX_TOKENS
 from weekly_watched_store import load_records, mark_many, mark_watched
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
@@ -49,8 +50,9 @@ def _http_status(exc):
 
 def translation_provider():
     """Return the provider name and model used by Weekly translation."""
-    if TRANSLATE_API_BASE and TRANSLATE_API_KEY:
-        return "relay", TRANSLATE_MODEL
+    base, key, model = effective_relay((TRANSLATE_API_BASE, TRANSLATE_API_KEY, TRANSLATE_MODEL))
+    if base and key:
+        return "relay", model
     if DS_API_KEY:
         return "deepseek", DS_MODEL
     return "", ""
@@ -59,8 +61,9 @@ def translation_provider():
 def translation_provider_candidates():
     """Return translation providers in preference order."""
     providers = []
-    if TRANSLATE_API_BASE and TRANSLATE_API_KEY:
-        providers.append(("relay", TRANSLATE_API_BASE, TRANSLATE_API_KEY, TRANSLATE_MODEL))
+    base, key, model = effective_relay((TRANSLATE_API_BASE, TRANSLATE_API_KEY, TRANSLATE_MODEL))
+    if base and key:
+        providers.append(("relay", base, key, model))
     if DS_API_KEY:
         providers.append(("deepseek", "https://api.deepseek.com", DS_API_KEY, DS_MODEL))
     return providers
@@ -71,23 +74,37 @@ def _chat_endpoint(base):
 
 
 def _chat_completion(base, api_key, model, messages, temperature=0.3):
+    from translate_settings import open_translation_request
+
     payload = json.dumps({
         "model": model,
         "messages": messages,
-        "max_tokens": 256,
+        "max_tokens": TRANSLATION_MAX_TOKENS,
         "temperature": temperature,
     }).encode()
-    req = urllib.request.Request(
-        _chat_endpoint(base),
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=DS_TRANSLATE_TIMEOUT) as resp:
-        result = json.loads(resp.read().decode())
-    return ((result.get("choices") or [{}])[0].get("message", {}) or {}).get("content", "") or ""
+    try:
+        req = urllib.request.Request(
+            _chat_endpoint(base),
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+        )
+        with open_translation_request(req, timeout=DS_TRANSLATE_TIMEOUT) as resp:
+            result = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        # Keep status-based retries without retaining headers, bodies or URLs.
+        raise urllib.error.HTTPError("", exc.code, "translation request failed", None, None) from None
+    except Exception:
+        raise RuntimeError("translation request failed") from None
+    choice = (result.get("choices") or [{}])[0]
+    if "finish_reason" in choice and choice["finish_reason"] != "stop":
+        reason = choice["finish_reason"]
+        if reason not in ("length", "content_filter", "tool_calls", "function_call", None):
+            reason = "unknown"
+        raise RuntimeError(f"translation truncated: finish_reason={reason}")
+    return (choice.get("message") or {}).get("content", "") or ""
 
 
 def _deepseek_chat(messages, temperature=0.3):
@@ -324,8 +341,10 @@ def batch_translate(items, passes=None, checkpoint_path=None):
         log("Skip translate: no translation API configured")
         return 0, 0
     candidates = translation_provider_candidates()
+    secrets = [key for _name, _base, key, _model in candidates]
+    model = redact_credentials(model, secrets)
     if len(candidates) > 1:
-        fallback = ", ".join(f"{name}/{cand_model}" for name, _base, _key, cand_model in candidates[1:])
+        fallback = redact_credentials(", ".join(f"{name}/{cand_model}" for name, _base, _key, cand_model in candidates[1:]), secrets)
         log(f"Translate provider={provider} model={model} fallback={fallback}")
     else:
         log(f"Translate provider={provider} model={model}")

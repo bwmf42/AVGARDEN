@@ -31,6 +31,7 @@ cfg/configs.json
 !plwt_titlezh_repair.py
 !plwt_translate_missing.py
 !heal_runner.py
+!translate_settings.py
 !weekly_backfill_details.py
 !replace_chinese.py
 

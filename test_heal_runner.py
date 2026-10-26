@@ -23,7 +23,7 @@ class TestHealRunner(unittest.TestCase):
         with mock.patch.object(h, "TRANSLATE_API_BASE", "https://relay.example/v1"), \
              mock.patch.object(h, "TRANSLATE_API_KEY", "relay-key"), \
              mock.patch.object(h, "TRANSLATE_MODEL", "gpt-5.4"), \
-             mock.patch.object(h.urllib.request, "urlopen", return_value=Response()) as urlopen:
+             mock.patch.object(h, "open_translation_request", return_value=Response()) as urlopen:
             ok, msg = h.probe_translation()
         self.assertTrue(ok)
         # Probe labels were renamed to 翻译中继 / DeepSeek by the approved relay

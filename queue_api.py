@@ -1884,6 +1884,46 @@ class QueueHTTPServer(ThreadingHTTPServer):
 
 
 class QueueHandler(BaseHTTPRequestHandler):
+    def _translate_settings(self):
+        import socket
+        from translate_settings import MAX_SETTINGS_BODY, SettingsValidationError, public_settings, save_settings
+
+        self.close_connection = True
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._json({"error": "请求体长度无效"}, 400)
+            return
+        if length < 0 or self.headers.get("Transfer-Encoding"):
+            self._json({"error": "请求体长度无效"}, 400)
+            return
+        if length > MAX_SETTINGS_BODY:
+            self._json({"error": "请求体不能超过 4 KiB"}, 413)
+            return
+        if self.command == "POST" and self.headers.get_content_type() != "application/json":
+            self._json({"error": "Content-Type 必须是 application/json"}, 415)
+            return
+        try:
+            self.connection.settimeout(10)
+            if self.command == "GET":
+                result = public_settings()
+            else:
+                raw = self.rfile.read(length)
+                try:
+                    body = json.loads(raw)
+                except (ValueError, UnicodeError):
+                    self._json({"error": "请求体必须是有效 JSON"}, 400)
+                    return
+                result = save_settings(body)
+            self._json(result)
+        except (TimeoutError, socket.timeout):
+            self._json({"error": "读取请求体超时"}, 408)
+        except SettingsValidationError as exc:
+            self._json({"error": str(exc)}, 400)
+        except Exception:
+            # Do not serialize filesystem/request exceptions containing secrets.
+            self._json({"error": "翻译设置读写失败"}, 500)
+
     def _json(self, data, status=200):
         scope = _request_scope()
         _ensure_request_id(self)
@@ -1921,6 +1961,11 @@ class QueueHandler(BaseHTTPRequestHandler):
         ok = super().parse_request()
         if ok:
             _ensure_request_id(self)
+            if (urlparse(self.path).path.rstrip("/") == "/api/translate-settings"
+                    and self.command not in ("GET", "POST")):
+                self.close_connection = True
+                self._json({"error": "仅允许 GET 和 POST"}, 405)
+                return False
         return ok
 
     def handle_one_request(self):
@@ -1948,6 +1993,9 @@ class QueueHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+        if path == "/api/translate-settings":
+            self._translate_settings()
+            return
         if path.startswith("/api/weekly-fanarts/"):
             raw_code = path.replace("/api/weekly-fanarts/", "", 1)
             item, error = localize_weekly_fanarts(raw_code)
@@ -2476,6 +2524,9 @@ class QueueHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.rstrip("/")
+        if urlparse(self.path).path.rstrip("/") == "/api/translate-settings":
+            self._translate_settings()
+            return
         if path in ("/api/p115/config", "/api/p115/config/"):
             try:
                 from src import p115_offline as p115

@@ -14,6 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.log_writer import write as log_write
 from src.weekly import actresses as actress_util, artwork, enrich, javbus, mgs, sukebei
 from weekly_store import atomic_write_json, weekly_update_lock
+from translate_settings import effective_relay
+from weekly_updater import _chat_completion
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
 WEEKLY_DIR = os.path.join(SAVE_PATH, "__weekly__")
@@ -154,7 +156,11 @@ def normalize_existing_actresses(items):
 
 
 def translate_title(item):
-    if not actress_util.item_needs_title_zh(item) or not DS_API_KEY:
+    base, key, model = effective_relay()
+    candidates = [(base, key, model)] if base and key else []
+    if DS_API_KEY:
+        candidates.append(("https://api.deepseek.com", DS_API_KEY, DS_MODEL))
+    if not actress_util.item_needs_title_zh(item) or not candidates:
         return False
 
     actress_util.ensure_actresses(item)
@@ -162,24 +168,20 @@ def translate_title(item):
         item.get("title") or "", item.get("actresses")
     )
     title = f"{item.get('id')}: {body}"
-    payload = json.dumps({
-        "model": DS_MODEL,
-        "messages": [
-            {"role": "system", "content": actress_util.translate_system_prompt()},
-            {"role": "user", "content": title},
-        ],
-        "max_tokens": 256,
-        "temperature": 0.3,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.deepseek.com/chat/completions",
-        data=payload,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {DS_API_KEY}"},
-    )
+    messages = [
+        {"role": "system", "content": actress_util.translate_system_prompt()},
+        {"role": "user", "content": title},
+    ]
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-        zh = result["choices"][0]["message"]["content"].strip()
+        last_error = None
+        for base, key, model in candidates:
+            try:
+                zh = _chat_completion(base, key, model, messages).strip()
+                break
+            except Exception as exc:
+                last_error = exc
+        else:
+            raise last_error
         if zh:
             if names:
                 zh = f"{zh.rstrip(' ：:—–-')} {' '.join(names)}".strip()
@@ -189,8 +191,8 @@ def translate_title(item):
                 return True
             item["titleZh"] = ""
             log(f"{item.get('id')} translate failed: invalid or truncated translation")
-    except (urllib.error.URLError, KeyError, ValueError, TimeoutError) as e:
-        log(f"{item.get('id')} translate failed: {e}")
+    except Exception:
+        log(f"{item.get('id')} translate failed")
     return False
 
 

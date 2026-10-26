@@ -242,6 +242,7 @@ if [ "$DEPLOY_HOT" = "1" ] && [ "$HOT_WORKER" = "1" ]; then
   if [ -n "$cid" ]; then
     for rel in \
       worker.py queue_api.py queue_store.py launcher.py heal_runner.py \
+      translate_settings.py weekly_backfill_details.py \
       qb_task_guard.py qb_file_selection.py \
       download_source.py weekly_updater.py run_scrape_followups.py \
       unwatched_chinese_refill.py requirements.txt \

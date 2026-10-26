@@ -55,6 +55,7 @@ list_identity_files() {
         unwatched_chinese_refill.py
         download_source.py
         heal_runner.py
+        translate_settings.py
         src
         tools/maintenance
       )
@@ -78,6 +79,7 @@ list_identity_files() {
         unwatched_chinese_refill.py
         download_source.py
         heal_runner.py
+        translate_settings.py
         backend
         frontend/src
         src
