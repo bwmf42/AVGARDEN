@@ -17,7 +17,7 @@ from weekly_updater import log
 MAX_BODY = 64 * 1024
 STATE_PATH = Path('/db/title_translate_state.json')
 CODE_RE = re.compile(r'[A-Z0-9]{2,10}-[0-9]{1,6}[A-Z]?', re.I | re.ASCII)
-ERROR_KINDS = {'auth', 'quota', 'network', 'config', 'rejected', 'no_folder',
+ERROR_KINDS = {'auth', 'quota', 'network', 'config', 'rejected', 'no_folder', 'has_nfo',
                'unknown', 'aborted', 'interrupted'}
 
 
@@ -82,6 +82,20 @@ def classify_error(exc):
 def idle_state():
     return dict(state='idle', started_at=0, finished_at=0, total=0,
                 created=0, skipped=0, failed=0, errors=[])
+
+
+def _codes_with_nfo(media_root):
+    codes = set()
+    for folder in media_root.iterdir():
+        # Keep the same directory/video eligibility as iter_missing_folders.
+        if not folder.is_dir() or folder.is_symlink() or folder.name == 'thumb' or folder.name.startswith('_'):
+            continue
+        if titles.has_nfo_file(folder) and any(
+            path.is_file() and not path.name.startswith('._') and path.suffix.lower() in titles.VIDEO_SUFFIXES
+            for path in folder.rglob('*')
+        ):
+            codes.update(titles.title_key_candidates(folder.name))
+    return codes
 
 
 class TitleTranslateJob:
@@ -181,6 +195,7 @@ class TitleTranslateJob:
             for folder in titles.iter_missing_folders(self.media_root):
                 for code in titles.title_key_candidates(folder.name):
                     folders.setdefault(code, folder)
+            codes_with_nfo = None
             aborted = False
             for item in items:
                 code = item['code']
@@ -188,7 +203,10 @@ class TitleTranslateJob:
                 if aborted:
                     counter, kind = 'skipped', 'aborted'
                 elif code not in folders:
-                    counter, kind = 'skipped', 'no_folder'
+                    if codes_with_nfo is None:
+                        codes_with_nfo = _codes_with_nfo(self.media_root)
+                    counter = 'skipped'
+                    kind = 'has_nfo' if code in codes_with_nfo else 'no_folder'
                 else:
                     errors = []
                     try:

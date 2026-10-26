@@ -327,19 +327,85 @@ class TitleTranslateJobTests(unittest.TestCase):
                 else:
                     self.assertEqual((state['created'], state['skipped'], state['failed']), (2, 1, 0))
 
-    def test_no_folder_does_not_translate_or_overwrite_existing_nfo(self):
+    def test_has_nfo_does_not_translate_or_overwrite_even_when_forced(self):
         folder = self.folder('ABC-123')
         nested = folder / 'nested'
         nested.mkdir()
         nfo = nested / 'metadata.NFO'
         nfo.write_bytes(b'existing metadata')
-        self.assertEqual(self.post(self.body('ABC-123', 'ABC-124'))[0], 202)
-        state = self.done()
-        self.assertEqual((state['created'], state['skipped'], state['failed']), (0, 2, 0))
-        self.assertEqual(state['errors'], [{'code': code, 'kind': 'no_folder'} for code in ('ABC-123', 'ABC-124')])
-        self.translate.assert_not_called()
+        for force in ([], ['ABC-123']):
+            with self.subTest(force=force):
+                self.assertEqual(self.post({**self.body('ABC-123'), 'force': force})[0], 202)
+                state = self.done()
+                self.assertEqual((state['created'], state['skipped'], state['failed']), (0, 1, 0))
+                self.assertEqual(state['errors'], [{'code': 'ABC-123', 'kind': 'has_nfo'}])
+                self.translate.assert_not_called()
+                self.assertEqual(nfo.read_bytes(), b'existing metadata')
+                self.assertEqual(list(folder.rglob('*.nfo')), [])
+                self.assertEqual(jobs.TitleTranslateJob(self.media, self.path).snapshot(), state)
+
+    def test_mixed_has_nfo_missing_and_creatable_folders(self):
+        existing = self.folder('300MIUM-1395-C')
+        nfo = existing / 'metadata.nfo'
+        nfo.write_bytes(b'existing metadata')
+        pending = self.folder('ABC-123')
+        # Existing NFO first must not abort the later translation; both name
+        # candidates should match, and all misses share one additional scan.
+        with mock.patch.object(jobs, '_codes_with_nfo', wraps=jobs._codes_with_nfo) as scan:
+            self.assertEqual(self.post(self.body('300MIUM-1395', 'ABC-124', 'MIUM-1395', 'ABC-123'))[0], 202)
+            state = self.done()
+        scan.assert_called_once_with(self.media)
+        self.assertEqual((state['created'], state['skipped'], state['failed']), (1, 3, 0))
+        self.assertEqual(state['errors'], [
+            {'code': '300MIUM-1395', 'kind': 'has_nfo'},
+            {'code': 'ABC-124', 'kind': 'no_folder'},
+            {'code': 'MIUM-1395', 'kind': 'has_nfo'},
+        ])
+        self.translate.assert_called_once()
         self.assertEqual(nfo.read_bytes(), b'existing metadata')
-        self.assertEqual(list(folder.rglob('*.nfo')), [])
+        self.assertEqual(ET.parse(pending / 'ABC-123.nfo').findtext('title'), f'ABC-123 {TRANSLATED}')
+        self.assertEqual(jobs.TitleTranslateJob(self.media, self.path).snapshot(), state)
+
+    def test_missing_nfo_folder_takes_priority_and_avoids_extra_scan(self):
+        existing = self.folder('ABC-123-C')
+        (existing / 'metadata.nfo').write_bytes(b'existing metadata')
+        pending = self.folder('ABC-123')
+        with mock.patch.object(jobs, '_codes_with_nfo', wraps=jobs._codes_with_nfo) as scan:
+            self.assertEqual(self.post(self.body('ABC-123'))[0], 202)
+            state = self.done()
+        scan.assert_not_called()
+        self.assertEqual((state['created'], state['skipped'], state['failed']), (1, 0, 0))
+        self.assertEqual(state['errors'], [])
+        self.translate.assert_called_once()
+        self.assertTrue((pending / 'ABC-123.nfo').is_file())
+
+    def test_has_nfo_scan_uses_missing_folder_eligibility(self):
+        for name in ('thumb', '_ABC-121', 'ABC-122', 'ABC-123', 'ABC-124'):
+            folder = self.media / name
+            folder.mkdir()
+            (folder / 'metadata.nfo').write_bytes(b'existing metadata')
+        for name in ('thumb', '_ABC-121'):
+            (self.media / name / 'movie.mp4').write_bytes(b'video')
+        # A regular file, a directory symlink, no video, and an AppleDouble
+        # video entry must all remain no_folder rather than has_nfo.
+        (self.media / 'ABC-120').write_bytes(b'not a directory')
+        (self.media / 'ABC-123' / '._movie.mp4').write_bytes(b'not video')
+        (self.media / 'ABC-124' / 'movie.mp4').mkdir()
+        (self.media / 'ABC-125').symlink_to(self.media / 'thumb', target_is_directory=True)
+        nested = self.media / 'ABC-126' / 'nested'
+        nested.mkdir(parents=True)
+        (nested / 'movie.MKV').write_bytes(b'video')
+        (nested / '.metadata.NFO').write_bytes(b'existing metadata')
+        codes = [f'ABC-{number}' for number in range(120, 127)]
+        self.assertEqual(jobs._codes_with_nfo(self.media), {'ABC-126'})
+        self.assertEqual(self.post(self.body(*codes))[0], 202)
+        state = self.done()
+        self.assertEqual((state['created'], state['skipped'], state['failed']), (0, 7, 0))
+        self.assertEqual(state['errors'], [
+            {'code': code, 'kind': 'has_nfo' if code == 'ABC-126' else 'no_folder'}
+            for code in codes
+        ])
+        self.translate.assert_not_called()
 
     def test_force_short_title_and_original_unforced_behavior(self):
         for force in (False, True):
