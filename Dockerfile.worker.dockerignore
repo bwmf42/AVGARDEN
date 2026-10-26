@@ -32,6 +32,7 @@ cfg/configs.json
 !plwt_translate_missing.py
 !heal_runner.py
 !translate_settings.py
+!title_translate_job.py
 !weekly_backfill_details.py
 !replace_chinese.py
 
@@ -41,3 +42,4 @@ cfg/configs.json
 !tools/maintenance/weekly_cache_maintenance.py
 !tools/maintenance/weekly_retention_maintenance.py
 !tools/maintenance/media_dates.py
+!tools/maintenance/translate_media_titles.py

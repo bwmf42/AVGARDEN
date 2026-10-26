@@ -56,6 +56,7 @@ list_identity_files() {
         download_source.py
         heal_runner.py
         translate_settings.py
+        title_translate_job.py
         src
         tools/maintenance
       )
@@ -80,6 +81,7 @@ list_identity_files() {
         download_source.py
         heal_runner.py
         translate_settings.py
+        title_translate_job.py
         backend
         frontend/src
         src
