@@ -93,7 +93,9 @@ prevents creation. The check is repeated just before atomic replacement.
 Invalid codes, missing/unparseable pages and empty/non-Han translations are
 counted and skipped without leaving an NFO or temporary file.
 
-Without `--titles-json`, new `<code>.nfo` files contain only `title` (`code Chinese title`), `originaltitle`,
+Both creation paths add `generator` = `avgarden-title-only/1` after the optional `originaltitle` and before other metadata; existing-NFO rewrites never add this marker.
+
+Without `--titles-json`, new `<code>.nfo` files contain only `title` (`code Chinese title`), `originaltitle`, `generator`,
 available `premiered`/`releasedate`, numeric `runtime`, and actor names. They
 contain no artwork references, actor thumbnails, genres or plot. Creation uses
 page fetching plus metadata extraction only, bypassing the full scraper.
@@ -121,9 +123,9 @@ guessing another code. Invalid folders such as `艾薇` and `你在录视频` re
 this option does not change `clean_avid` or page-fetch behavior.
 
 For JSON titles needing translation, the file contains exactly `title` (`code
-Chinese translation`) and `originaltitle` (the supplied original). Titles that
+Chinese translation`), `originaltitle` (the supplied original), and `generator`. Titles that
 the existing heuristic considers already translated are used verbatim as
-`title`, with no translation request and no `originaltitle`. No other metadata
+`title` alongside `generator`, with no translation request and no `originaltitle`. No other metadata
 or artwork fields are written. Missing/blank titles report `no_title` with the
 code; empty/non-Han translations and translation errors report `unchanged` and
 leave no files. Dry-run remains offline and read-only, reporting each folder as

@@ -22,6 +22,7 @@ from weekly_updater import translate_title_once
 
 
 SAVE_PATH = Path(os.environ.get("SAVE_PATH", "/data"))
+NFO_GENERATOR = "avgarden-title-only/1"
 CODE_RE = re.compile(r"([A-Z]{2,}\d*)-(\d+)", re.I)
 JAPANESE_KANA_RE = re.compile(r"[\u3040-\u30ff]")
 HAN_RE = re.compile(r"[\u4e00-\u9fff]")
@@ -202,6 +203,7 @@ def process_missing_folder(folder, apply=False, before_network=lambda: None, tit
     ET.SubElement(root, "title").text = title
     if original_title:
         ET.SubElement(root, "originaltitle").text = original_title
+    ET.SubElement(root, "generator").text = NFO_GENERATOR
     if metadata is not None:
         if metadata.release_date:
             ET.SubElement(root, "premiered").text = metadata.release_date

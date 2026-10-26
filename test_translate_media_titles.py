@@ -126,7 +126,7 @@ class MissingNfoTest(unittest.TestCase):
             output = self.main("--create-missing", "--apply", "--limit", "1")
         tree = ET.parse(folder / "ABF-123.nfo").getroot()
         self.assertEqual(tree.tag, "movie")
-        self.assertEqual({node.tag for node in tree}, {"title", "originaltitle", "premiered", "releasedate", "runtime", "actor"})
+        self.assertEqual({node.tag for node in tree}, {"title", "originaltitle", "generator", "premiered", "releasedate", "runtime", "actor"})
         self.assertEqual(tree.findtext("title"), "ABF-123 初次约会的故事")
         self.assertEqual(tree.findtext("originaltitle"), self.metadata.title)
         self.assertEqual(tree.findtext("runtime"), "120")
@@ -143,6 +143,25 @@ class MissingNfoTest(unittest.TestCase):
         delay.assert_called_once_with(3.0, 6.0)
         sleep.assert_called_once_with(3)
         self.assertIn("created=1", output)
+
+    def test_page_fetch_creation_marks_generator_after_originaltitle(self):
+        folder = self.folder()
+        self.assertEqual(titles.process_missing_folder(folder, apply=True)[0], "created")
+        root = ET.parse(folder / "ABF-123.nfo").getroot()
+        self.assertEqual([node.tag for node in root],
+                         ["title", "originaltitle", "generator", "premiered", "releasedate", "runtime", "actor"])
+        self.assertEqual(root.findtext("generator"), "avgarden-title-only/1")
+
+    def test_existing_nfo_rewrite_does_not_add_generator(self):
+        folder = self.folder()
+        nfo = folder / "MIHD-004.nfo"
+        root = ET.Element("movie")
+        ET.SubElement(root, "title").text = MIHD
+        ET.ElementTree(root).write(nfo, encoding="utf-8")
+        self.assertEqual(titles.process_file(nfo, apply=True)[0], "updated")
+        saved = ET.parse(nfo).getroot()
+        self.assertEqual(saved.findtext("title"), "MIHD-004 初次约会的故事")
+        self.assertIsNone(saved.find("generator"))
 
     def test_any_existing_nfo_is_skipped_including_nested_hidden_and_uppercase(self):
         for index, name in enumerate(("old.nfo", "nested/old.nfo", "._ABF-123.nfo", "nested/._old.NFO", "ABF-123.nfo")):
@@ -326,7 +345,7 @@ class TitlesJsonTest(unittest.TestCase):
         _, output = self.main("--create-missing", "--apply")
         root = ET.parse(folder / "ABF-123.nfo").getroot()
         self.assertEqual(root.tag, "movie")
-        self.assertEqual([node.tag for node in root.iter()], ["movie", "title", "originaltitle"])
+        self.assertEqual([node.tag for node in root.iter()], ["movie", "title", "originaltitle", "generator"])
         self.assertEqual(root.findtext("title"), "ABF-123 初次约会的故事")
         self.assertEqual(root.findtext("originaltitle"), self.jp_title)
         self.assertEqual({p.name for p in folder.iterdir()}, {"movie.MP4", "ABF-123.nfo"})
@@ -341,12 +360,25 @@ class TitlesJsonTest(unittest.TestCase):
         self.write_titles({"ABF-123": chinese_title})
         _, output = self.main("--create-missing", "--apply")
         root = ET.parse(folder / "ABF-123.nfo").getroot()
-        self.assertEqual([node.tag for node in root], ["title"])
+        self.assertEqual([node.tag for node in root], ["title", "generator"])
         self.assertEqual(root.findtext("title"), chinese_title)
         self.translate.assert_not_called()
         self.sleep.assert_not_called()
         self.delay.assert_not_called()
         self.assertIn("created=1", output)
+
+    def test_json_creation_marks_generator_with_and_without_translation(self):
+        for code, title, tags in (
+            ("ABF-123", self.jp_title, ["title", "originaltitle", "generator"]),
+            ("ABF-124", "中文标题", ["title", "generator"]),
+        ):
+            with self.subTest(code=code):
+                folder = self.folder(code)
+                self.assertEqual(titles.process_missing_folder(
+                    folder, apply=True, titles_by_avid={code: title})[0], "created")
+                root = ET.parse(folder / f"{code}.nfo").getroot()
+                self.assertEqual([node.tag for node in root], tags)
+                self.assertEqual(root.findtext("generator"), "avgarden-title-only/1")
 
     def test_missing_or_empty_title_is_counted_without_network_or_writes(self):
         self.folder()
@@ -542,7 +574,7 @@ class TitlesJsonTest(unittest.TestCase):
                 self.assertEqual(title, f"{code} 初次约会的故事")
                 self.assertEqual(title.count(code), 1)
                 self.assertEqual(root.findtext("originaltitle"), f"{code} {self.jp_title}")
-                self.assertEqual([node.tag for node in root], ["title", "originaltitle"])
+                self.assertEqual([node.tag for node in root], ["title", "originaltitle", "generator"])
                 self.assertEqual({p.name for p in folder.iterdir()}, {"movie.MP4", f"{code}.nfo"})
                 self.translate.assert_called_once_with(code, f"{code} {self.jp_title}", actresses=[])
 
