@@ -1506,6 +1506,55 @@ func translateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
+func titleTranslateHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.URL.EscapedPath() != "/api/title-translate" || r.URL.RawQuery != "" || r.URL.ForceQuery {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		httpError(w, "仅允许 GET 和 POST", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.ContentLength > 65536 {
+		httpError(w, "请求体不能超过 64 KiB", http.StatusRequestEntityTooLarge)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 65536))
+	if err != nil {
+		var sizeErr *http.MaxBytesError
+		if errors.As(err, &sizeErr) {
+			httpError(w, "请求体不能超过 64 KiB", http.StatusRequestEntityTooLarge)
+		} else {
+			httpError(w, "读取请求体失败", http.StatusBadRequest)
+		}
+		return
+	}
+	if r.Method == http.MethodPost {
+		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil || mediaType != "application/json" {
+			httpError(w, "Content-Type 必须是 application/json", http.StatusUnsupportedMediaType)
+			return
+		}
+	}
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method,
+		strings.TrimRight(queueAPI, "/")+"/api/title-translate", bytes.NewReader(body))
+	if err != nil {
+		httpError(w, "标题翻译代理失败", http.StatusInternalServerError)
+		return
+	}
+	proxyReq.Header.Set("Content-Type", "application/json")
+	resp, err := queueHTTPClient.Do(proxyReq)
+	if err != nil {
+		httpError(w, "标题翻译服务不可用", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
 func resolveHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		httpError(w, "Method not allowed", http.StatusMethodNotAllowed)

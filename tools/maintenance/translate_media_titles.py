@@ -153,7 +153,8 @@ def iter_missing_folders(root):
             yield folder
 
 
-def process_missing_folder(folder, apply=False, before_network=lambda: None, titles_by_avid=None):
+def process_missing_folder(folder, apply=False, before_network=lambda: None, titles_by_avid=None,
+                           *, errors=None, force=False):
     if has_nfo_file(folder):
         return "skip", "NFO already exists"
     avid = clean_avid(folder.name)
@@ -170,14 +171,16 @@ def process_missing_folder(folder, apply=False, before_network=lambda: None, tit
         original_title = titles_by_avid[avid]
         if not normalize_title(original_title):
             return "no_title", folder.name
-        needs_translation = title_needs_translation(original_title, avid)
+        needs_translation = force or title_needs_translation(original_title, avid)
         if not apply:
             return "would_create" if needs_translation else "would_create_no_translate", avid
         if needs_translation:
             before_network()
             try:
                 title = translate_title(avid, original_title, preserve_avid=True)
-            except Exception:
+            except Exception as exc:
+                if errors is not None:
+                    errors.append(exc)
                 return "unchanged", f"{avid}: translation failed"
             if not title:
                 return "unchanged", avid

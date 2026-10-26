@@ -730,6 +730,19 @@ def log(msg):
     print(f"[QueueAPI] {msg}", flush=True)
 
 
+_title_translate_job = None
+_title_translate_lock = threading.Lock()
+
+
+def get_title_translate_job():
+    global _title_translate_job
+    with _title_translate_lock:
+        if _title_translate_job is None:
+            from title_translate_job import TitleTranslateJob
+            _title_translate_job = TitleTranslateJob(logger=log)
+        return _title_translate_job
+
+
 def log_write(source, message):
     """写入 av-garden.log，与 launcher 的 log_write 保持一致"""
     from datetime import datetime
@@ -1884,6 +1897,48 @@ class QueueHTTPServer(ThreadingHTTPServer):
 
 
 class QueueHandler(BaseHTTPRequestHandler):
+    def _title_translate(self):
+        import socket
+        from title_translate_job import MAX_BODY, ValidationError
+
+        self.close_connection = True
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._json({"error": "请求体长度无效"}, 400)
+            return
+        if length < 0 or self.headers.get("Transfer-Encoding"):
+            self._json({"error": "请求体长度无效"}, 400)
+            return
+        if length > MAX_BODY:
+            self._json({"error": "请求体不能超过 64 KiB"}, 413)
+            return
+        if self.command == "POST" and self.headers.get_content_type() != "application/json":
+            self._json({"error": "Content-Type 必须是 application/json"}, 415)
+            return
+        try:
+            self.connection.settimeout(10)
+            if self.command == "GET":
+                self._json(get_title_translate_job().snapshot())
+                return
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                self._json({"error": "请求体长度无效"}, 400)
+                return
+            try:
+                body = json.loads(raw)
+            except (ValueError, UnicodeError):
+                self._json({"error": "请求体必须是有效 JSON"}, 400)
+                return
+            status, result = get_title_translate_job().submit(body)
+            self._json(result, status)
+        except (TimeoutError, socket.timeout):
+            self._json({"error": "读取请求体超时"}, 408)
+        except ValidationError as exc:
+            self._json({"error": str(exc)}, 400)
+        except Exception:
+            self._json({"error": "标题翻译作业读写失败"}, 500)
+
     def _translate_settings(self):
         import socket
         from translate_settings import MAX_SETTINGS_BODY, SettingsValidationError, public_settings, save_settings
@@ -1961,6 +2016,15 @@ class QueueHandler(BaseHTTPRequestHandler):
         ok = super().parse_request()
         if ok:
             _ensure_request_id(self)
+            path = urlparse(self.path).path
+            if path == "/api/title-translate" or path.startswith("/api/title-translate/"):
+                self.close_connection = True
+                if self.path != "/api/title-translate":
+                    self._json({"error": "not found"}, 404)
+                    return False
+                if self.command not in ("GET", "POST"):
+                    self._json({"error": "仅允许 GET 和 POST"}, 405)
+                    return False
             if (urlparse(self.path).path.rstrip("/") == "/api/translate-settings"
                     and self.command not in ("GET", "POST")):
                 self.close_connection = True
@@ -1991,6 +2055,9 @@ class QueueHandler(BaseHTTPRequestHandler):
         self._json({})
 
     def do_GET(self):
+        if self.path == "/api/title-translate":
+            self._title_translate()
+            return
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
         if path == "/api/translate-settings":
@@ -2523,6 +2590,9 @@ class QueueHandler(BaseHTTPRequestHandler):
             save_state(state)
 
     def do_POST(self):
+        if self.path == "/api/title-translate":
+            self._title_translate()
+            return
         path = self.path.rstrip("/")
         if urlparse(self.path).path.rstrip("/") == "/api/translate-settings":
             self._translate_settings()

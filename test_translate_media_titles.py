@@ -151,6 +151,36 @@ class RefusalNfoSafetyTest(unittest.TestCase):
             self.assertEqual([node.tag for node in root], ["title", "originaltitle", "generator"])
 
 
+class MissingNfoOptionsTest(unittest.TestCase):
+    def test_errors_collect_original_exception_without_changing_return(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "ABF-123"
+            folder.mkdir()
+            exception = RuntimeError("offline")
+            errors = []
+            with mock.patch.object(titles, "translate_title", side_effect=exception):
+                result = titles.process_missing_folder(folder, apply=True,
+                    titles_by_avid={"ABF-123": "はじめてのデート"}, errors=errors)
+                self.assertEqual(result, ("unchanged", "ABF-123: translation failed"))
+                self.assertEqual(errors, [exception])
+                self.assertIs(errors[0], exception)
+                self.assertEqual(titles.process_missing_folder(folder, apply=True,
+                    titles_by_avid={"ABF-123": "はじめてのデート"}), result)
+            self.assertEqual(list(folder.iterdir()), [])
+
+    def test_force_dry_run_stays_offline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "NIMA-083"
+            folder.mkdir()
+            with mock.patch.object(titles, "translate_title") as translate:
+                for force, expected in ((False, "would_create_no_translate"), (True, "would_create")):
+                    self.assertEqual(titles.process_missing_folder(folder,
+                        titles_by_avid={"NIMA-083": "実写版！不器用な二人 美咲かんな"}, force=force),
+                        (expected, "NIMA-083"))
+                translate.assert_not_called()
+            self.assertEqual(list(folder.iterdir()), [])
+
+
 class MissingNfoTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

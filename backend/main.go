@@ -520,6 +520,8 @@ func main() {
 	mux.HandleFunc("/api/resolve/", resolveHandler)
 	mux.HandleFunc("/api/translate-settings", translateSettingsHandler)
 	mux.HandleFunc("/api/translate-settings/", translateSettingsHandler)
+	mux.HandleFunc("/api/title-translate", titleTranslateHandler)
+	mux.HandleFunc("/api/title-translate/", titleTranslateHandler)
 	mux.HandleFunc("/api/weekly-fanarts/", onlineSearchHandler)
 	mux.HandleFunc("/api/addvideo/", addVideoHandler)
 	mux.HandleFunc("/file/", imageHandler)
