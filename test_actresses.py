@@ -233,6 +233,93 @@ class TestActresses(unittest.TestCase):
         self.assertEqual(a.actress_alias_group("河北彩花"), ["河北彩伽", "河北彩花"])
         self.assertEqual(a.clean_actresses(["河北彩花", "河北彩伽"]), ["河北彩伽"])
 
+    def test_title_zh_keeps_japanese_series_and_actress_names(self):
+        titles = [
+            "259LUXU-1881 与爆乳超淫荡保姆的油性爱 草食系无法满足的色情爆乳 ラグジュTV 1874",
+            "DSOD-046: “下跪是犯规啊…” 因怕被讨厌而无法拒绝的美少女J系",
+            "ABF-387：毒舌女服务员",
+            "HSODA-069 魔镜NTR美容院 隔壁纤美美乳女友被人睡走，我却抵不住巨乳姐姐的高超技巧",
+            "MIDA-696 全裸羞耻调教打工 被变态店长要求在深夜班次中不穿胸罩 葵いぶき",
+        ]
+        for title in titles:
+            with self.subTest(title=title):
+                self.assertTrue(a.is_valid_title_zh(title))
+
+    def test_title_zh_rejects_refusals_and_non_chinese_results(self):
+        source = "【爆乳どスケベ保母さんとオイルSEX】…"
+        for title in [
+            "申し訳ありませんが、成人向け動画のタイトル翻訳はお手伝いできません。",
+            "I can't help with this request.",
+            "I appreciate you testing this, but…",
+            "抱歉，我无法协助翻译此类内容。",
+            "すみません、このリクエストにはお応えできません。",
+            "これはテストです、ありがとうございます",
+            "259LUXU-1881",
+        ]:
+            with self.subTest(title=title):
+                self.assertFalse(a.is_valid_title_zh(title, source, "259LUXU-1881"))
+
+    def test_title_refusal_prefixes_ignore_case_and_punctuation_width(self):
+        prefixes = [
+            "申し訳", "すみません", "恐れ入り", "お手伝いできません",
+            "対応できません", "翻訳できません", "お断り", "ご要望にはお応え",
+            "I appreciate", "I apologize", "Sorry", "I'm sorry", "I'm not able",
+            "I won't", "As an AI", "很抱歉", "抱歉", "无法为您", "我无法", "我不能",
+        ]
+        # Enough Han text keeps the ratio check from masking missing keywords.
+        tail = "这是模型返回的解释内容而非所需的中文作品译名" * 4
+        for prefix in prefixes + ["Ｉ＇Ｍ ＳＯＲＲＹ", "i’m not able", "i WoN’t"]:
+            for punctuation in [",", "，", ":", "：", ".", "。"]:
+                with self.subTest(prefix=prefix, punctuation=punctuation):
+                    self.assertFalse(a.is_valid_title_zh(f"ABF-387：{prefix}{punctuation}{tail}"))
+
+    def test_title_refusal_matching_stays_at_start(self):
+        for phrase in ["我无法", "抱歉", "Sorry", "作为AI无法帮助"]:
+            with self.subTest(phrase=phrase):
+                self.assertTrue(a.is_valid_title_zh(f"女服务员说{phrase}，却仍无法拒绝的故事"))
+
+    def test_title_zh_kana_ratio_boundary(self):
+        han = "中文作品标题保留日本系列名"  # 13 Han characters.
+        cases = [
+            ("あいうえおか", True),   # 6/19 < 0.35
+            ("あいうえおかき", True),  # 7/20 == 0.35
+            ("あいうえおかきく", False),  # 8/21 > 0.35
+            ("アイウエオカキク", False),
+            ("ｱｲｳｴｵｶｷｸ", False),
+        ]
+        for kana, expected in cases:
+            for prefix in ["", "259LUXU-1881："]:
+                with self.subTest(kana=kana, prefix=prefix):
+                    # Latin text, numbers and punctuation cannot dilute the ratio.
+                    title = f"{prefix}{han}{kana} TV 1874 NTR・，。"
+                    self.assertEqual(a.is_valid_title_zh(title), expected)
+
+    def test_translate_title_once_uses_fallback_after_japanese_refusal(self):
+        from unittest import mock
+        import weekly_updater
+
+        refusal = "申し訳ありませんが、成人向け動画のタイトル翻訳はお手伝いできません。"
+        translated = "与爆乳超淫荡保姆的油性爱 草食系无法满足的色情爆乳"
+        providers = [
+            ("relay", "https://relay.example/v1", "fake-relay", "relay-model"),
+            ("deepseek", "https://deepseek.example/v1", "fake-deepseek", "fallback-model"),
+        ]
+
+        def complete(base, api_key, model, messages, temperature=0.3):
+            return refusal if base == providers[0][1] else translated
+
+        with mock.patch.object(weekly_updater, "translation_provider_candidates", return_value=providers), \
+             mock.patch.object(weekly_updater, "_chat_completion", side_effect=complete) as chat, \
+             mock.patch("src.status_report.record_deepseek_usage") as usage:
+            result = weekly_updater.translate_title_once(
+                "259LUXU-1881", "【爆乳どスケベ保母さんとオイルSEX】…", actresses=[],
+            )
+        self.assertEqual(result, translated)
+        self.assertEqual(chat.call_args_list[0].args[0], providers[0][1])
+        self.assertEqual(chat.call_args_list[-1].args[:3], providers[1][1:])
+        self.assertEqual(sum(call.args[0] == providers[1][1] for call in chat.call_args_list), 1)
+        usage.assert_called_once_with(1)
+
 
 if __name__ == "__main__":
     unittest.main()

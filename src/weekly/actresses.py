@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from typing import Iterable, List, Sequence, Tuple
 
 # Forum/DMM scrape junk
@@ -169,14 +170,22 @@ _TITLE_BRACKETS = {
 }
 _TITLE_BRACKET_CLOSE = {close: open_ for open_, close in _TITLE_BRACKETS.items()}
 _HAN_RE = re.compile(r"[\u4e00-\u9fff]")
+_KANA_RE = re.compile(r"[\u3041-\u3096\u309d-\u309f\u30a1-\u30fa\u30fc-\u30ff\u31f0-\u31ff]")
+# Allow short JP series/actress names in Chinese titles, but reject JP sentences.
+# Count only kana + Han so codes, Latin brands and punctuation cannot dilute it.
+_TITLE_MAX_KANA_RATIO = 0.35
 _TITLE_REFUSAL_RE = re.compile(
     r"(?:"
     r"^I\s+can(?:not|'t)\s+(?:assist|help)\b|"
     r"^I\s+am\s+sorry\b|"
-    r"^抱歉(?:[，,。！？!：:]|$)|"
+    r"^I\s+(?:appreciate|apologize)\b|"
+    r"^Sorry\b|^I'm\s+(?:sorry|not\s+able)\b|^I\s+won't\b|^As\s+an\s+AI\b|"
+    r"^申し訳|^すみません|^恐れ入り|^お手伝いできません|"
+    r"^対応できません|^翻訳できません|^お断り|^ご要望にはお応え|"
+    r"^很?抱歉|^无法为您|^我无法|^我不能|"
     r"^对不起(?:[，,。！？!：:]|$)|"
     r"^无法协助\b|^不能协助\b|^无法帮助\b|^不能帮助\b|"
-    r"作为(?:一个|一名|该)?AI.{0,40}(?:不能|无法|不可以|不能协助|无法协助|不能帮助|无法帮助)"
+    r"^作为(?:一个|一名|该)?AI.{0,40}(?:不能|无法|不可以|不能协助|无法协助|不能帮助|无法帮助)"
     r")",
     re.I,
 )
@@ -570,7 +579,13 @@ def is_valid_title_zh(title_zh: str, source_title: str = "", video_id: str = "")
         return False
     if not _has_han_text(body):
         return False
-    if _TITLE_REFUSAL_RE.search(body):
+    # Fold full-width Latin/punctuation and half-width kana for validation only.
+    normalized_body = unicodedata.normalize("NFKC", body).replace("’", "'").replace("‘", "'")
+    if _TITLE_REFUSAL_RE.search(normalized_body):
+        return False
+    han_count = len(_HAN_RE.findall(normalized_body))
+    kana_count = len(_KANA_RE.findall(normalized_body))
+    if kana_count / (kana_count + han_count) > _TITLE_MAX_KANA_RATIO:
         return False
 
     source_body = _CODE_PREFIX.sub("", str(source_title or "").strip(), count=1)
