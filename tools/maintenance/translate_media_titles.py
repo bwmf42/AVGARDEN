@@ -25,6 +25,10 @@ SAVE_PATH = Path(os.environ.get("SAVE_PATH", "/data"))
 NFO_GENERATOR = "avgarden-title-only/1"
 CODE_RE = re.compile(r"([A-Z]{2,}\d*)-(\d+)", re.I)
 JAPANESE_KANA_RE = re.compile(r"[\u3040-\u30ff]")
+HIRAGANA_RE = re.compile(r"[ぁ-ゖ]")
+# Japanese sentences almost always contain particles; one hiragana may be a
+# leftover name or interjection in a translated Chinese title.
+MIN_HIRAGANA_FOR_TRANSLATION = 2
 HAN_RE = re.compile(r"[\u4e00-\u9fff]")
 ACTOR_SUFFIX_RE = re.compile(r"\s+[\u3041-\u3096\u30a1-\u30fa\u4e00-\u9fffー・·]+$")
 VIDEO_SUFFIXES = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".wmv", ".ts"}
@@ -53,7 +57,7 @@ def normalize_title(title):
 
 
 def title_needs_translation(title, avid=""):
-    """Translate if kana remains and Han / (Han + kana) is below 50%.
+    """Translate with at least two hiragana, or kana and a Han ratio below 50%.
 
     Ignore the leading code and one space-separated trailing actor token.
     Latin brands, whitespace and punctuation do not dilute the Han ratio.
@@ -66,6 +70,8 @@ def title_needs_translation(title, avid=""):
     else:
         body = re.sub(r"^[A-Z0-9]+-\d+[A-Z]?(?=\s|$)\s*", "", body, flags=re.I)
     body = ACTOR_SUFFIX_RE.sub("", body)
+    if len(HIRAGANA_RE.findall(body)) >= MIN_HIRAGANA_FOR_TRANSLATION:
+        return True
     kana = len(JAPANESE_KANA_RE.findall(body))
     han = len(HAN_RE.findall(body))
     return kana > 0 and han / (han + kana) < 0.5

@@ -57,7 +57,7 @@ class TitleDetectionTest(unittest.TestCase):
             ("ABF-123 ドキドキする初体験 葵いぶき", "", True),
             ("ABF-123 中文标题 ジュリア・アン", "", False),
             ("ABF-123 中文标题 尾崎エリカ", "", False),
-            ("ABF-123 中文のの", "", False),  # exactly 50% Han
+            ("ABF-123 中文のの", "", True),  # Two hiragana take priority over the Han ratio.
         ]
         for title, avid, expected in cases:
             with self.subTest(title=title):
@@ -65,6 +65,90 @@ class TitleDetectionTest(unittest.TestCase):
 
     def test_chinese_title_with_japanese_actor_is_not_retranslated(self):
         self.assertFalse(titles.title_needs_translation(MIDA, "MIDA-696"))
+
+    def test_japanese_titles_with_hiragana(self):
+        cases = [
+            ("JUFE-628", "悪徳整体師の餌食となった白桃巨乳ボディの若妻 持野蓬"),
+            ("JUQ-665", "富も、名誉も、愛情も、快楽の前には全て無価値―。 社長夫人、凋落のNTR 実浜みき"),
+            ("IPZZ-946", "妻子の帰省中、息子が通う園で働く元後輩保育士の …"),  # Supplied title excerpt.
+            ("MIHD-004", "ハメドリ 配信限定 MOODYZ専属のナチュラルSEXを解禁 石原希望"),
+            ("HUNTC-499", "無自覚に男を勃起させる罪な女の気まぐれ手コキ。"
+             "その日の気分でボクの勃起したチ○ポを抜いたり、小島みこ 森あやみ"),
+            ("JYMA-111", "ワケありAV出演 世間知らずの豊満熟女を肉オナホにしてやりました。 藤沢麗央"),
+            ("HJMO-732", "清純人妻限定！固定吸引耐え抜きノーハンドフェラ選手権！快楽に屈さず連続フェラ"),
+            ("NHDTC-22701", "中に出してもいいから止まってください！！！嫌イキ巨尻ムスメ"),
+        ]
+        for code, body in cases:
+            for avid in ("", code):
+                with self.subTest(code=code, avid=avid):
+                    self.assertTrue(titles.title_needs_translation(f"{code} {body}", avid))
+
+    def test_translated_chinese_titles_are_not_retranslated(self):
+        cases = [
+            "ABF-387 毒舌女服务员",
+            "IPZZ-890 爱上我的害羞后辈 任我摆布的中出飞机杯宣言",
+            "MIDA-696 全裸羞耻调教打工 被变态店长要求在深夜班次中不穿胸罩 葵いぶき",
+            "259LUXU-1881 与爆乳超淫荡保姆的油性爱 草食系无法满足 ラグジュTV 1874",
+            "MIMK-270 我先喜欢上的面无表情青梅竹马，无接吻交尾练习 真人版",
+        ]
+        for title in cases:
+            with self.subTest(title=title):
+                self.assertFalse(titles.title_needs_translation(title))
+
+    def test_nima_083_single_hiragana_known_false_negative(self):
+        # After stripping 美咲かんな, only な remains. Keep this known Japanese
+        # false negative: threshold 1 would also retranslate Chinese with one の.
+        self.assertFalse(titles.title_needs_translation(
+            "NIMA-083 実写版！不器用な二人 美咲かんな", "NIMA-083"
+        ))
+
+
+class RefusalNfoSafetyTest(unittest.TestCase):
+    def test_all_providers_refusing_leaves_folder_untouched(self):
+        import weekly_updater
+
+        providers = [("deepseek", "https://deepseek.example/v1", "fake-key", "test-model")]
+        for refusal in ("Unable to translate 中文标题", "无法翻译该标题的内容",
+                        "不能翻译 中文标题", "Translation: 中文标题",
+                        "(I can't translate) 中文标题", "：抱歉 中文标题",
+                        "\u200bＩ ｃａｎ＇ｔ translate 中文标题"):
+            with self.subTest(refusal=refusal), tempfile.TemporaryDirectory() as tmp, \
+                 mock.patch.object(weekly_updater, "translation_provider_candidates", return_value=providers), \
+                 mock.patch.object(weekly_updater, "_chat_completion", return_value=refusal), \
+                 mock.patch("src.status_report.record_deepseek_usage"):
+                folder = Path(tmp) / "ABF-123"
+                folder.mkdir()
+                video = folder / "movie.mp4"
+                video.write_bytes(b"test-video-placeholder")
+                status, _ = titles.process_missing_folder(folder, apply=True,
+                    titles_by_avid={"ABF-123": "ABF-123 はじめてのデート"})
+                self.assertEqual(status, "unchanged")
+                self.assertEqual(list(folder.iterdir()), [video])
+                self.assertEqual(video.read_bytes(), b"test-video-placeholder")
+
+    def test_fallback_translation_writes_marked_nfo_with_original_title(self):
+        import weekly_updater
+
+        providers = [
+            ("relay", "https://relay.example/v1", "fake-key", "relay-model"),
+            ("deepseek", "https://deepseek.example/v1", "fake-key", "fallback-model"),
+        ]
+        original = "ABF-123 はじめてのデート"
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(weekly_updater, "translation_provider_candidates", return_value=providers), \
+             mock.patch.object(weekly_updater, "_chat_completion", side_effect=lambda base, *args, **kwargs:
+                               "Unable to translate 中文标题" if base == providers[0][1] else "第一次约会"), \
+             mock.patch("src.status_report.record_deepseek_usage"):
+            folder = Path(tmp) / "ABF-123"
+            folder.mkdir()
+            status, _ = titles.process_missing_folder(folder, apply=True,
+                titles_by_avid={"ABF-123": original})
+            self.assertEqual(status, "created")
+            root = ET.parse(folder / "ABF-123.nfo").getroot()
+            self.assertEqual(root.findtext("title"), "ABF-123 第一次约会")
+            self.assertEqual(root.findtext("originaltitle"), original)
+            self.assertEqual(root.findtext("generator"), titles.NFO_GENERATOR)
+            self.assertEqual([node.tag for node in root], ["title", "originaltitle", "generator"])
 
 
 class MissingNfoTest(unittest.TestCase):
