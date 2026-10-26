@@ -176,16 +176,18 @@ _KANA_RE = re.compile(r"[\u3041-\u3096\u309d-\u309f\u30a1-\u30fa\u30fc-\u30ff\u3
 _TITLE_MAX_KANA_RATIO = 0.35
 _TITLE_REFUSAL_RE = re.compile(
     r"(?:"
-    r"^I\s+can(?:not|'t)\s+(?:assist|help)\b|"
+    r"^I\s+can(?:not|'t|\s+not)\b|"
+    r"^(?:I\s+am|I'm)\s+unable\b|^Unable\s+to\b|"
     r"^I\s+am\s+sorry\b|"
     r"^I\s+(?:appreciate|apologize)\b|"
-    r"^Sorry\b|^I'm\s+(?:sorry|not\s+able)\b|^I\s+won't\b|^As\s+an\s+AI\b|"
+    r"^Sorry\b|^I'm\s+(?:sorry|not\s+able)\b|^I\s+(?:won't|will\s+not)\b|"
+    r"^As\s+(?:an\s+AI|a\s+language\s+model)\b|"
+    r"^Translation\s*:|^Translated\b|^Here\s+is\b|^Here's\b|"
     r"^申し訳|^すみません|^恐れ入り|^お手伝いできません|"
     r"^対応できません|^翻訳できません|^お断り|^ご要望にはお応え|"
-    r"^很?抱歉|^无法为您|^我无法|^我不能|"
-    r"^对不起(?:[，,。！？!：:]|$)|"
-    r"^无法协助\b|^不能协助\b|^无法帮助\b|^不能帮助\b|"
-    r"^作为(?:一个|一名|该)?AI.{0,40}(?:不能|无法|不可以|不能协助|无法协助|不能帮助|无法帮助)"
+    r"^很?抱歉|^无法|^不能|^不可以|^我无法|^我不能|^对不起|"
+    r"^翻译如下|^以下是|^译文|"
+    r"^作为(?:一个|一名|该)?\s*(?:AI|人工智能|语言模型)"
     r")",
     re.I,
 )
@@ -554,6 +556,24 @@ def _has_balanced_title_brackets(value: str) -> bool:
     return not stack
 
 
+def _title_refusal_text(body: str) -> str:
+    """Normalize for checking only; keep refusal matching at the body start.
+
+    This is a blacklist, not a guarantee that arbitrary model prose is a title.
+    """
+    text = unicodedata.normalize("NFKC", body).replace("’", "'").replace("‘", "'")
+    text = "".join(char for char in text
+                   if unicodedata.category(char) not in ("Cf", "Cc") or char.isspace())
+    # Strip presentation noise both before and after a possibly wrapped code.
+    for strip_code in (True, False):
+        text = text.lstrip()
+        while text and unicodedata.category(text[0])[0] in "PSZC":
+            text = text[1:]
+        if strip_code:
+            text = _CODE_PREFIX.sub("", text, count=1)
+    return text
+
+
 def is_valid_title_zh(title_zh: str, source_title: str = "", video_id: str = "") -> bool:
     """Return whether titleZh has enough complete body text to be displayed.
 
@@ -581,7 +601,7 @@ def is_valid_title_zh(title_zh: str, source_title: str = "", video_id: str = "")
         return False
     # Fold full-width Latin/punctuation and half-width kana for validation only.
     normalized_body = unicodedata.normalize("NFKC", body).replace("’", "'").replace("‘", "'")
-    if _TITLE_REFUSAL_RE.search(normalized_body):
+    if _TITLE_REFUSAL_RE.search(_title_refusal_text(body)):
         return False
     han_count = len(_HAN_RE.findall(normalized_body))
     kana_count = len(_KANA_RE.findall(normalized_body))

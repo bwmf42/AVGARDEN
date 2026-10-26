@@ -278,6 +278,36 @@ class TestActresses(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertTrue(a.is_valid_title_zh(f"女服务员说{phrase}，却仍无法拒绝的故事"))
 
+    def test_title_refusal_hardening_rejects_explanations_and_wrappers(self):
+        cases = [
+            "Unable to translate 中文标题", "As a language model 中文标题",
+            "无法翻译该标题的内容", "不能翻译 中文标题", "不可以翻译 中文标题",
+            "Translation: 中文标题", "Translated title: 中文标题",
+            "Here is 中文标题", "Here's 中文标题",
+            "I can not translate 中文标题", "I'm unable to translate 中文标题",
+            "I am unable to translate 中文标题", "I will not translate 中文标题",
+            "翻译如下：中文标题", "以下是中文标题", "译文：中文标题",
+            "作为人工智能，我无法翻译中文标题", "作为语言模型，不能翻译中文标题",
+            "作为AI无法帮助翻译中文标题", "对不起这个中文标题无法翻译",
+            "(I can't translate) 中文标题", "：抱歉 中文标题",
+            "* I'm sorry 中文标题", "... Unable to translate 中文标题",
+            "「Unable to translate」中文标题", "【ABF-387】（无法翻译中文标题）",
+            "Ｉ ｃａｎ＇ｔ ｔｒａｎｓｌａｔｅ 中文标题",
+            "Ｔｒａｎｓｌａｔｉｏｎ： 中文标题", "ＡＢＦ－３８７：Unable to translate 中文标题",
+        ]
+        for title in cases:
+            for prefix in ("", "ABF-387："):
+                with self.subTest(title=title, prefix=prefix):
+                    self.assertFalse(a.is_valid_title_zh(prefix + title))
+
+    def test_title_refusal_hardening_removes_invisible_characters(self):
+        for invisible in ("\u200b", "\u200c", "\u200d", "\u2060", "\ufeff", "\u00ad", "\u2066", "\x00"):
+            for title in ("Unable to translate 中文标题", "抱歉 中文标题"):
+                for text in (invisible + title, title[0] + invisible + title[1:]):
+                    with self.subTest(invisible=repr(invisible), text=text):
+                        self.assertFalse(a.is_valid_title_zh(text))
+        self.assertFalse(a.is_valid_title_zh("I\tcannot translate 中文标题"))
+
     def test_title_zh_kana_ratio_boundary(self):
         han = "中文作品标题保留日本系列名"  # 13 Han characters.
         cases = [
@@ -319,6 +349,28 @@ class TestActresses(unittest.TestCase):
         self.assertEqual(chat.call_args_list[-1].args[:3], providers[1][1:])
         self.assertEqual(sum(call.args[0] == providers[1][1] for call in chat.call_args_list), 1)
         usage.assert_called_once_with(1)
+
+    def test_translate_title_once_falls_back_after_hardened_refusals(self):
+        from unittest import mock
+        import weekly_updater
+
+        providers = [
+            ("relay", "https://relay.example/v1", "fake-relay", "relay-model"),
+            ("deepseek", "https://deepseek.example/v1", "fake-deepseek", "fallback-model"),
+        ]
+        translated = "正常的中文作品标题"
+        for refusal in ("Unable to translate 中文标题", "无法翻译该标题的内容",
+                        "不能翻译 中文标题", "Translation: 中文标题",
+                        "(I can't translate) 中文标题", "：抱歉 中文标题",
+                        "\u200bＩ ｃａｎ＇ｔ translate 中文标题"):
+            with self.subTest(refusal=refusal), \
+                 mock.patch.object(weekly_updater, "translation_provider_candidates", return_value=providers), \
+                 mock.patch.object(weekly_updater, "_chat_completion", side_effect=lambda base, *args, **kwargs:
+                                   refusal if base == providers[0][1] else translated) as chat, \
+                 mock.patch("src.status_report.record_deepseek_usage"):
+                self.assertEqual(weekly_updater.translate_title_once(
+                    "ABF-387", "本当の日本語タイトル", actresses=[]), translated)
+                self.assertEqual(chat.call_args_list[-1].args[0], providers[1][1])
 
 
 if __name__ == "__main__":
