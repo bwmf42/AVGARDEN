@@ -60,6 +60,78 @@ metadata until its watched timestamp expires. Each apply backs up both
 
 Production scripts copied into the Worker image remain at the repository root.
 
+### Title-only NFO maintenance
+
+Peach handles artwork; this tool never downloads or writes images. The default
+mode translates existing NFO titles, preserving the old title in `originaltitle`.
+It ignores a leading code and a trailing space-separated Japanese actor token;
+the remaining title needs translation only when it contains kana and Han makes
+up less than 50% of Han plus kana characters (Latin brands/punctuation excluded).
+
+Run inside the Worker with its virtualenv Python (system Python may lack
+`curl_cffi`). From `/app`:
+
+```bash
+# Existing NFOs: preview, then apply if intended
+/app/venv/bin/python3 tools/maintenance/translate_media_titles.py --path /data
+/app/venv/bin/python3 tools/maintenance/translate_media_titles.py --path /data --apply
+
+# Missing NFOs: offline preview only; lists eligible folders and counts
+/app/venv/bin/python3 tools/maintenance/translate_media_titles.py --path /data --create-missing
+# Fetch/translate at most one eligible folder and atomically create its NFO
+/app/venv/bin/python3 tools/maintenance/translate_media_titles.py --path /data --create-missing --apply --limit 1
+
+# Use a local code-to-title JSON instead of fetching pages: preview, then apply
+/app/venv/bin/python3 tools/maintenance/translate_media_titles.py --path /data --create-missing --titles-json /tmp/jp_titles.json
+/app/venv/bin/python3 tools/maintenance/translate_media_titles.py --path /data --create-missing --titles-json /tmp/jp_titles.json --apply --limit 1
+```
+
+`--create-missing` scans immediate work folders containing video files (including
+nested videos), excluding `thumb`, underscore-prefixed folders and symlinks.
+Any NFO anywhere within a work folder, including `._*.nfo` and uppercase `.NFO`,
+prevents creation. The check is repeated just before atomic replacement.
+Invalid codes, missing/unparseable pages and empty/non-Han translations are
+counted and skipped without leaving an NFO or temporary file.
+
+Without `--titles-json`, new `<code>.nfo` files contain only `title` (`code Chinese title`), `originaltitle`,
+available `premiered`/`releasedate`, numeric `runtime`, and actor names. They
+contain no artwork references, actor thumbnails, genres or plot. Creation uses
+page fetching plus metadata extraction only, bypassing the full scraper.
+Network calls are spaced by a random 3–6 seconds in this mode, including the
+gap between fetching and translation and after failed calls. Override with
+`--min-delay`/`--max-delay`; existing-NFO mode keeps its 0.5–2 second defaults.
+This is manual maintenance and does not change Worker or launcher scheduling.
+
+`--titles-json PATH` requires `--create-missing` and replaces page fetching
+entirely: it never constructs a scraper or calls `fetch_metadata`. Supply a UTF-8
+JSON object such as `{"ABF-123": "はじめてのデート", "abf-124": "中文标题"}`.
+The entire file is validated before processing any folder; unreadable files,
+invalid JSON, non-object roots and non-string values exit with an error and no
+writes. Keys are matched case-insensitively in candidate order: the leading
+code matching `^\d*[A-Z]+\d*-\d+` in the trimmed, uppercase folder name (numeric
+prefixes retained), its version-free form, then `clean_avid(folder.name)` as a
+fallback. The leading-code match already excludes version suffixes (`-U`, `-C`,
+`-UC`, `-UCC`, `-CH`), so the first two candidates coincide and are deduplicated.
+For example, `259LUXU-1881-UC` tries `259LUXU-1881` before `LUXU-1881`;
+`MIHD-004-U` matches `MIHD-004`. The first present key wins and supplies both
+the translated title prefix and `<code>.nfo` filename; a blank value still
+reports `no_title`. Missing keys report `no_title` with the folder name, without
+guessing another code. Invalid folders such as `艾薇` and `你在录视频` remain
+`invalid_avid` and are never written. Review dry-run output before applying;
+this option does not change `clean_avid` or page-fetch behavior.
+
+For JSON titles needing translation, the file contains exactly `title` (`code
+Chinese translation`) and `originaltitle` (the supplied original). Titles that
+the existing heuristic considers already translated are used verbatim as
+`title`, with no translation request and no `originaltitle`. No other metadata
+or artwork fields are written. Missing/blank titles report `no_title` with the
+code; empty/non-Han translations and translation errors report `unchanged` and
+leave no files. Dry-run remains offline and read-only, reporting each folder as
+`would_create`, `no_title`, or `would_create_no_translate`, with totals. In this
+mode only actual translation calls count toward the 3–6 second network delay;
+direct Chinese-title writes incur no wait. Existing NFO protection, atomic
+writing and `--limit` work as above.
+
 Media directory dates use `/db/media_directory_dates.json`. On the current NAS,
 SMB derives creation time from POSIX directory dates, so repairs anchor directory
 atime/mtime without changing video timestamps. Metadata scraping and Chinese

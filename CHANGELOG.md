@@ -6,6 +6,10 @@
 
 ## Unreleased
 
+- Add `translate_media_titles.py --create-missing --titles-json PATH` to use a validated offline code-to-title JSON instead of fetching pages. Match numeric-prefixed codes before the existing cleaner fallback, handle version suffixes, and retain the matched code in translated titles and NFO filenames. Strip one matching leading code from translation output before adding the selected code, accepting both raw and cleaned codes with colon, whitespace, or hyphen separators; preserve codes within the title body and skip empty or non-Chinese results. Translate only when needed, preserve already translated titles verbatim, and create NFOs containing only title fields; dry-run reports missing titles and no-translation candidates without network requests or writes.
+
+- Fix NFO title detection so translated Chinese titles ending in Japanese actor names are skipped. Add manual `translate_media_titles.py --create-missing` with offline dry-run and opt-in, rate-limited creation of minimal title-only NFOs; never download artwork or overwrite folders containing any NFO. New NFOs use permissions `0644` so non-root readers can access them; in-place rewrites preserve the existing file permissions. Add a metadata-only scraper entry point without changing the existing scrape pipeline.
+
 - Keep the legacy web UI enabled by default; explicitly set `AVGARDEN_WEB_UI=off` to return uncached 404 responses for UI routes while preserving API and file access, including `/api/version`.
 
 - Add read-only `GET /api/resolve/<code>` to return the selected magnet or stream source without creating queue tasks or submitting cloud downloads. Reuse the existing source-selection rules, cache, and search pacing unchanged.

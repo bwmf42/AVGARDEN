@@ -106,6 +106,13 @@ class Sracper:
         with preserve_directory(os.path.join(self.path, self.output_subdir or avid)):
             return self._scrape(avid)
 
+    def fetch_metadata(self, avid: str) -> Optional[AVMetadata]:
+        """Fetch and parse a page without translation, artwork, or file writes."""
+        html = self._fetch_html(f"https://{self.domain}/{avid.upper()}", referer="self.domain")
+        if html is None:
+            return None
+        return self._extract(html)
+
     def _scrape(self, avid: str) -> Optional[AVMetadata]:
         # 获取html
         url= f"https://{self.domain}/{avid.upper()}"
