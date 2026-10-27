@@ -6,6 +6,7 @@
 
 ## Unreleased
 
+- Add `scripts/check.sh` for layered local verification and optional read-only NAS version/API/container checks, with `--quick`, PASS/FAIL/SKIP logs, machine-readable exit codes, and offline fixture tests. Page acceptance remains manual; missing tools are skipped and Go dependency downloads are disabled.
 - Report `has_nfo` instead of `no_folder` in title-translation jobs when an eligible matching media folder already contains NFO metadata. Check existing-NFO folders only after a missing-folder lookup, keep these items skipped even with `force`, and preserve the error kind across restarts without exposing titles.
 
 - Add asynchronous GET/POST `/api/title-translate` for batches of up to 50 code/title pairs with optional forced translation. Reuse the title-only NFO writer without overwriting existing NFOs; persist atomic job progress, classify failures without exposing titles or provider errors, stop remaining requests on auth/quota/config failures, and mark interrupted jobs after restart. Enforce exact routes, JSON POST bodies and a 64 KiB limit in the Go/Queue API path. Include the job module and title writer in the worker image, keep both deployment hot-copy lists aligned (including the existing maintenance-directory copy), and register the job module in both worker identity lists.
