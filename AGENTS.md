@@ -9,197 +9,38 @@
 - 用户输入番号或从每日推荐选择；统一选源链按 98堂中文、Sukebei、在线流依次解析，有磁链交 qBittorrent。
 - 完成后刮削 NFO / 封面 / 预览；Go API + Vue 前端浏览管理。
 
-## 快速参考
+## 命令速查
 
-| 操作 | 命令 |
-|------|------|
-| 在家 Mac 部署 | `AVGARDEN_PASS=… bash deploy.sh`（rsync→NAS；可 `AVGARDEN_DEPLOY_SERVICES=server\|worker\|all`） |
-| 外面飞书 / NAS 本地部署 | `bash deploy_local.sh`（`server`/`worker`/`all`；`AVGARDEN_HOT=1` 热补 worker；**不要**跑 Mac `deploy.sh`） |
-| 版本对齐 | `./check_version.sh`（Mac vs 运行中 `/api/version`） |
-| 状态 | `curl -s http://192.168.5.17:31471/api/videos` |
+| 操作 | 命令 / 验证范围 |
+|------|----------------|
+| 一键验证 | `scripts/check.sh --layer 1`（默认：本地静态/单测）；`--quick` 仅 Python；`--layer 2` 只读 NAS；`--layer all` 两层；退出码 0/1/2，详见 [验证命令](docs/verification.md)，第 3 层需人工验收 |
+| 在家 Mac 部署（须授权） | `bash deploy.sh`，配置与选服务详见 [运维规则](docs/operations.md) |
+| 外面飞书 / NAS 本地部署（须授权） | `bash deploy_local.sh`；**禁止在 Hermes 里跑 Mac 的 `deploy.sh`**，详见 [运维规则](docs/operations.md) |
+| 版本对齐 | `./check_version.sh`；额外检查 NAS 源码：`./check_version.sh --nas-tree` |
 | Worker 日志 | `ssh zspace 'sudo docker logs avgarden-worker --tail 40'` |
-| 周更新 | `docker exec avgarden-worker … weekly_updater.py` |
-| 未看图回填 | worker 内 `plwt_art_backfill.py`（默认 `BACKFILL_UNWATCHED_ONLY=1`） |
 
 ## 关键入口
 
 | 组件 | 路径 / 端口 |
 |------|-------------|
-| Go API + 前端 | `backend/main.go`、`handlers.go` → **31471** |
+| Go API + 前端 | `backend/main.go`、`backend/handlers.go` → **31471**；`frontend/`（Vue 3 + Vite） |
 | Queue API | `queue_api.py` → **31473** |
 | Worker / 入口 | `worker.py`、`launcher.py` |
-| 每日推荐 | `weekly_updater.py` + `src/weekly/` |
-| 元数据 | `metadata.py`、`src/scraper.py` |
-| 前端 | `frontend/`（Vue 3 + Vite） |
+| 每日推荐 / 元数据 | `weekly_updater.py`、`src/weekly/`；`metadata.py`、`src/scraper.py` |
 | NAS 部署 | `/tmp/zfsv3/sata11/13049108160/data/docker/AVGARDEN`（极空间 `/42/docker/AVGARDEN`） |
 | qB | NAS **8888** |
 
-### `src/weekly/` 模块
+## 每次必读红线
 
-- `sources.py` / `chinese_forum.py` — 列表（默认 plwt forum-37；中文 forum-103）
-- `artwork.py` — 封面预览：javdatabase → MGS → DMM → 已知论坛帖附件
-- `javdatabase.py` / `mgs.py` / `dmm.py` / `javbus.py`
-- `enrich.py` / `genre_zh.py` — 元数据与标签中文映射
-- `sukebei.py` / `merge.py`
-
-## NAS 要点
-
-- IP `192.168.5.17`；SSH 常用别名 `zspace` 或 `13049108160@192.168.5.17 -p 10000`
-- 媒体库与 qB 保存目录须同一挂载（现为 `…/data/data2/115生活备份` → 容器 `/data`）；`/db` `/app/cfg` `/app/logs`。115 云下载与极空间同步是独立链路，不得将其同步目录软链接或映射进本地媒体库。
-- 出站刮削依赖 `PROXY`（mihomo mixed-port）；javdatabase / MGS / DMM 走固定 rules（日本组等）
-- mihomo：**订阅** `Clash_sub_v2.yaml` vs **固定** `config.yaml`（groups/rules）。98堂 `url-test` 组与 `kpqq4.com`/`plwt` 规则见 [`docs/mihomo-fixed-snippet.yaml`](docs/mihomo-fixed-snippet.yaml)；勿用订阅覆盖固定配置
-- 前台系统日志默认只读 `av-garden.log`（入队/开始/完成/失败）；明细在 loguru 日文件 / docker logs，`/api/logs?debug=1` 可看全量；日志保留约 **30 天**
-- **自愈** `heal_runner.py`（launcher 默认每 1h）：补缺 `titleZh`、队列/qB 状态对齐、qB/翻译服务/98堂/115 Cookie 探活告警。翻译服务按 `TRANSLATE_*` 中继优先、DeepSeek 回退。115 Cookie 失效只黄不红，前台 `/api/p115/config` 带 120s 缓存活探测。**不**次日自动重刮、**不**自动删种。开关：`HEAL_ENABLE`、`HEAL_TITLEZH`、`HEAL_QUEUE_SYNC`、`HEAL_PROBE`、`HEAL_INTERVAL_H`
-- mihomo **98堂** url-test 候选含日本（暂时失败的节点会被测活跳过）
-- 一次性存储清理只能通过 `tools/maintenance/storage_cleanup.py` 的 dry-run manifest → apply 两阶段执行；日常 Weekly 图片清理使用 `weekly_cache_maintenance.py`，默认只处理不在当前 JSON 且超过 30 天的直接子目录。两者都必须保留 manifest/结果并在应用前重新验证签名和运行态。
-
-## 配置边界
-
-- 真实 `.env`、`cfg/configs.json`、`db/`、`logs/`、媒体目录、Cookie、Token、API key、webhook 不应提交。
-- `Dockerfile.worker.dockerignore` 必须持续排除 `cfg/configs.json`；Worker 镜像只能包含公开示例配置，不能把 NAS 现役配置写进镜像层。
-- 公开部署应从 `.env.example` 和 `cfg/configs.json.example` 复制配置。
-- qBittorrent 默认保存目录必须和 `AV_GARDEN_DATA_DIR` 指向同一份存储。
-- 中文字幕合并必须以 qB 文件列表中的精确文件编号、路径和大小为准，并持久记录来源；禁止按文件新旧或仅凭 `.av_garden_chinese` 标记删除正片。进行中、校验中或做种中的 qB 任务所占目录不得执行媒体清理；合并后只能用 `deleteFiles=false` 移除 qB 任务记录，禁止让 qB 递归删除作品目录。需要删除被替代的原版时，先停止任务并按 qB 文件清单逐文件删除，不能删除整个作品目录。
-- 容器内路径建议保持：
-  - `/data`：视频库
-  - `/db`：运行状态和 SQLite
-  - `/app/cfg`：运行配置
-  - `/app/logs`：日志
-
-## 重要产品规则
-
-- `/api/queue-status` 不展示成功项；`active` 只含 `queued` / `downloading`（不含 heal `processing` 幽灵）。
-- 失败项只展示最近一周内的失败记录。
-- 下载管理页只保留最近一周的完成历史展示；不要删除视频文件。
-- Queue API 删除任务时必须先发送 Worker 取消信号并移除匹配的 qB 任务，再移出队列记录；默认保留已有文件，只有显式 `delete_files=1` 才允许删除文件。
-- **队列 UI 状态**：以 `queue_state.json` 登记 + `/api/queue` 为准；qB 的 `queuedDL` 必须算在途；扫 qB 优先用 torrent **tags**（worker 写入番号）。前端只读 status API，不直连 qB。
-- **115 独立提交**：Queue API 内的串行云提交循环只领取 `target=115` 任务，不占用本地下载锁或 `current_download.txt`；Worker 只领取本地任务。115 提交期间仍可添加其它番号，同一番号跨通道仍禁止重复。状态携带实际 `transport`（`qb` / `online` / `115`）；115 的选源、提交和已提交状态不能显示为本地下载进度。已发往 115 的请求返回前不能移出记录；提交时服务中断须提示人工核对云端结果，避免盲目重投。
-- 用户输入番号的安全校验和本地文件夹名清洗必须分开：输入层支持无横杠、数字开头和已知特殊系列，但只允许归一化后的安全路径组件；本地文件夹清洗可以处理来源前缀，不能反过来改写用户输入的真实数字前缀。
-- 通用番号数字后的单个 `V` 是特典版标记，统一折叠到基础番号（如 `START-612V` → `START-612`）；其他有意义的尾字母保持不变。
-- 下载流程必须是：98堂精确中文 → Sukebei 最大精确中文版 → Sukebei 上传日期最早的精确原版 → 在线流 → 明确失败。有磁链只交 qB，只有前两站都没有磁链才转在线流。
-- 所有 A/GARDEN 磁链任务采用严格单文件模式：元数据出现后只启用大于 100 MiB 的最大 MP4，其余视频、分段、广告和说明文件全部设为不下载；兼容 qB v5 `stop/start` 与旧版 `pause/resume`。
-- 在线搜索、搜索结果详情、搜索框添加和 Worker 必须复用 `/db/download_source_cache.json` 的受锁解析结果；搜索详情离开且未入队时删除该番号缓存，已入队时保留给 Worker，默认 24 小时失效。
-- 98堂站内搜索每个番号只请求一次，并通过跨进程槽位保持至少 31 秒间隔；不得为中文/普通版连续搜索两次。只接受 `forum-103` 的精确番号结果，普通版不从 98堂取。
-- Sukebei 只接受精确番号：有中文标记时按文件大小降序取最大；完全无中文时按上传时间升序取最早，不按做种数、可信标记或容量选择原版。
-- 手动刮削按钮触发 worker 容器内的 `weekly_updater.py`，成功后运行未看中文磁链补链；定时任务复用同一条流水线。Go server 只代理启动与状态，不直接依赖 Python 环境。
-- 屏蔽演员、屏蔽标签、收藏演员、标题关键词是持久化配置，改动前要确认对应接口和文件。
-
-## 每日推荐列表与图片刮削规则
-
-- **列表源（默认）**：98堂 `https://plwt.kpqq4.com/forum-37-1.html`（`WEEKLY_FORUM_FID=37`，默认 **3 页** `WEEKLY_MAX_PAGES`）。实现：`sources.get_recent` → `chinese_forum.get_weekly_list`。
-- **未看中文补链**：`weekly_updater.py` 成功后逐个精确搜索 `forum-103`，复用跨进程 31/60 秒槽位，只回写 `weekly.json` 的中文磁链字段；不创建下载任务。库内 `replace_chinese` 仍由独立 `merge_watcher` 调度，不属于刮削流水线。
-- JavBus 访问代码保留但当前不参与下载磁链候选。手动/搜索下载磁链按 98堂 forum-103 精确搜索 → Sukebei 选择规则执行；每日中文替换仍按 forum-103 列表命中后进帖。
-- 每日推荐封面和详情预览图应尽量本地化到 `/data/__weekly__/{番号}/`，前端优先使用 `/file/__weekly__/...`，避免用户浏览时再等外站图片。
-- 标题补全或规范化没有产生实际变化时不得重写 `weekly.json`，避免无意义失效缓存和已审核的维护 manifest。
-- **封面/预览图源优先级（`src/weekly/artwork.py`）**：
-  1. **javdatabase**：`https://www.javdatabase.com/movies/{番号小写}/` → DMM `pl.jpg` / `og:image` + 页内 `jp-N`（无年龄 Cookie；NAS **必须走 `PROXY`**，直连常超时）。
-  2. **MGS 商品图**（单页快路径）：`pb_e` / `cap_e_*` — **SIRO / ABF 等 MGS 独占** javdatabase 常 404，靠这一层；也是标签元数据主源。
-  3. **DMM 精确搜索**（放最后）：传统 DVD 读静态商品表格；数字商品走 `https://api.video.dmm.co.jp/graphql`，同时读取标准 `actresses` 和素人 `amateurActress`。搜索页漏结果时把常见 CID 在一次 GraphQL 请求内批量查询，并以 `makerContentId` 二次校验番号；未知厂商前缀只借 javdatabase 页内真实 `Content ID` 定位。**无真实封面的 cid 不要扫样片**；拒绝 NOW PRINTING 占位图。
-  4. **已知 98堂帖子附件**：前三层都没有所需图片时，才进该条已有 `forumUrl`，首图作封面、后续附件作预览；不为此扫描无关帖子。
-  5. **条目已有 URL** 兜底。JavBus 访问技巧保留，但当前不主动请求。
-- **详情元数据（`src/weekly/enrich.py`）**：
-  - 字段：演员、标签、发行日、时长、字幕、封面/预览、`titleZh`
-  - 顺序：MGS 表字段；MGS 完全没有标签时才用 DMM 精确商品元数据补空字段；DMM 搜索与精确 CID 均没有商品时，最后使用 javdatabase 精确番号页的演员、标签、时长 → **artwork 下载图**（上表优先级）。JavBus 代码保留但当前不参与候选。
-  - 标签经 `genre_zh.py`：静态表 + **`/db/genre_zh_memory.json` 持久记忆**（只在新键写入，不每次 AI）；最后 **对齐 `blocked_genres.txt` 原文拼写**（繁简折叠），避免同义标签要重新拉黑；enrich 结束统一 normalize；**NTR 保持 NTR**。批量：`plwt_genre_normalize.py`。
-  - 标题：`weekly_updater.batch_translate`（`TRANSLATE_*` OpenAI 兼容中继优先，DeepSeek 回退 → `titleZh`）
-- 回退列表源：`WEEKLY_LIST_SOURCE=javbus`。
-- **回填范围**：默认只补前端 **未看**（`/api/weekly` 已滤屏蔽标签/演员 − 已看 − 队列 − 已下载）。脚本 `plwt_art_backfill.py`（`BACKFILL_UNWATCHED_ONLY=1`）；全量才设 `0`。元数据回填用 `weekly_backfill_details.py`（同 scope）。
-- **保留规则**：未浏览作品不按时间淘汰；历史已看记录视作已浏览。已浏览作品从 `watched_at` 起保留 30 天，到期同时删除 Weekly 条目、图片目录和浏览记录。早期选择功能留下的 `interest` 字段只作兼容读取，不再提供「想看」或「不感兴趣」入口，也不再创建这类记录；已有 `want` 记录继续按原规则保留，避免隐式删除数据。
-- **屏蔽作品**：先拉取演员、番号、标签等最小匹配元数据，命中后立即记为已看；不再请求封面、预览图、磁链、下载或标题翻译，并从收录时间起保留 30 天。
-- **自动清理**：Launcher 每天 04:30 运行 `weekly_retention_maintenance.py --auto`；每次均生成精确 manifest、复核签名并压缩备份 Weekly/已看 JSON。`__online__`、应用日志和日常维护记录保留 30 天，维护记录至少保留最新 3 份。
-- JavBus 无 `sample-box` 时不要当下载失败。DMM 图优先 `.co.jp`，失败试 `.com` / `awsimgsrc`。
-- MGS：`PROXY` 只走日本代理，禁止直连优先。
-- `queue_api` 在线/weekly 番号归一化保留真实数字前缀（如 `300MIUM-1395`）；仅本地文件夹清洗可剥源站前缀。
-
-## 前端设计规则
-
-当前视觉方向是粉白色 A/GARDEN：
-
-- 保持粉白色身份，不要改成深色后台、紫蓝渐变或通用 SaaS 风格。
-- 使用白色/浅粉表面、玫瑰色细边框、紧凑卡片、8px 卡片圆角。
-- 日志、下载队列、设置等操作页要融入 UI，不要出现大块黑色终端背景。
-- 不要使用 emoji 作为主要 UI 图标或状态文案。
-- 成功、警告、失败、下载中使用既定语义色，不要随意新增色系。
-- 不编造卡片、统计数字、演员、媒体数据；没有真实数据就保持空状态。
-
-## 常用验证命令
-
-前端：
-
-```bash
-cd frontend
-npm run build
-```
-
-Go 后端：
-
-```bash
-cd backend
-GOCACHE=/private/tmp/av-garden-gocache go test ./...
-```
-
-Python 语法检查：
-
-```bash
-PYTHONPYCACHEPREFIX=/private/tmp/av-garden-pycache python3 -m py_compile \
-  worker.py queue_api.py launcher.py weekly_updater.py run_scrape_followups.py \
-  unwatched_chinese_refill.py metadata.py replace_chinese.py \
-  plwt_art_backfill.py weekly_backfill_details.py \
-  src/weekly/artwork.py src/weekly/javdatabase.py src/weekly/dmm.py src/weekly/mgs.py \
-  src/weekly/enrich.py src/weekly/sukebei.py
-python3 -m unittest test_artwork_sources -v
-python3 -m unittest test_unwatched_chinese_refill -v
-```
-
-Compose 部署验证：
-
-```bash
-docker compose -f docker-compose.example.yml --env-file .env ps
-curl -sS http://127.0.0.1:31471/api/version
-curl -sS http://127.0.0.1:31471/api/queue-status
-```
-
-## 版本对齐（Mac vs NAS）
-
-部署前/回家后先核对本地源码是否与正在跑的 NAS 构建一致，避免“以为改了其实线上还是旧的”：
-
-```bash
-./check_version.sh              # local vs http://192.168.5.17:31471/api/version（分 server/worker）
-./check_version.sh --nas-tree   # 额外 ssh zspace 指纹 NAS 现役源码目录
-```
-
-- 身份由 `tools/build_identity.sh` 计算：
-  - `tree_hash_server` — Go/Vue/Dockerfile.server/VERSION
-  - `tree_hash_worker` — Python/src/requirements/Dockerfile.worker
-  - `tree_hash` — 两侧组合（兼容旧逻辑）
-  - `git_dirty` — **仅**当未提交改动落在指纹路径内时为 true
-- `deploy.sh` / `deploy_local.sh` 写 `BUILD_INFO.json` 并 `docker cp` 进 server；`/api/version` 透传 BUILD_INFO 字段。
-- `check_version` 结果：`MATCH` / `SERVER_MISMATCH` / `WORKER_MISMATCH` / `BOTH_MISMATCH` / `UNKNOWN`。
-- 退出码：`0` 两侧对齐、`1` 不对齐或部分对齐或 identity dirty、`2` API 不可达。
-
-## 飞书 / Hermes 部署（NAS 本地）
-
-- 脚本：[`deploy_local.sh`](deploy_local.sh)；技能：[`skills/avgarden-deploy/SKILL.md`](skills/avgarden-deploy/SKILL.md)
-- Hermes 内路径：`/opt/data/projects/AVGARDEN`（bind-mount 到 NAS 现役树）
-- **禁止**在 Hermes 里跑 Mac 的 `deploy.sh`（依赖 rsync/sshpass）
-- Hermes `hermes-agent` 需要挂载：`AVGARDEN` 目录 + `/var/run/docker.sock`（见 skill 文末）
-
-## 部署后镜像清理
-
-- `deploy.sh` 会先对比临时目录和现役源码，Python/Worker 输入只构建 `worker`，Go/前端输入只构建 `server`，Compose 或未知运行时文件才重建两者；纯文档变化不重启容器。
-- Docker 构建输出写入 NAS `/tmp` 临时日志，成功时只打印末尾摘要并删除日志，失败时保留日志并输出末尾内容；不要恢复持续传输完整 BuildKit 输出的做法。
-- 新容器必须先确认处于 `Up`，且版本、队列等关键接口健康，再清理被替换的旧镜像。
-- 清理前核对所有容器实际引用的 image ID，只删除未被引用的旧 `avgarden-server` / `avgarden-worker` 镜像。
-- 不使用 `docker image prune -a` 等宽泛清理命令，不删除当前镜像、其它项目镜像或仍被容器引用的共享镜像；清理后再次检查容器和接口。
-
-## Git 与 Changelog 规则
-
-- 本仓库已初始化本地 Git；不要为“初始化”重复创建仓库。
-- 每次功能完成后，先完成本地验证，并把变更写入根目录 `CHANGELOG.md` 的 `Unreleased` 区。
-- 常规改动验证通过后，默认提交、推送 GitHub、部署 NAS，并完成部署后检查，不再逐次询问。
-- 涉及数据删除或迁移、端口/路径/环境配置、队列状态机、下载策略或大范围清理时，必须先让用户确认，再执行、提交和部署。
-- commit 必须按功能拆分并保持范围干净，不要把无关改动或用户已有改动混进去。
-- 如果 `CHANGELOG.md` 过长，将较早的已发布条目归档到 `docs/changelog-archive/`，并在 `CHANGELOG.md` 保留归档链接。
+- 真实 `.env`、`cfg/configs.json`、`db/`、`logs/`、媒体目录、Cookie、Token、API key、webhook 不应提交；详见 [docs/product-rules.md](docs/product-rules.md)。
+- `Dockerfile.worker.dockerignore` 必须持续排除 `cfg/configs.json`；Worker 镜像只能含公开示例配置，不得写入 NAS 现役配置；详见 [docs/product-rules.md](docs/product-rules.md)。
+- 中文字幕合并必须按 qB 精确文件编号、路径、大小并持久记录来源，禁止按新旧或仅凭 `.av_garden_chinese` 删除正片；进行中、校验中、做种中的目录不得清理；合并后只用 `deleteFiles=false` 移除任务，禁止 qB 递归删除作品目录；删除替代原版须先停止任务、按 qB 清单逐文件删，不能删整个作品目录；详见 [docs/product-rules.md](docs/product-rules.md)。
+- 115 云下载与极空间同步独立，禁止将其同步目录软链接或映射进本地媒体库；详见 [docs/operations.md](docs/operations.md)。
+- Queue API 删除任务须先发送 Worker 取消信号并移除匹配 qB 任务，再移出队列记录；默认保留文件，只有显式 `delete_files=1` 才允许删文件；详见 [docs/product-rules.md](docs/product-rules.md)。
+- 一次性清理只走 `tools/maintenance/storage_cleanup.py` 的 dry-run manifest → apply；日常图片清理同样须保留 manifest/结果，应用前复核签名和运行态；详见 [docs/operations.md](docs/operations.md)。
+- 98堂站内搜索每番号只请求一次，跨进程间隔至少 31 秒，不得为中文/普通版连续搜索两次；只接受 forum-103 精确番号，普通版不从 98堂取；详见 [docs/product-rules.md](docs/product-rules.md)。
+- 不自动答题、不绕过验证；详见 [docs/product-rules.md](docs/product-rules.md)。
+- MGS 的 `PROXY` 只走日本代理，禁止直连优先；详见 [docs/weekly-rules.md](docs/weekly-rules.md)。
 
 ## 高风险操作
 
@@ -210,10 +51,27 @@ curl -sS http://127.0.0.1:31471/api/queue-status
 - 改部署路径、端口、`.env`、Docker Compose 服务名或挂载。
 - 引入新服务、新依赖或新架构。
 
+## Git 与 Changelog 规则
+
+- 本仓库已初始化本地 Git；不要为“初始化”重复创建仓库。
+- 每次功能完成后，先完成本地验证，并把变更写入根目录 `CHANGELOG.md` 的 `Unreleased` 区。
+- 常规改动验证通过后，可自主修复问题，但不得自动 commit、push 或部署；由 Claude 最终验收后向 Vigo 汇报修改内容和验证结果，Vigo 明确授权后才提交、推送 GitHub、部署 NAS 并完成部署后检查。
+- 涉及数据删除或迁移、端口/路径/环境配置、队列状态机、下载策略或大范围清理时，必须先让用户确认，再执行、提交和部署。
+- commit 必须按功能拆分并保持范围干净，不要把无关改动或用户已有改动混进去。
+- 如果 `CHANGELOG.md` 过长，将较早的已发布条目归档到 `docs/changelog-archive/`，并在 `CHANGELOG.md` 保留归档链接。
+
 ## Agent 文档索引
 
-- Issue tracker：`docs/agents/issue-tracker.md`（GitHub Issues `bwmf42/AVGARDEN`）
-- Triage labels：`docs/agents/triage-labels.md`
-- Domain / ADR：`docs/agents/domain.md`
-- 交接快照：根目录 `handoff.md`（当前会话状态，可随功能更新）
-- 跨项目「外网 Hermes → 回家同步本机」：工作区 [`../docs/nas-home-sync.md`](../docs/nas-home-sync.md)（`/Users/vigo/Desktop/code/docs/nas-home-sync.md`）
+| 什么时候读 | 文档 |
+|------------|------|
+| 改下载选源、队列、115、番号、配置或合并前 | [产品规则与配置边界](docs/product-rules.md) |
+| 改每日推荐、刮削、回填或保留前 | [每日推荐与刮削规则](docs/weekly-rules.md)（含模块索引） |
+| 改前端视觉或操作页前 | [前端设计规则](docs/frontend-design.md) |
+| 排查 NAS、代理、自愈、日志或部署前 | [运维、部署与版本对齐](docs/operations.md) |
+| 操作极空间部署前 | [极空间 Docker 部署说明](docs/deploy-zspace.md) |
+| 开工基线、分项验证或验收前 | [验证命令与证据层级](docs/verification.md) |
+| 管理 Issue | Issue tracker：[`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)（GitHub Issues `bwmf42/AVGARDEN`） |
+| 做问题分诊 | Triage labels：[`docs/agents/triage-labels.md`](docs/agents/triage-labels.md) |
+| 改领域模型 / ADR | Domain / ADR：[`docs/agents/domain.md`](docs/agents/domain.md) |
+| 开工恢复上下文 | 交接快照：根目录 [`handoff.md`](handoff.md)（当前会话状态，可随功能更新） |
+| 外网改 NAS 后回家同步 | 跨项目「外网 Hermes → 回家同步本机」：工作区 [`../docs/nas-home-sync.md`](../docs/nas-home-sync.md)（`/Users/vigo/Public/code/docs/nas-home-sync.md`） |

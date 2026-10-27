@@ -1,12 +1,15 @@
 # Changelog
 
-本文件记录本地功能变更。新功能先写入 `Unreleased`；常规改动验证通过后直接提交、推送和部署，高风险改动仍需先确认。
+本文件记录本地功能变更。新功能先写入 `Unreleased`；提交、推送和部署须经 Vigo 明确授权（见 `AGENTS.md`「Git 与 Changelog 规则」），高风险改动仍需先确认。
 
 当本文件过长时，将较早的已发布条目移动到 `docs/changelog-archive/`，这里只保留近期记录和归档链接。
 
 ## Unreleased
 
+- Reorganize `AGENTS.md` into a compact index, preserving existing rules in linked product, Weekly, frontend, operations, and verification documents; retain explicit approval requirements and existing handoff paths.
+
 - Add `scripts/check.sh` for layered local verification and optional read-only NAS version/API/container checks, with `--quick`, PASS/FAIL/SKIP logs, machine-readable exit codes, and offline fixture tests. Page acceptance remains manual; missing tools are skipped and Go dependency downloads are disabled.
+
 - Report `has_nfo` instead of `no_folder` in title-translation jobs when an eligible matching media folder already contains NFO metadata. Check existing-NFO folders only after a missing-folder lookup, keep these items skipped even with `force`, and preserve the error kind across restarts without exposing titles.
 
 - Add asynchronous GET/POST `/api/title-translate` for batches of up to 50 code/title pairs with optional forced translation. Reuse the title-only NFO writer without overwriting existing NFOs; persist atomic job progress, classify failures without exposing titles or provider errors, stop remaining requests on auth/quota/config failures, and mark interrupted jobs after restart. Enforce exact routes, JSON POST bodies and a 64 KiB limit in the Go/Queue API path. Include the job module and title writer in the worker image, keep both deployment hot-copy lists aligned (including the existing maintenance-directory copy), and register the job module in both worker identity lists.
