@@ -20,3 +20,10 @@ export function downloadStatusText(item) {
   }
   return item.status === 'done' ? '完成' : item.status
 }
+
+export function failureReason(item, max = 24) {
+  const full = String(item?.message ?? '').trim()
+  if (!full) return { text: '', full: '' }
+  const chars = Array.from(full)
+  return { text: chars.length > max ? `${chars.slice(0, max).join('')}…` : full, full }
+}

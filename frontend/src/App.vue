@@ -57,7 +57,9 @@
               {{ statusText(item) }}<span v-if="!isCloudTask(item) && progressPercent(item) > 0"> {{ progressPercent(item) }}%</span>
               <span v-if="item.speed > 0"> {{ formatSpeed(item.speed) }}</span>
             </template>
-            <template v-if="item.status === 'failed'">下载失败</template>
+            <template v-if="item.status === 'failed'">
+              下载失败<span v-if="failureReason(item).text" class="status-reason" :title="failureReason(item).full">：{{ failureReason(item).text }}</span>
+            </template>
             <a
               v-if="item.status === 'failed'"
               class="status-javbus"
@@ -192,7 +194,7 @@
 import { normalizeVideoId } from './utils/videoId'
 import { scrapeStatusMessage } from './scrapeStatus'
 import { summarizeCheckMessage, p115HealthCheck, recentFailureEvents } from './utils/statusMessage'
-import { downloadStatusText, isCloudTask } from './utils/downloadStatus'
+import { downloadStatusText, failureReason, isCloudTask } from './utils/downloadStatus'
 
 function normalizeStatusID(id) {
   return String(id || '').trim().toUpperCase()
@@ -503,6 +505,7 @@ export default {
       return downloadStatusText(item)
     },
     isCloudTask,
+    failureReason,
     progressPercent(item) {
       const raw = item.progress_pct ?? item.progress ?? 0
       const value = Number(raw)
@@ -1190,6 +1193,10 @@ body {
 }
 .status-code:hover {
   text-decoration: underline;
+}
+.status-reason {
+  font-weight: 500;
+  cursor: help;
 }
 .status-javbus {
   color: inherit;
