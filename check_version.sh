@@ -191,8 +191,9 @@ if [ "$CHECK_NAS_TREE" = "1" ]; then
   echo ""
   echo "=== NAS source tree (via ssh zspace) ==="
   NAS_DIR="${AVGARDEN_NAS_DIR:-/tmp/zfsv3/sata11/13049108160/data/docker/AVGARDEN}"
+  NAS_ERR_FILE="$(mktemp "$TMPDIR_CV/avgarden-nas-err.XXXXXX")"
   if NAS_TREE="$(ssh -o ConnectTimeout=6 -o BatchMode=yes zspace \
-      "cd '$NAS_DIR' && bash tools/build_identity.sh 2>/dev/null" 2>/dev/null)"; then
+      "cd '$NAS_DIR' && bash tools/build_identity.sh" 2>"$NAS_ERR_FILE")"; then
     echo "$NAS_TREE" | python3 -c 'import sys,json; d=json.load(sys.stdin); print("version:", d.get("version")); print("tree_hash:", d.get("tree_hash")); print("tree_hash_server:", d.get("tree_hash_server")); print("tree_hash_worker:", d.get("tree_hash_worker")); print("git_sha:", d.get("git_sha")); print("git_dirty:", d.get("git_dirty"))'
     NAS_S="$(echo "$NAS_TREE" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tree_hash_server") or "")')"
     NAS_W="$(echo "$NAS_TREE" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tree_hash_worker") or "")')"
@@ -209,8 +210,12 @@ if [ "$CHECK_NAS_TREE" = "1" ]; then
       status=1
     fi
   else
-    echo "skip: cannot ssh zspace or NAS lacks tools/build_identity.sh"
+    echo "FAIL: NAS tree fingerprint failed (ssh zspace / tools/build_identity.sh). Remote stderr:"
+    sed 's/^/  /' "$NAS_ERR_FILE"
+    echo "  hint: unreadable paths mean the ssh user cannot read $NAS_DIR; grant read access (see docs/operations.md) -- sudo -n cannot read plain files without a password."
+    status=1
   fi
+  rm -f "$NAS_ERR_FILE"
 fi
 
 exit "$status"

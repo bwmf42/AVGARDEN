@@ -132,7 +132,7 @@ echo "api:     $API_URL"
 echo ""
 echo "=== 0. BUILD_INFO identity ==="
 if [ -f "$ROOT/tools/build_identity.sh" ]; then
-  bash "$ROOT/tools/build_identity.sh" --write || true
+  bash "$ROOT/tools/build_identity.sh" --write || echo "WARNING: build_identity.sh failed; BUILD_INFO.json may be stale or missing" >&2
 else
   printf '%s\n' \
     '{' \

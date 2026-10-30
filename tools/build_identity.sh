@@ -106,6 +106,10 @@ list_identity_files() {
     return 0
   fi
 
+  # Unreadable paths must fail loudly: a silently partial hash is worse than none.
+  local find_out find_err find_rc=0
+  find_out="$(mktemp "${TMPDIR:-/tmp}/avgarden-find.XXXXXX")"
+  find_err="$(mktemp "${TMPDIR:-/tmp}/avgarden-finderr.XXXXXX")"
   find "${existing[@]}" -type f \( \
       -name 'VERSION' -o \
       -name 'Dockerfile*' -o \
@@ -118,9 +122,16 @@ list_identity_files() {
       -name '*.html' -o \
       -name '*.py' -o \
       -name '*.json' \
-    \) 2>/dev/null \
-    | sed 's|^\./||' \
-    | sort -u
+    \) >"$find_out" 2>"$find_err" || find_rc=$?
+  if [ "$find_rc" -ne 0 ] || [ -s "$find_err" ]; then
+    echo "build_identity: cannot read some identity paths under $ROOT (find exit $find_rc):" >&2
+    sed 's/^/  /' "$find_err" >&2
+    echo "build_identity: run as a user that can read the source tree, or compute inside the container (see docs/operations.md)." >&2
+    rm -f "$find_out" "$find_err"
+    exit 1
+  fi
+  sed 's|^\./||' "$find_out" | sort -u
+  rm -f "$find_out" "$find_err"
 }
 
 hash_file_list() {
@@ -130,6 +141,10 @@ hash_file_list() {
     while IFS= read -r f; do
       [ -n "$f" ] || continue
       [ -f "$f" ] || continue
+      if [ ! -r "$f" ]; then
+        echo "build_identity: unreadable file: $ROOT/$f" >&2
+        exit 1
+      fi
       if command -v shasum >/dev/null 2>&1; then
         h="$(shasum -a 256 "$f" | awk '{print $1}')"
       else

@@ -52,7 +52,9 @@
   - `tree_hash_worker` — Python/src/requirements/Dockerfile.worker
   - `tree_hash` — 两侧组合（兼容旧逻辑）
   - `git_dirty` — **仅**当未提交改动落在指纹路径内时为 true
-- `deploy.sh` / `deploy_local.sh` 写 `BUILD_INFO.json` 并 `docker cp` 进 server；`/api/version` 透传 BUILD_INFO 字段。
+- 部署脚本构建前先跑 `tools/build_identity.sh --write` 生成 `BUILD_INFO.json`，`Dockerfile.server` 用 `COPY VERSION BUILD_INFO.jso[n] /app/` 把它构建进镜像，容器重建后 `/api/version` 仍带 `tree_hash`（不再有 `dev` 占位）。`docker cp` 热更新保留，仅作 HOT 模式补充；`/api/version` 透传 BUILD_INFO 字段。BUILD_INFO 不含任何凭据。
+- `build_identity.sh` 遇到不可读路径会退出非 0，并在 stderr 列出具体路径，不再静默算出不完整的 hash。
+- `--nas-tree` 通过 `ssh zspace` 在 NAS 部署目录运行该脚本，并原样显示远端 stderr。若报不可读：ssh 用户需对部署目录（含 `src/`、`frontend/src`）有读权限（例如在 NAS 上对该目录执行 `chmod -R o+rX`，或换有权限的用户）；`sudo -n` 只能免密执行 docker，读普通文件需要密码，所以不采用 sudo，也不在容器内算（镜像里没有完整源码）。
 - `check_version` 结果：`MATCH` / `SERVER_MISMATCH` / `WORKER_MISMATCH` / `BOTH_MISMATCH` / `UNKNOWN`。
 - 退出码：`0` 两侧对齐、`1` 不对齐或部分对齐或 identity dirty、`2` API 不可达。
 
