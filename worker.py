@@ -345,8 +345,35 @@ def clear_retry(avid):
     update_json(retry_file, {}, clear)
 
 
+def weekly_item_magnet(avid):
+    """Return the magnet stored in weekly.json for this code, or "" (read-only)."""
+    target = normalize_video_id(avid)
+    if not target:
+        return ""
+    weekly_path = os.path.join(save_path, "__weekly__", "weekly.json")
+    try:
+        items = read_json(weekly_path, [])
+    except Exception as e:
+        logger.warning(f"[Weekly] read weekly.json failed: {e}")
+        return ""
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        if normalize_video_id(item.get("id") or item.get("avid") or "") != target:
+            continue
+        magnet = str(item.get("magnet") or "").strip()
+        if magnet.lower().startswith("magnet:"):
+            return magnet
+    return ""
+
+
 def get_magnet_from_weekly(avid):
-    """Compatibility wrapper around the shared download-source resolver."""
+    """Daily-recommendation magnet first; otherwise the shared download-source resolver."""
+    magnet = weekly_item_magnet(avid)
+    if magnet:
+        logger.info(f"[DownloadSource] {avid} uses weekly.json magnet")
+        return magnet
+
     from download_source import resolve_download_source
 
     source = resolve_download_source(avid, proxy=myproxy)
@@ -1068,15 +1095,28 @@ def download_video(avid):
     return True
 
 
+LOOP_ERROR_BACKOFF_START = 30
+LOOP_ERROR_BACKOFF_MAX = 600
+
+
+def next_loop_error_delay(consecutive_errors):
+    """Delay after the Nth consecutive loop error: 30s doubling up to 10 minutes."""
+    return min(LOOP_ERROR_BACKOFF_START * (2 ** max(consecutive_errors - 1, 0)), LOOP_ERROR_BACKOFF_MAX)
+
+
 def worker_loop():
     """主循环：不断轮询队列并下载"""
     logger.info("[Worker] 下载队列服务启动，开始轮询...")
     empty_poll_count = 0
+    consecutive_errors = 0
 
     while running:
         try:
             # 初始化 DB（每次循环都确保）
             data.initialize_db(downloaded_path, "MissAV")
+            if consecutive_errors:
+                logger.info(f"[Worker] 恢复正常（此前连续异常 {consecutive_errors} 次）")
+                consecutive_errors = 0
 
             raw_avid = read_queue_first_line()
             if raw_avid:
@@ -1101,10 +1141,16 @@ def worker_loop():
                 time.sleep(30)
 
         except Exception as e:
-            logger.error(f"[Worker] 循环异常: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            time.sleep(30)
+            consecutive_errors += 1
+            delay = next_loop_error_delay(consecutive_errors)
+            try:
+                logger.error(f"[Worker] 循环异常（连续第{consecutive_errors}次，{delay}s 后重试）: {e}")
+                if consecutive_errors == 1:
+                    import traceback
+                    logger.error(traceback.format_exc())
+            except Exception:
+                pass  # log sink may be closed after storage hiccups
+            time.sleep(delay)
 
     logger.info("[Worker] 服务已停止")
 

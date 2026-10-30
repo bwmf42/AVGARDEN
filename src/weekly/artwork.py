@@ -132,6 +132,9 @@ def _local_fanart_count(avid, save_dir):
     return n
 
 
+_NO_REMOTE_COVER_LOGGED = set()
+
+
 def download_for_item(
     item,
     save_dir,
@@ -192,7 +195,7 @@ def download_for_item(
                 sample_urls = list(forum_art["samples"])
             if cover_url or sample_urls:
                 source = f"{source}+forum" if source else "forum"
-    if not cover_url and isinstance(existing_cover, str):
+    if not cover_url and isinstance(existing_cover, str) and existing_cover.startswith(("http://", "https://")):
         cover_url = existing_cover
     if not sample_urls:
         sample_urls = fallback_fanarts
@@ -206,6 +209,9 @@ def download_for_item(
         or (isinstance(existing_cover, str) and existing_cover.startswith("http"))
         or javbus.cover_needs_refresh(avid, save_dir)
     )
+    if need_cover and not cover_url and existing_cover and avid not in _NO_REMOTE_COVER_LOGGED:
+        _NO_REMOTE_COVER_LOGGED.add(avid)
+        print(f"[artwork] {avid}: no remote cover source, keep existing cover, skip refresh")
     if need_cover and cover_url:
         item["cover"] = javbus.download_cover(
             avid, cover_url, save_dir, force=force_cover or need_cover
