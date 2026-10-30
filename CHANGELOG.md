@@ -6,6 +6,9 @@
 
 ## Unreleased
 
+- Audit fixes: bake the real `BUILD_INFO.json` into the server image (`COPY VERSION BUILD_INFO.jso[n]`) so rebuilt containers keep `tree_hash`; `tools/build_identity.sh` now fails with the unreadable path on stderr instead of hashing a partial tree, and `check_version.sh --nas-tree` shows the remote stderr plus a permission hint; weekly artwork never hands a local `/file/` cover to the downloader (logs one skip per code per process); Worker loop errors back off 30s doubling to 10 minutes and reset on recovery, with log failures tolerated; the home status bar shows the real failure message (truncated, full text in the tooltip).
+- Daily-recommendation items now use the magnet stored in `weekly.json` directly (read-only, `normalize_video_id` match) instead of re-searching 98tang; items missing from `weekly.json`, without a magnet, or entered manually still go through the unified download-source chain. `/api/resolve/` is unchanged.
+
 - Reorganize `AGENTS.md` into a compact index, preserving existing rules in linked product, Weekly, frontend, operations, and verification documents; retain explicit approval requirements and existing handoff paths.
 
 - Add `scripts/check.sh` for layered local verification and optional read-only NAS version/API/container checks, with `--quick`, PASS/FAIL/SKIP logs, machine-readable exit codes, and offline fixture tests. Page acceptance remains manual; missing tools are skipped and Go dependency downloads are disabled.
