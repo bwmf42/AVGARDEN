@@ -51,7 +51,7 @@ classify_changed_path() {
             RECREATE_SERVER=1
             RECREATE_WORKER=1
             ;;
-        deploy.sh|docker-compose.example.yml|.env.example|.gitignore|AGENTS.md|CLAUDE.md|CHANGELOG.md|README.md|INSTALL.md|LICENSE|NOTICE|docs|docs/*|.github|.github/*|tools|tools/*|check_version.sh|BUILD_INFO.json)
+        deploy.sh|deploy_local.sh|docker-compose.example.yml|.env.example|.gitignore|AGENTS.md|CLAUDE.md|CHANGELOG.md|README.md|INSTALL.md|LICENSE|NOTICE|docs|docs/*|.github|.github/*|tools|tools/*|check_version.sh|BUILD_INFO.json)
             # BUILD_INFO is regenerated every deploy; identity is docker-cp'd into
             # the running server without forcing an image rebuild.
             ;;
@@ -169,6 +169,10 @@ RSYNC_ARGS=( -a --stats -e "$RSYNC_RSH" \
     --exclude 'test_*.py' \
     --exclude '.git' \
     --exclude '.claude' \
+    --exclude '.ai' \
+    --exclude '.prev*' \
+    --exclude 'skills' \
+    --exclude '/scripts' \
     --exclude 'codex-agent' \
     --exclude 'design-demos' \
     --exclude 'pic' \
