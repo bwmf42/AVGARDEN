@@ -6,6 +6,7 @@
 
 ## Unreleased
 
+- `tools/build_identity.sh` pins `LC_ALL=C`, so `tree_hash` no longer depends on the caller's locale (a zh_CN terminal and a C shell produced different hashes for the same tree and `check_version.sh` reported a false mismatch).
 - Audit fixes: bake the real `BUILD_INFO.json` into the server image (`COPY VERSION BUILD_INFO.jso[n]`) so rebuilt containers keep `tree_hash`; `tools/build_identity.sh` now fails with the unreadable path on stderr instead of hashing a partial tree, and `check_version.sh --nas-tree` shows the remote stderr plus a permission hint; weekly artwork never hands a local `/file/` cover to the downloader (logs one skip per code per process); Worker loop errors back off 30s doubling to 10 minutes and reset on recovery, with log failures tolerated; the home status bar shows the real failure message (truncated, full text in the tooltip).
 - Daily-recommendation items now use the magnet stored in `weekly.json` directly (read-only, `normalize_video_id` match) instead of re-searching 98tang; items missing from `weekly.json`, without a magnet, or entered manually still go through the unified download-source chain. `/api/resolve/` is unchanged.
 

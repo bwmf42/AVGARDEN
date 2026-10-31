@@ -11,6 +11,8 @@
 #   tree_hash         — combined (server|worker) for backward compatibility
 #   git_dirty         — true only if dirty paths intersect fingerprint set
 set -euo pipefail
+# Fixed collation: sort order (and so tree_hash) must not depend on who runs this.
+export LC_ALL=C
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
