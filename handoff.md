@@ -1,6 +1,6 @@
 # A/GARDEN 交接（当前）
 
-更新时间：2026-10-23（Asia/Shanghai）；源码基线 `main@230af03`。
+更新时间：2026-10-31（Asia/Shanghai）；源码基线 `main@a5b2bee`（已推送）。NAS 于 10-31 以 `7b5aced` 部署，之后又有 `7d9d7c0`、`a5b2bee` 两个提交未部署。
 
 ## 权威入口
 
@@ -14,6 +14,15 @@
 
 本次仅同步交接文档。开始时 tracked 工作树只有 `AGENTS.md`、`handoff.md` 两处未提交的文档改动；本地 HEAD 与缓存的 `origin/main` 相同，但未 fetch、推送或检查 NAS，不能据此宣称远端/生产已同步。
 
+- **2026-10-31 审计修复与部署**（已推送 `a63b4af` `826120e` `5ad428d` `7b5aced` `7d9d7c0` `a5b2bee`）：
+  - `a63b4af`：BUILD_INFO 构建进镜像（`COPY VERSION BUILD_INFO.jso[n] /app/`）；`build_identity.sh` 遇不可读路径报错；`check_version --nas-tree` 显示远端 stderr。
+  - `826120e`：每日推荐条目 worker 直接用 `weekly.json` 磁链，无磁链才走统一选源链；Worker 循环异常按 30s 起倍增、最长 600s；封面刷新不再把本地 `/file/` 地址交给下载。
+  - `5ad428d`：首页失败标签显示真实原因。`7b5aced`：文档。
+  - `7d9d7c0`：`build_identity.sh` 固定 `LC_ALL=C`，`tree_hash` 不再随 locale 变化。`a5b2bee`：`deploy.sh` 不再把 `.ai`/`.prev*`/`skills`/`scripts` 同步到 NAS，`deploy_local.sh` 按部署工具分类。
+  - 已用 `deploy.sh` 部署：server、worker 均重建并 healthy；`/api/version` `git_sha` 7b5aced、`tree_hash` 286a1bcb…；用新镜像起临时容器读到的 BUILD_INFO 即真实身份（不再是 dev 占位）。
+  - 部署须带 `AVGARDEN_SSH_HOST=zspace`（NAS 拒绝 ssh 密码登录，需走密钥；`AVGARDEN_PASS` 只用于 NAS 上的 sudo）。见 [docs/operations.md](docs/operations.md)。
+  - 注意：本次部署的 `tree_hash` 是在中文 locale 下算的；`7d9d7c0` 后统一按 C 排序，所以下次部署前 `check_version.sh` 会显示 MISMATCH（同一份代码，已在 UTF-8 locale 下核对一致）。下次部署会顺带删除 NAS 现役目录里误传的 `.ai`/`.prev5`/`.prev6`/`skills`/`scripts` 并全量重建一次。
+  - 待线上观察：首页失败标签文字（重启后失败列表已清空，暂无样本）；每日推荐入队时 worker 日志应出现 `uses weekly.json magnet`。
 - **2026-10-17 `03c63e1`..`230af03`**：演员身份与产品描述分离。产品昵称、年龄/职业描述、DMM 素人署名、泛类别（个人拍摄、情侣等）和仅从标题推断的短名，只作为普通演员描述保留，不进入收藏/屏蔽/跳转；正式署名仍有效，演员偏好 API 拒绝新的描述类标签。Weekly 详情保存演员/标签块后保持展开，需显式完成或离开确认，并沿原筛选顺序继续浏览。
 - **2026-10-17 `56089a2` / `d7a1a37` / `d756d65` / `81ab715`**：115 任务由 Queue API 内独立串行通道提交，不占本地下载锁；状态显示实际通道（qB / 在线流 / 115）；传输通道标签适配活动栏；详情预览图不再等懒加载；媒体目录日期锚点贯穿刮削与中文合并，新增带签名、可回滚的目录日期修复工具，视频文件时间戳不动。
 - **2026-10-12 `94191b9` / `e4a03b4`**：修正健康告警（115 功能关闭时 Cookie 不再误报，失败记录按 NAS 当前时钟过期），未看中文补链超时随候选数缩放；同步 NAS 上已有的 98堂安全门会话复用热补丁。
