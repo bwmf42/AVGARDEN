@@ -188,7 +188,15 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 		ownerRoot = filepath.Join(basePath, pathParts[0], pathParts[1])
 		relativeParts = pathParts[2:]
 	} else {
+		if isSkippedMediaRoot(pathParts[0]) || pathParts[0] == "incomplete" {
+			http.NotFound(w, r)
+			return
+		}
 		videoID, _ := resolveVideoDir(pathParts[0])
+		if isSkippedMediaRoot(videoID) || videoID == "incomplete" {
+			http.NotFound(w, r)
+			return
+		}
 		ownerRoot = filepath.Join(basePath, videoID)
 		relativeParts = pathParts[1:]
 	}
@@ -1199,10 +1207,10 @@ func filterWeeklyItems(items []map[string]interface{}, mp4Index map[string]bool,
 			}
 		}
 
-		// 同步 downloaded：用媒体索引缓存查 mp4，避免逐条扫磁盘
+		// 同步 downloaded：本地主视频优先于 115 提交历史，其它队列状态仍优先。
 		if id, ok := item["id"].(string); ok {
 			code := strings.ToUpper(id)
-			if status, active := activeQueueIndex[comparableVideoID(code)]; active {
+			if status, active := activeQueueIndex[comparableVideoID(code)]; active && (status != "submitted_to_115" || !mp4Index[code]) {
 				item["downloaded"] = false
 				item["queueStatus"] = status
 			} else if mp4Index[code] {
@@ -1357,7 +1365,7 @@ func byGenreHandler(w http.ResponseWriter, r *http.Request) {
 		// 同步 downloaded / queue 状态（与 weekly 列表一致）
 		if id, ok := item["id"].(string); ok {
 			code := strings.ToUpper(id)
-			if status, active := activeQueueIndex[comparableVideoID(code)]; active {
+			if status, active := activeQueueIndex[comparableVideoID(code)]; active && (status != "submitted_to_115" || !mp4Index[code]) {
 				item["downloaded"] = false
 				item["queueStatus"] = status
 			} else if mp4Index[code] {
@@ -1650,18 +1658,25 @@ func decorateOnlineSearchItem(item map[string]interface{}) {
 	if rawID == "" {
 		return
 	}
-	if status, ok := activeQueueStatusForID(rawID); ok {
+	status, active := activeQueueStatusForID(rawID)
+	if active && status != "submitted_to_115" {
 		item["downloaded"] = false
 		item["queueStatus"] = status
 		return
 	}
 	if localID, ok := findDownloadedLocalID(rawID); ok {
 		item["downloaded"] = true
+		if active {
+			delete(item, "queueStatus")
+		}
 		item["localID"] = localID
 		item["localUrl"] = "/video/" + url.PathEscape(localID)
 		return
 	}
 	item["downloaded"] = false
+	if active {
+		item["queueStatus"] = status
+	}
 }
 
 func activeQueueStatusForID(rawID string) (string, bool) {

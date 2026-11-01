@@ -22,6 +22,7 @@ func TestImageHandlerSupportsRangeInsideOwnerDirectory(t *testing.T) {
 	req.Header.Set("Range", "bytes=2-5")
 	res := httptest.NewRecorder()
 	imageHandler(res, req)
+	t.Logf("GET %s Range bytes=2-5 -> %d %q", req.URL.Path, res.Code, res.Body.String())
 	if res.Code != http.StatusPartialContent || res.Body.String() != "2345" {
 		t.Fatalf("status=%d body=%q", res.Code, res.Body.String())
 	}
@@ -78,5 +79,51 @@ func TestConfiguredHTTPServerTimeouts(t *testing.T) {
 	if server.ReadTimeout != serverReadTimeout || server.ReadHeaderTimeout != serverReadHeaderTimeout ||
 		server.WriteTimeout != serverWriteTimeout || server.IdleTimeout != serverIdleTimeout {
 		t.Fatalf("unexpected timeouts: %#v", server)
+	}
+}
+
+func TestImageHandlerMediaRootScope(t *testing.T) {
+	root := withTestMediaRoot(t)
+	for _, relative := range []string{
+		"艾薇/x/a.mp4", "__trash__/x/a.mp4", "incomplete/x/a.mp4", "thumb/x/a.jpg",
+		"__hidden_START-656/x/a.mp4", "OMG-032/cover.jpg", "OMG-032/preview.jpg",
+		"__weekly__/OMG-032/cover.jpg", "__online__/OMG-032/preview.jpg",
+	} {
+		path := filepath.Join(root, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("fixture"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{"/file/艾薇/x/a.mp4", 404},
+		{"/file/__trash__/x/a.mp4", 404},
+		{"/file/incomplete/x/a.mp4", 404},
+		{"/file/thumb/x/a.jpg", 404},
+		{"/file/%20incomplete%20/x/a.mp4", 404},
+		{"/file/%E8%89%BE%E8%96%87/x/a.mp4", 404},
+		// A normal-looking ID can resolve to a skipped directory by its embedded code.
+		{"/file/START-656/x/a.mp4", 404},
+		{"/file/OMG-032/cover.jpg", 200},
+		{"/file/OMG-032/preview.jpg", 200},
+		{"/file/__weekly__/OMG-032/cover.jpg", 200},
+		{"/file/__online__/OMG-032/preview.jpg", 200},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			res := httptest.NewRecorder()
+			imageHandler(res, httptest.NewRequest(http.MethodGet, tc.path, nil))
+			t.Logf("GET %s -> %d", tc.path, res.Code)
+			if res.Code != tc.want {
+				t.Fatalf("status=%d body=%q, want %d", res.Code, res.Body.String(), tc.want)
+			}
+			if tc.want == http.StatusOK && res.Body.String() != "fixture" {
+				t.Fatalf("unexpected file content: %q", res.Body.String())
+			}
+		})
 	}
 }
