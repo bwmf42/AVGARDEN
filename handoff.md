@@ -1,6 +1,6 @@
 # A/GARDEN 交接（当前）
 
-更新时间：2026-10-31（Asia/Shanghai）；源码基线 `main@a5b2bee`（已推送）。NAS 于 10-31 以 `7b5aced` 部署，之后又有 `7d9d7c0`、`a5b2bee` 两个提交未部署。
+更新时间：2026-11-02（Asia/Shanghai）；源码基线 `main@4c105e5`（已推送）。NAS 于 11-01 以 `4c105e5` 部署，11-02 `check_version.sh` 两侧 MATCH。
 
 ## 权威入口
 
@@ -14,6 +14,7 @@
 
 本次仅同步交接文档。开始时 tracked 工作树只有 `AGENTS.md`、`handoff.md` 两处未提交的文档改动；本地 HEAD 与缓存的 `origin/main` 相同，但未 fetch、推送或检查 NAS，不能据此宣称远端/生产已同步。
 
+- **2026-11-01 `4c105e5`**（已推送并部署）：`/file/` 对跳过的媒体根目录（含 115 同步目录）和 `incomplete` 返回 404，请求目录名和解析后的目录名都检查；本地已有主视频时，`submitted_to_115` 不再盖住「已下载」。Vigo 用 `deploy.sh` 部署，`check_version.sh` 两侧 MATCH；线上 `/file/艾薇/…`、`/file/__trash__/…` 直连和经 Peach 都 404，作品文件 206。上一条里「下次部署前会显示 MISMATCH」已随这次部署消除。
 - **2026-10-31 审计修复与部署**（已推送 `a63b4af` `826120e` `5ad428d` `7b5aced` `7d9d7c0` `a5b2bee`）：
   - `a63b4af`：BUILD_INFO 构建进镜像（`COPY VERSION BUILD_INFO.jso[n] /app/`）；`build_identity.sh` 遇不可读路径报错；`check_version --nas-tree` 显示远端 stderr。
   - `826120e`：每日推荐条目 worker 直接用 `weekly.json` 磁链，无磁链才走统一选源链；Worker 循环异常按 30s 起倍增、最长 600s；封面刷新不再把本地 `/file/` 地址交给下载。
