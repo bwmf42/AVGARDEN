@@ -1495,6 +1495,16 @@ func translateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 			httpError(w, "Content-Type 必须是 application/json", http.StatusUnsupportedMediaType)
 			return
 		}
+		var settings map[string]json.RawMessage
+		if json.Unmarshal(body, &settings) == nil {
+			if rawMode, exists := settings["mode"]; exists {
+				var mode string
+				if json.Unmarshal(rawMode, &mode) != nil || mode != "deepseek" {
+					httpError(w, "标题翻译只使用 DeepSeek", http.StatusBadRequest)
+					return
+				}
+			}
+		}
 	}
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method,
 		strings.TrimRight(queueAPI, "/")+"/api/translate-settings", bytes.NewReader(body))

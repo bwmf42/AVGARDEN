@@ -1,25 +1,25 @@
 import unittest
 from unittest import mock
-import urllib.error
+import os
 
 import weekly_updater
 from src.weekly import merge
 
 
 class WeeklyUpdaterRetentionTest(unittest.TestCase):
-    def test_translation_provider_prefers_configured_relay(self):
-        with mock.patch.object(weekly_updater, "TRANSLATE_API_BASE", "https://relay.example/v1"), \
-             mock.patch.object(weekly_updater, "TRANSLATE_API_KEY", "relay-key"), \
-             mock.patch.object(weekly_updater, "TRANSLATE_MODEL", "gpt-5.4"), \
-             mock.patch.object(weekly_updater, "DS_API_KEY", "deepseek-key"):
-            self.assertEqual(weekly_updater.translation_provider(), ("relay", "gpt-5.4"))
-
-    def test_translation_provider_falls_back_to_deepseek_without_relay(self):
-        with mock.patch.object(weekly_updater, "TRANSLATE_API_BASE", ""), \
-             mock.patch.object(weekly_updater, "TRANSLATE_API_KEY", ""), \
+    def test_translation_provider_ignores_configured_relay(self):
+        with mock.patch.dict(os.environ, {"TRANSLATE_API_BASE": "https://relay.example/v1",
+                                          "TRANSLATE_API_KEY": "relay-key", "TRANSLATE_MODEL": "relay-model"}), \
              mock.patch.object(weekly_updater, "DS_API_KEY", "deepseek-key"), \
              mock.patch.object(weekly_updater, "DS_MODEL", "deepseek-v4-flash"):
             self.assertEqual(weekly_updater.translation_provider(), ("deepseek", "deepseek-v4-flash"))
+
+    def test_translation_provider_requires_deepseek_key(self):
+        with mock.patch.dict(os.environ, {"TRANSLATE_API_BASE": "https://relay.example/v1",
+                                          "TRANSLATE_API_KEY": "relay-key"}), \
+             mock.patch.object(weekly_updater, "DS_API_KEY", ""):
+            self.assertEqual(weekly_updater.translation_provider(), ("", ""))
+            self.assertEqual(weekly_updater.translation_provider_candidates(), [])
 
     def test_clear_untranslatable_title_zh(self):
         items = [
@@ -55,8 +55,7 @@ class WeeklyUpdaterRetentionTest(unittest.TestCase):
         self.assertEqual(item["titleZh"], "SAN-478Z：这是一个完整的中文翻译标题")
 
     def test_translate_title_once_rejects_english_refusal(self):
-        with mock.patch.object(weekly_updater, "TRANSLATE_API_BASE", "https://relay.example/v1"), \
-             mock.patch.object(weekly_updater, "TRANSLATE_API_KEY", "relay-key"), \
+        with mock.patch.object(weekly_updater, "DS_API_KEY", "deepseek-key"), \
              mock.patch.object(
                  weekly_updater,
                  "_chat_completion",
@@ -72,28 +71,22 @@ class WeeklyUpdaterRetentionTest(unittest.TestCase):
                     actresses=[],
                 )
 
-    def test_translate_title_once_falls_back_to_deepseek_on_relay_403(self):
-        def fake_chat_completion(base, api_key, model, messages, temperature=0.3):
-            if base == "https://relay.example/v1":
-                raise urllib.error.HTTPError(base, 403, "Forbidden", hdrs=None, fp=None)
-            return "这是一个完整的中文翻译标题"
-
-        with mock.patch.object(weekly_updater, "TRANSLATE_API_BASE", "https://relay.example/v1"), \
-             mock.patch.object(weekly_updater, "TRANSLATE_API_KEY", "relay-key"), \
+    def test_translate_title_once_only_calls_deepseek(self):
+        with mock.patch.dict(os.environ, {"TRANSLATE_API_BASE": "https://relay.example/v1",
+                                          "TRANSLATE_API_KEY": "relay-key"}), \
              mock.patch.object(weekly_updater, "DS_API_KEY", "deepseek-key"), \
-             mock.patch.object(weekly_updater, "_chat_completion", side_effect=fake_chat_completion):
+             mock.patch("src.status_report.record_deepseek_usage"), \
+             mock.patch.object(weekly_updater, "_chat_completion", return_value="这是一个完整的中文翻译标题") as chat:
             zh = weekly_updater.translate_title_once(
-                "SAME-251",
-                "SAME-251 かなり長い日本語の作品タイトル",
-                actresses=[],
+                "SAME-251", "SAME-251 かなり長い日本語の作品タイトル", actresses=[],
             )
-
         self.assertEqual(zh, "这是一个完整的中文翻译标题")
+        self.assertEqual(chat.call_count, 1)
+        self.assertEqual(chat.call_args.args[:3],
+                         ("https://api.deepseek.com", "deepseek-key", weekly_updater.DS_MODEL))
 
     def test_translate_title_once_uses_neutral_prompt_when_needed(self):
-        with mock.patch.object(weekly_updater, "TRANSLATE_API_BASE", ""), \
-             mock.patch.object(weekly_updater, "TRANSLATE_API_KEY", ""), \
-             mock.patch.object(weekly_updater, "DS_API_KEY", "deepseek-key"), \
+        with mock.patch.object(weekly_updater, "DS_API_KEY", "deepseek-key"), \
              mock.patch.object(
                  weekly_updater,
                  "_chat_completion",
@@ -108,9 +101,7 @@ class WeeklyUpdaterRetentionTest(unittest.TestCase):
         self.assertEqual(zh, "这是一个完整的中文翻译标题")
 
     def test_translate_title_once_falls_back_to_raw_title_when_body_is_empty(self):
-        with mock.patch.object(weekly_updater, "TRANSLATE_API_BASE", ""), \
-             mock.patch.object(weekly_updater, "TRANSLATE_API_KEY", ""), \
-             mock.patch.object(weekly_updater, "DS_API_KEY", "deepseek-key"), \
+        with mock.patch.object(weekly_updater, "DS_API_KEY", "deepseek-key"), \
              mock.patch.object(
                  weekly_updater,
                  "_chat_completion",

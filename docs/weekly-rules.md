@@ -29,7 +29,7 @@
   - 字段：演员、标签、发行日、时长、字幕、封面/预览、`titleZh`
   - 顺序：MGS 表字段；MGS 完全没有标签时才用 DMM 精确商品元数据补空字段；DMM 搜索与精确 CID 均没有商品时，最后使用 javdatabase 精确番号页的演员、标签、时长 → **artwork 下载图**（上表优先级）。JavBus 代码保留但当前不参与候选。
   - 标签经 `genre_zh.py`：静态表 + **`/db/genre_zh_memory.json` 持久记忆**（只在新键写入，不每次 AI）；最后 **对齐 `blocked_genres.txt` 原文拼写**（繁简折叠），避免同义标签要重新拉黑；enrich 结束统一 normalize；**NTR 保持 NTR**。批量：`plwt_genre_normalize.py`。
-  - 标题：`weekly_updater.batch_translate`（`TRANSLATE_*` OpenAI 兼容中继优先，DeepSeek 回退 → `titleZh`）
+  - 标题：`weekly_updater.batch_translate`（只用 DeepSeek → `titleZh`；`TRANSLATE_*` 中继配置不再生效）
 - 回退列表源：`WEEKLY_LIST_SOURCE=javbus`。
 - **回填范围**：默认只补前端 **未看**（`/api/weekly` 已滤屏蔽标签/演员 − 已看 − 队列 − 已下载）。脚本 `plwt_art_backfill.py`（`BACKFILL_UNWATCHED_ONLY=1`）；全量才设 `0`。元数据回填用 `weekly_backfill_details.py`（同 scope）。
 - **保留规则**：未浏览作品不按时间淘汰；历史已看记录视作已浏览。已浏览作品从 `watched_at` 起保留 30 天，到期同时删除 Weekly 条目、图片目录和浏览记录。早期选择功能留下的 `interest` 字段只作兼容读取，不再提供「想看」或「不感兴趣」入口，也不再创建这类记录；已有 `want` 记录继续按原规则保留，避免隐式删除数据。

@@ -32,6 +32,26 @@ for module_name in ("src.comm", "loguru", "curl_cffi", "PIL"):
 
 
 class ScraperMetadataTest(unittest.TestCase):
+    def test_title_translation_only_calls_deepseek_with_legacy_relay_env(self):
+        import weekly_updater
+
+        response = mock.Mock()
+        response.__enter__ = mock.Mock(return_value=response)
+        response.__exit__ = mock.Mock(return_value=False)
+        response.read.return_value = json.dumps({"choices": [{"finish_reason": "stop",
+            "message": {"content": "这是完整的中文故事标题"}}]}).encode()
+        with mock.patch.dict(os.environ, {"TRANSLATE_API_BASE": "https://relay.example/v1",
+                                          "TRANSLATE_API_KEY": "fake-relay-key"}), \
+             mock.patch.object(weekly_updater, "DS_API_KEY", "fake-deepseek-key"), \
+             mock.patch("src.status_report.record_deepseek_usage"), \
+             mock.patch("translate_settings.open_translation_request", return_value=response) as request:
+            metadata = AVMetadata(avid="ABF-123", title="日本語の物語タイトル")
+            Sracper("/tmp").translate_title(metadata)
+        self.assertEqual(metadata.title_zh, "这是完整的中文故事标题")
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(request.call_args.args[0].full_url, "https://api.deepseek.com/chat/completions")
+        self.assertEqual(request.call_args.args[0].get_header("Authorization"), "Bearer fake-deepseek-key")
+
     def test_optional_fields_may_be_missing(self):
         html = """
         <html><head><title>ABF-123 Sample title - JavBus</title></head>

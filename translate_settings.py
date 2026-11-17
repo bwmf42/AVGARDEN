@@ -1,4 +1,4 @@
-"""Runtime relay settings and non-redirecting credential requests.
+"""DeepSeek-only translation policy, legacy settings and protected requests.
 
 Base validation only checks literal hosts, without DNS or network access.
 DNS rebinding remains a risk; this unauthenticated LAN API is not an SSRF boundary.
@@ -71,11 +71,11 @@ def _validate(data, saved=False):
     if not isinstance(data, dict) or set(data) - {"base", "key", "model", "mode"}:
         raise SettingsValidationError("设置必须是仅含 base、key、model、mode 的 JSON 对象")
     data = dict(data)
-    if "mode" in data and (not isinstance(data["mode"], str) or data["mode"] not in ("auto", "deepseek")):
+    if "mode" in data and data["mode"] != "deepseek":
         if saved:
             data.pop("mode")
         else:
-            raise SettingsValidationError("翻译源模式只能是 auto 或 deepseek")
+            raise SettingsValidationError("标题翻译只使用 DeepSeek")
     for field, value in data.items():
         if not isinstance(value, str):
             raise SettingsValidationError("设置字段必须是字符串")
@@ -112,18 +112,13 @@ def _read():
 
 
 def effective_relay(fallback=None):
-    """Read on every call; callers may supply their patchable environment defaults."""
-    settings = _read()
-    if settings.get("mode") == "deepseek":
-        return "", "", settings.get("model") or "gpt-5.4"
-    if settings.get("base") and settings.get("key"):
-        return settings["base"], settings["key"], settings.get("model") or "gpt-5.4"
-    return fallback if fallback is not None else _env_relay()
+    """Compatibility entry point: saved settings and fallback never enable a relay."""
+    return "", "", "gpt-5.4"
 
 
 def _public(settings):
     # Show incomplete saved drafts so changing base/clearing key is visible to UI.
-    # In auto mode, translation calls use the environment relay until complete.
+    # Legacy relay fields are retained for old clients, but never used to translate.
     if settings:
         base, key, model = (settings.get(k, "") for k in ("base", "key", "model"))
         source = "file"
@@ -132,14 +127,10 @@ def _public(settings):
         source = "env" if base and key else "none"
     # Do not transform public fields based on any secret (a credential oracle).
     complete = bool(settings.get("base") and settings.get("key"))
-    mode = settings.get("mode", "auto")
     result = {"base": base, "model": model, "key_set": bool(key), "source": source,
               "deepseek_set": bool(os.environ.get("DEEPSEEK_API_KEY")), "complete": complete,
-              "mode": mode, "relay_enabled": mode == "auto"}
-    if mode == "deepseek":
-        result["hint"] = "当前只使用 DeepSeek，中继已停用"
-    elif not complete:
-        result["hint"] = "尚未生效：需要同时保存 Base URL 和 API Key，当前仍在使用环境变量里的配置"
+              "mode": "deepseek", "relay_enabled": False,
+              "hint": "当前只使用 DeepSeek，中继已停用；Base URL、API Key、模型字段仅兼容保留，不生效"}
     return result
 
 
@@ -157,10 +148,11 @@ def save_settings(changes):
         # Compare the relay configuration independently of its enabled mode.
         current_base = (stored["base"] if stored.get("base") and stored.get("key")
                         else _env_relay()[0])
-        # Environment credentials remain runtime fallback, never persisted implicitly.
+        # Never persist environment credentials implicitly, even for legacy clients.
         settings = stored
         if "base" in changes and changes["base"] != current_base and "key" not in changes:
             settings["key"] = ""
         settings.update(changes)
+        settings["mode"] = "deepseek"
         atomic_write_json(path, settings)  # mkstemp creates a 0600 sibling.
         return _public(settings)

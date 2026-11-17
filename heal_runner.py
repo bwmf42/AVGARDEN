@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or "/app")
 
-from translate_settings import effective_relay, redact_credentials, open_translation_request
+from translate_settings import redact_credentials, open_translation_request
 from src.log_writer import cleanup as log_cleanup
 from src.log_writer import write as log_write
 
@@ -70,9 +70,6 @@ DS_MODEL = {
     "deepseek-chat": "deepseek-v4-flash",
     "deepseek-reasoner": "deepseek-v4-pro",
 }.get(_DS_RAW, _DS_RAW)
-TRANSLATE_API_BASE = os.environ.get("TRANSLATE_API_BASE", "").strip().rstrip("/")
-TRANSLATE_API_KEY = os.environ.get("TRANSLATE_API_KEY", "").strip()
-TRANSLATE_MODEL = (os.environ.get("TRANSLATE_MODEL") or "gpt-5.4").strip()
 
 _QB_DONE = frozenset({"queuedUP", "uploading", "stalledUP", "pausedUP", "stoppedUP", "forcedUP"})
 _QB_ACTIVE = frozenset({
@@ -296,18 +293,15 @@ def _chat_endpoint(base: str) -> str:
 
 
 def _translation_probe_candidates() -> List[Tuple[str, str, str, str]]:
-    """(label, base, key, model) in preference order — same as Weekly."""
+    """DeepSeek-only (label, base, key, model), same as Weekly."""
     out: List[Tuple[str, str, str, str]] = []
-    base, key, model = effective_relay((TRANSLATE_API_BASE, TRANSLATE_API_KEY, TRANSLATE_MODEL))
-    if base and key:
-        out.append(("翻译中继", base, key, model))
     if DS_API_KEY:
         out.append(("DeepSeek", "https://api.deepseek.com", DS_API_KEY, DS_MODEL))
     return out
 
 
 def probe_translation() -> Tuple[bool, str]:
-    """Probe translation providers; fall back when the relay is down."""
+    """Probe the only allowed translation provider, DeepSeek."""
     candidates = _translation_probe_candidates()
     if not candidates:
         return False, "未配置翻译 API"

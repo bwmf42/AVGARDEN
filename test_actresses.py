@@ -324,40 +324,31 @@ class TestActresses(unittest.TestCase):
                     title = f"{prefix}{han}{kana} TV 1874 NTR・，。"
                     self.assertEqual(a.is_valid_title_zh(title), expected)
 
-    def test_translate_title_once_uses_fallback_after_japanese_refusal(self):
+    def test_translate_title_once_retries_prompt_after_japanese_refusal(self):
         from unittest import mock
         import weekly_updater
 
         refusal = "申し訳ありませんが、成人向け動画のタイトル翻訳はお手伝いできません。"
         translated = "与爆乳超淫荡保姆的油性爱 草食系无法满足的色情爆乳"
-        providers = [
-            ("relay", "https://relay.example/v1", "fake-relay", "relay-model"),
-            ("deepseek", "https://deepseek.example/v1", "fake-deepseek", "fallback-model"),
-        ]
-
-        def complete(base, api_key, model, messages, temperature=0.3):
-            return refusal if base == providers[0][1] else translated
+        providers = [("deepseek", "https://api.deepseek.com", "fake-deepseek", "test-model")]
 
         with mock.patch.object(weekly_updater, "translation_provider_candidates", return_value=providers), \
-             mock.patch.object(weekly_updater, "_chat_completion", side_effect=complete) as chat, \
+             mock.patch.object(weekly_updater, "_chat_completion", side_effect=[refusal, translated]) as chat, \
              mock.patch("src.status_report.record_deepseek_usage") as usage:
             result = weekly_updater.translate_title_once(
                 "259LUXU-1881", "【爆乳どスケベ保母さんとオイルSEX】…", actresses=[],
             )
         self.assertEqual(result, translated)
         self.assertEqual(chat.call_args_list[0].args[0], providers[0][1])
-        self.assertEqual(chat.call_args_list[-1].args[:3], providers[1][1:])
-        self.assertEqual(sum(call.args[0] == providers[1][1] for call in chat.call_args_list), 1)
-        usage.assert_called_once_with(1)
+        self.assertEqual(chat.call_args_list[-1].args[:3], providers[0][1:])
+        self.assertEqual(chat.call_count, 2)
+        self.assertEqual(usage.call_args_list, [mock.call(1), mock.call(1)])
 
-    def test_translate_title_once_falls_back_after_hardened_refusals(self):
+    def test_translate_title_once_retries_prompt_after_hardened_refusals(self):
         from unittest import mock
         import weekly_updater
 
-        providers = [
-            ("relay", "https://relay.example/v1", "fake-relay", "relay-model"),
-            ("deepseek", "https://deepseek.example/v1", "fake-deepseek", "fallback-model"),
-        ]
+        providers = [("deepseek", "https://api.deepseek.com", "fake-deepseek", "test-model")]
         translated = "正常的中文作品标题"
         for refusal in ("Unable to translate 中文标题", "无法翻译该标题的内容",
                         "不能翻译 中文标题", "Translation: 中文标题",
@@ -365,12 +356,11 @@ class TestActresses(unittest.TestCase):
                         "\u200bＩ ｃａｎ＇ｔ translate 中文标题"):
             with self.subTest(refusal=refusal), \
                  mock.patch.object(weekly_updater, "translation_provider_candidates", return_value=providers), \
-                 mock.patch.object(weekly_updater, "_chat_completion", side_effect=lambda base, *args, **kwargs:
-                                   refusal if base == providers[0][1] else translated) as chat, \
+                 mock.patch.object(weekly_updater, "_chat_completion", side_effect=[refusal, translated]) as chat, \
                  mock.patch("src.status_report.record_deepseek_usage"):
                 self.assertEqual(weekly_updater.translate_title_once(
                     "ABF-387", "本当の日本語タイトル", actresses=[]), translated)
-                self.assertEqual(chat.call_args_list[-1].args[0], providers[1][1])
+                self.assertEqual(chat.call_args_list[-1].args[0], providers[0][1])
 
 
 if __name__ == "__main__":

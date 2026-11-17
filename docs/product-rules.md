@@ -17,6 +17,7 @@
 
 ## 重要产品规则
 
+- 标题/文本翻译只用 DeepSeek（`DEEPSEEK_API_KEY`），中继选项已移除；无 DeepSeek 密钥时不翻译，不回退中继。服务端拒绝 `mode=auto`，旧文件无模式或为 `auto` 时也按 `deepseek` 报告，`relay_enabled=false`。旧 base/key/model 和 `TRANSLATE_API_BASE` / `TRANSLATE_API_KEY` / `TRANSLATE_MODEL` 仅为客户端兼容保留，不参与翻译；设置接口的 `complete`、`source`、`key_set` 仅描述旧配置，`deepseek_set` 表示 DeepSeek 密钥是否配置。
 - `/api/queue-status` 不展示成功项；`active` 只含 `queued` / `downloading`（不含 heal `processing` 幽灵）。
 - 失败项只展示最近一周内的失败记录。
 - 下载管理页只保留最近一周的完成历史展示；不要删除视频文件。

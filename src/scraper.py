@@ -143,7 +143,7 @@ class Sracper:
 
 
     def translate_title(self, metadata: AVMetadata):
-        """使用中继优先、DeepSeek 回退的翻译服务生成中文标题。"""
+        """只使用 DeepSeek 翻译服务生成中文标题。"""
         if not metadata.title:
             return
         try:

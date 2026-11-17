@@ -24,7 +24,7 @@ func TestTranslateSettingsForwarding(t *testing.T) {
 		for _, status := range []int{200, 400, 500} {
 			body := ""
 			if method == http.MethodPost {
-				body = `{"base":"https://relay.test/v1","key":"fake-settings-secret"}`
+				body = `{"mode":"deepseek","base":"https://relay.test/v1","key":"fake-settings-secret"}`
 			}
 			called := false
 			queueHTTPClient = &http.Client{Transport: settingsTransport(func(r *http.Request) (*http.Response, error) {
@@ -59,6 +59,15 @@ func TestTranslateSettingsRejectsInvalidRequests(t *testing.T) {
 		t.Fatal("invalid request reached upstream")
 		return nil, errors.New("unexpected")
 	})}
+	for _, mode := range []string{`"auto"`, `"other"`, `null`, `true`, `1`, `[]`, `{}`} {
+		req := httptest.NewRequest("POST", "/api/translate-settings", strings.NewReader(`{"mode":`+mode+`}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		translateSettingsHandler(rec, req)
+		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "标题翻译只使用 DeepSeek") {
+			t.Errorf("mode %s: status %d, body %s", mode, rec.Code, rec.Body.String())
+		}
+	}
 	for _, method := range []string{"PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"} {
 		rec := httptest.NewRecorder()
 		translateSettingsHandler(rec, httptest.NewRequest(method, "/api/translate-settings", nil))

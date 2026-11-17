@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.log_writer import write as log_write
 from src.weekly import actresses as actress_util, artwork, enrich, javbus, mgs, sukebei
 from weekly_store import atomic_write_json, weekly_update_lock
-from translate_settings import effective_relay
 from weekly_updater import _chat_completion
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
@@ -156,8 +155,7 @@ def normalize_existing_actresses(items):
 
 
 def translate_title(item):
-    base, key, model = effective_relay()
-    candidates = [(base, key, model)] if base and key else []
+    candidates = []
     if DS_API_KEY:
         candidates.append(("https://api.deepseek.com", DS_API_KEY, DS_MODEL))
     if not actress_util.item_needs_title_zh(item) or not candidates:

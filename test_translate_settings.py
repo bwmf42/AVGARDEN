@@ -18,6 +18,7 @@ import queue_api
 import translate_settings as settings
 import weekly_backfill_details as backfill
 import weekly_updater as weekly
+from tools.maintenance import translate_media_titles as titles
 
 
 SECRET = "fake-relay-unique-Q8z7"
@@ -71,11 +72,9 @@ class TranslateSettingsTests(unittest.TestCase):
             "DEEPSEEK_API_KEY": DEEP_SECRET,
             "TRANSLATE_ALLOW_PRIVATE_BASE": "",
         }))
-        for module in (weekly, heal_runner):
-            for name, value in (("TRANSLATE_API_BASE", "https://env.example/v1"),
-                                ("TRANSLATE_API_KEY", SECRET),
-                                ("TRANSLATE_MODEL", "env-model"), ("DS_API_KEY", "")):
-                self.stack.enter_context(mock.patch.object(module, name, value))
+        for module in (weekly, heal_runner, backfill):
+            self.stack.enter_context(mock.patch.object(module, "DS_API_KEY", DEEP_SECRET))
+        self.stack.enter_context(mock.patch("src.status_report.record_deepseek_usage"))
         self.logs = io.StringIO()
         self.stack.enter_context(contextlib.redirect_stdout(self.logs))
         self.stack.enter_context(contextlib.redirect_stderr(self.logs))
@@ -109,7 +108,7 @@ class TranslateSettingsTests(unittest.TestCase):
             status, data, raw = self.request()
             self.assertEqual(status, 200)
             fields = {"base", "model", "key_set", "source", "deepseek_set", "complete", "mode", "relay_enabled"}
-            self.assertEqual(set(data), fields if file_exists else fields | {"hint"})
+            self.assertEqual(set(data), fields | {"hint"})
             self.assertEqual(data["complete"], file_exists)
             self.assertTrue(data["key_set"])
             self.assertTrue(data["deepseek_set"])
@@ -130,22 +129,20 @@ class TranslateSettingsTests(unittest.TestCase):
             self.assertTrue(self.request()[1]["hint"])
             self.assertFalse(settings.effective_relay()[0])
 
-    def test_candidates_file_fallback_and_permissions(self):
-        self.assertEqual(weekly.translation_provider_candidates()[0][1:],
-                         ("https://env.example/v1", SECRET, "env-model"))
+    def test_candidates_ignore_relay_and_preserve_private_storage(self):
+        expected = [("deepseek", "https://api.deepseek.com", DEEP_SECRET, weekly.DS_MODEL)]
+        self.assertEqual(weekly.translation_provider_candidates(), expected)
         self.seed()
-        expected = ("https://file.example/v1", SECRET, "file-model")
-        self.assertEqual(settings.effective_relay(), expected)
-        self.assertEqual(weekly.translation_provider_candidates()[0][1:], expected)
-        self.assertEqual(weekly.translation_provider(), ("relay", "file-model"))
-        self.assertEqual(heal_runner._translation_probe_candidates()[0][1:], expected)
+        self.assertEqual(settings.effective_relay()[:2], ("", ""))
+        self.assertEqual(weekly.translation_provider_candidates(), expected)
+        self.assertEqual(weekly.translation_provider(), ("deepseek", weekly.DS_MODEL))
+        self.assertEqual(heal_runner._translation_probe_candidates()[0][1:3],
+                         ("https://api.deepseek.com", DEEP_SECRET))
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
-        settings.save_settings({"key": ""})
-        self.assertEqual(weekly.translation_provider_candidates()[0][1], "https://env.example/v1")
-        self.path.write_text('{"base":"https://partial.example"}')
-        self.assertEqual(settings.effective_relay()[0], "https://env.example/v1")
-        self.path.write_text('{broken')
-        self.assertEqual(settings.effective_relay()[0], "https://env.example/v1")
+        for content in ('{"base":"https://partial.example"}', '{broken'):
+            self.path.write_text(content)
+            self.assertEqual(settings.effective_relay()[:2], ("", ""))
+            self.assertEqual(weekly.translation_provider_candidates(), expected)
 
     def test_base_change_clears_key(self):
         # Also test an environment-only starting point.
@@ -157,17 +154,17 @@ class TranslateSettingsTests(unittest.TestCase):
             self.assertFalse(data["key_set"])
             self.assertEqual(json.loads(self.path.read_text())["key"], "")
             self.assertEqual(data["base"], "https://new.example/v1")
-            # Incomplete file falls back to the old env address, never new+old key.
-            self.assertEqual(settings.effective_relay()[0], "https://env.example/v1")
+            # Saved relay drafts never become effective, complete or incomplete.
+            self.assertEqual(settings.effective_relay()[:2], ("", ""))
 
     def test_partial_updates_and_clear(self):
         self.seed()
         for changes in ({"model": "new-model"}, {"base": "https://file.example/v1/"}):
             self.assertTrue(self.request("POST", changes)[1]["key_set"])
-            self.assertEqual(settings.effective_relay()[1], SECRET)
+            self.assertEqual(json.loads(self.path.read_text())["key"], SECRET)
         new_key = "replacement-fake-secret"
         self.assertTrue(self.request("POST", {"base": "https://new.example", "key": new_key})[1]["key_set"])
-        self.assertEqual(settings.effective_relay()[1], new_key)
+        self.assertEqual(json.loads(self.path.read_text())["key"], new_key)
         self.assertFalse(self.request("POST", {"key": ""})[1]["key_set"])
 
     def test_key_requires_base_in_same_request(self):
@@ -178,7 +175,7 @@ class TranslateSettingsTests(unittest.TestCase):
         self.assertEqual(data["error"], "保存 API Key 时必须同时提交 Base URL，确保密钥发往你看到的地址")
         self.assertNotIn("adminkey-REAL1234", raw)
         self.assertEqual(self.path.read_bytes(), before)
-        self.assertEqual(settings.effective_relay(), ("https://env.example/v1", SECRET, "env-model"))
+        self.assertEqual(settings.effective_relay()[:2], ("", ""))
 
     def test_public_fields_are_not_a_secret_suffix_oracle(self):
         base = "https://a.example/" + DEEP_SECRET[-4:]
@@ -196,25 +193,25 @@ class TranslateSettingsTests(unittest.TestCase):
     def test_model_only_does_not_persist_environment_credentials(self):
         status, data, _ = self.request("POST", {"model": "x"})
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(self.path.read_text()), {"model": "x"})
+        self.assertEqual(json.loads(self.path.read_text()), {"model": "x", "mode": "deepseek"})
         self.assertNotIn(SECRET, self.path.read_text())
         self.assertFalse(data["complete"])
         with mock.patch.dict(os.environ, {"TRANSLATE_API_KEY": "rotated-fake-key"}):
-            self.assertEqual(settings.effective_relay()[1], "rotated-fake-key")
+            self.assertEqual(settings.effective_relay()[:2], ("", ""))
 
     def test_complete_and_hint_follow_saved_draft(self):
         for method, body in (("POST", {"base": "https://draft.example"}), ("GET", None)):
             data = self.request(method, body)[1]
             self.assertFalse(data["complete"])
             self.assertTrue(data["hint"])
-            self.assertEqual(settings.effective_relay()[0], "https://env.example/v1")
+            self.assertEqual(settings.effective_relay()[:2], ("", ""))
         status, data, raw = self.request("POST", {"base": "https://draft.example", "key": SECRET})
         self.assertEqual(status, 200)
         self.assertTrue(data["complete"])
-        self.assertNotIn("hint", data)
+        self.assertIn("不生效", data["hint"])
         self.assertNotIn(SECRET, raw)
         self.assertTrue(self.request()[1]["complete"])
-        self.assertEqual(settings.effective_relay()[:2], ("https://draft.example", SECRET))
+        self.assertEqual(settings.effective_relay()[:2], ("", ""))
         self.assertFalse(self.request("POST", {"key": ""})[1]["complete"])
         self.assertFalse(self.request()[1]["complete"])
 
@@ -258,32 +255,24 @@ class TranslateSettingsTests(unittest.TestCase):
         with mock.patch.object(settings.urllib.request, "build_opener") as build:
             opener = build.return_value
             opener.open.return_value = Response()
-            weekly._chat_completion("https://relay.example/v1", SECRET, "model", [])
+            weekly.translate_title_once("TEST-001", "日本語の物語タイトル")
             self.assertTrue(heal_runner.probe_translation()[0])
-            with mock.patch.object(backfill, "DS_API_KEY", ""):
-                self.assertTrue(backfill.translate_title({"id": "TEST-001", "title": "日本語の物語タイトル"}))
-            self.assertEqual(build.call_count, 3)
+            self.assertTrue(backfill.translate_title({"id": "TEST-001", "title": "日本語の物語タイトル"}))
+            weekly._deepseek_chat([])
+            self.assertEqual(build.call_count, 4)
             for call in build.call_args_list:
                 self.assertIsInstance(call.args[0], settings.NoRedirectHandler)
-            self.assertEqual(opener.open.call_count, 3)
+            self.assertEqual(opener.open.call_count, 4)
             for call in opener.open.call_args_list:
-                self.assertEqual(call.args[0].get_header("Authorization"), "Bearer " + SECRET)
-            # DeepSeek fixed endpoints use the same protected transport.
-            with mock.patch.object(weekly, "DS_API_KEY", DEEP_SECRET):
-                weekly._deepseek_chat([])
-            self.assertEqual(opener.open.call_args.args[0].full_url, "https://api.deepseek.com/chat/completions")
-            self.assertEqual(opener.open.call_args.args[0].get_header("Authorization"), "Bearer " + DEEP_SECRET)
-            with mock.patch.object(heal_runner, "TRANSLATE_API_KEY", ""), \
-                 mock.patch.object(heal_runner, "DS_API_KEY", DEEP_SECRET):
-                self.assertTrue(heal_runner.probe_translation()[0])
-            self.assertEqual(opener.open.call_args.args[0].get_header("Authorization"), "Bearer " + DEEP_SECRET)
+                self.assertEqual(call.args[0].full_url, "https://api.deepseek.com/chat/completions")
+                self.assertEqual(call.args[0].get_header("Authorization"), "Bearer " + DEEP_SECRET)
 
     def test_redirect_status_is_a_failure_at_call_sites(self):
         for code in (301, 302, 303, 307, 308):
             with self.subTest(code=code), \
                  mock.patch.object(settings.urllib.request.OpenerDirector, "open",
                                    side_effect=urllib.error.HTTPError("", code, "redirect refused", None, None)), \
-                 mock.patch.object(backfill, "DS_API_KEY", ""), mock.patch.object(backfill, "log"):
+                 mock.patch.object(backfill, "DS_API_KEY", DEEP_SECRET), mock.patch.object(backfill, "log"):
                 with self.assertRaises(urllib.error.HTTPError) as raised:
                     weekly._chat_completion("https://relay.example/v1", SECRET, "model", [])
                 self.assertEqual(raised.exception.code, code)
@@ -372,24 +361,25 @@ class TranslateSettingsTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "finish_reason=length"):
                 weekly.translate_title_once("TEST-001", "日本語の物語タイトル")
 
-    def test_next_translation_reads_new_settings(self):
+    def test_next_translation_ignores_changed_legacy_settings(self):
         with mock.patch.object(settings.urllib.request.OpenerDirector, "open", return_value=Response()) as call:
             weekly.translate_title_once("TEST-001", "日本語の物語タイトル")
             self.seed()
             weekly.translate_title_once("TEST-001", "日本語の物語タイトル")
         requests = [entry.args[0] for entry in call.call_args_list]
-        self.assertEqual([r.full_url for r in requests], ["https://env.example/v1/chat/completions", "https://file.example/v1/chat/completions"])
-        self.assertEqual(json.loads(requests[1].data)["model"], "file-model")
-        self.assertEqual(requests[1].get_header("Authorization"), "Bearer " + SECRET)
+        self.assertEqual([r.full_url for r in requests], ["https://api.deepseek.com/chat/completions"] * 2)
+        for request in requests:
+            self.assertEqual(json.loads(request.data)["model"], weekly.DS_MODEL)
+            self.assertEqual(request.get_header("Authorization"), "Bearer " + DEEP_SECRET)
 
-    def test_backfill_uses_runtime_settings_and_rejects_truncation(self):
+    def test_backfill_ignores_legacy_settings_and_rejects_truncation(self):
         self.seed()
-        with mock.patch.object(backfill, "DS_API_KEY", ""), mock.patch.object(backfill, "log"), \
+        with mock.patch.object(backfill, "DS_API_KEY", DEEP_SECRET), mock.patch.object(backfill, "log"), \
              mock.patch.object(settings.urllib.request.OpenerDirector, "open", return_value=Response("length", "甚至愿意让你")) as call:
             item = {"id": "TEST-001", "title": "日本語の物語タイトル"}
             self.assertFalse(backfill.translate_title(item))
             self.assertFalse(item.get("titleZh"))
-            self.assertEqual(call.call_args.args[0].full_url, "https://file.example/v1/chat/completions")
+            self.assertEqual(call.call_args.args[0].full_url, "https://api.deepseek.com/chat/completions")
             self.assertEqual(json.loads(call.call_args.args[0].data)["max_tokens"], 2048)
 
     def test_failures_do_not_leak_credentials(self):
@@ -418,44 +408,52 @@ class TranslateSettingsTests(unittest.TestCase):
             self.assertNotIn(secret, combined)
 
 
-    def test_missing_mode_defaults_to_auto_and_preserves_relay_fallback(self):
+    def test_legacy_modes_and_environment_never_enable_relay(self):
         fallback = ("https://fallback.example/v1", SECRET, "fallback-model")
-        for draft in (None, {"base": "https://draft.example/v1"},
-                      {"base": "https://file.example/v1", "key": SECRET, "model": "file-model"}):
-            with self.subTest(draft=draft):
-                if draft is not None:
-                    self.path.write_text(json.dumps(draft))
-                status, data, _ = self.request()
-                self.assertEqual(status, 200)
-                self.assertEqual(data["mode"], "auto")
-                self.assertTrue(data["relay_enabled"])
-                expected = ((draft["base"], SECRET, "file-model")
-                            if draft and draft.get("key") else fallback)
-                self.assertEqual(settings.effective_relay(fallback), expected)
-                if not data["complete"]:
-                    self.assertEqual(data["hint"], "尚未生效：需要同时保存 Base URL 和 API Key，当前仍在使用环境变量里的配置")
+        for mode in (None, "auto", "deepseek"):
+            for draft in ({}, {"base": "https://draft.example/v1"},
+                          {"base": "https://file.example/v1", "key": SECRET, "model": "file-model"}):
+                with self.subTest(mode=mode, draft=draft):
+                    saved = {**draft, **({"mode": mode} if mode else {})}
+                    self.path.write_text(json.dumps(saved))
+                    before = self.path.read_bytes()
+                    status, data, _ = self.request()
+                    self.assertEqual(status, 200)
+                    self.assertEqual(data["mode"], "deepseek")
+                    self.assertFalse(data["relay_enabled"])
+                    self.assertEqual(settings.effective_relay(fallback)[:2], ("", ""))
+                    self.assertEqual(self.path.read_bytes(), before, "GET must not rewrite legacy files")
+                    self.assertIn("不生效", data["hint"])
+                    with mock.patch.object(settings.urllib.request.OpenerDirector, "open", return_value=Response()) as call:
+                        weekly.translate_title_once("TEST-001", "日本語の物語タイトル")
+                        self.assertTrue(heal_runner.probe_translation()[0])
+                        self.assertTrue(backfill.translate_title({"id": "TEST-001", "title": "日本語の物語タイトル"}))
+                        item = {"id": "TEST-001", "title": "日本語の物語タイトル"}
+                        self.assertTrue(queue_api.translate_online_title_zh(item, "TEST-001"))
+                        self.assertTrue(titles.translate_title("TEST-001", "日本語の物語タイトル"))
+                    self.assertEqual(call.call_count, 5)
+                    for entry in call.call_args_list:
+                        request = entry.args[0]
+                        self.assertEqual(request.full_url, "https://api.deepseek.com/chat/completions")
+                        self.assertEqual(request.get_header("Authorization"), "Bearer " + DEEP_SECRET)
 
-    def test_mode_only_post_preserves_relay_and_auto_restores_it(self):
+    def test_mode_only_post_preserves_legacy_fields_but_rejects_auto(self):
         self.seed()
         original = json.loads(self.path.read_text())
-        for mode in ("deepseek", "auto"):
-            with self.subTest(mode=mode):
-                status, data, raw = self.request("POST", {"mode": mode})
-                self.assertEqual(status, 200)
-                self.assertEqual(json.loads(self.path.read_text()), {**original, "mode": mode})
-                self.assertTrue(data["key_set"])
-                self.assertTrue(data["complete"])
-                self.assertEqual(data["mode"], mode)
-                self.assertEqual(data["relay_enabled"], mode == "auto")
-                self.assertEqual(self.request()[1], data)
-                if mode == "deepseek":
-                    self.assertEqual(settings.effective_relay(), ("", "", "file-model"))
-                    self.assertEqual(data["hint"], "当前只使用 DeepSeek，中继已停用")
-                else:
-                    self.assertEqual(settings.effective_relay(), (original["base"], SECRET, "file-model"))
-                    self.assertNotIn("hint", data)
-                for secret in (SECRET, DEEP_SECRET):
-                    self.assertNotIn(secret, raw + self.logs.getvalue())
+        status, data, raw = self.request("POST", {"mode": "deepseek"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(self.path.read_text()), {**original, "mode": "deepseek"})
+        self.assertTrue(data["key_set"])
+        self.assertTrue(data["complete"])
+        self.assertEqual(data["mode"], "deepseek")
+        self.assertFalse(data["relay_enabled"])
+        before = self.path.read_bytes()
+        status, data, _ = self.request("POST", {"mode": "auto"})
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"], "标题翻译只使用 DeepSeek")
+        self.assertEqual(self.path.read_bytes(), before)
+        for secret in (SECRET, DEEP_SECRET):
+            self.assertNotIn(secret, raw + self.logs.getvalue())
 
     def test_deepseek_incomplete_settings_never_consult_relay_fallback(self):
         for draft in ({}, {"base": "https://draft.example/v1"}, {"key": SECRET}):
@@ -466,7 +464,7 @@ class TranslateSettingsTests(unittest.TestCase):
                 self.assertEqual(json.loads(self.path.read_text()), {**draft, "mode": "deepseek"})
                 self.assertFalse(data["complete"])
                 self.assertEqual(data["key_set"], bool(draft.get("key")))
-                self.assertEqual(data["hint"], "当前只使用 DeepSeek，中继已停用")
+                self.assertEqual(data["hint"], "当前只使用 DeepSeek，中继已停用；Base URL、API Key、模型字段仅兼容保留，不生效")
                 self.assertNotIn(SECRET, raw)
                 with mock.patch.object(settings, "_env_relay", side_effect=AssertionError("relay fallback forbidden")):
                     self.assertEqual(settings.effective_relay(), ("", "", "gpt-5.4"))
@@ -476,15 +474,15 @@ class TranslateSettingsTests(unittest.TestCase):
     def test_invalid_mode_post_returns_400_without_changing_file(self):
         self.seed()
         before = self.path.read_bytes()
-        for mode in ("x", 1, "", None, True, [], {}, "AUTO", "deepseek "):
+        for mode in ("auto", "x", 1, "", None, True, [], {}, "AUTO", "deepseek "):
             with self.subTest(mode=mode):
                 status, data, raw = self.request("POST", {"mode": mode})
                 self.assertEqual(status, 400)
-                self.assertEqual(data["error"], "翻译源模式只能是 auto 或 deepseek")
+                self.assertEqual(data["error"], "标题翻译只使用 DeepSeek")
                 self.assertEqual(self.path.read_bytes(), before)
                 self.assertNotIn(SECRET, raw)
 
-    def test_invalid_saved_mode_is_ignored_without_discarding_relay(self):
+    def test_invalid_saved_mode_is_ignored_without_enabling_relay(self):
         self.seed()
         original = json.loads(self.path.read_text())
         for mode in ("x", 1, "", None, True, [], {}):
@@ -492,10 +490,10 @@ class TranslateSettingsTests(unittest.TestCase):
                 self.path.write_text(json.dumps({**original, "mode": mode}))
                 status, data, _ = self.request()
                 self.assertEqual(status, 200)
-                self.assertEqual(data["mode"], "auto")
-                self.assertTrue(data["relay_enabled"])
+                self.assertEqual(data["mode"], "deepseek")
+                self.assertFalse(data["relay_enabled"])
                 self.assertTrue(data["complete"])
-                self.assertEqual(settings.effective_relay(), (original["base"], SECRET, "file-model"))
+                self.assertEqual(settings.effective_relay()[:2], ("", ""))
                 self.assertEqual(settings._validate({"mode": mode}, saved=True), {})
 
     def test_deepseek_same_base_update_keeps_key(self):
@@ -518,6 +516,21 @@ class TranslateSettingsTests(unittest.TestCase):
         self.assertEqual(json.loads(self.path.read_text())["key"], "")
         self.assertEqual(data["mode"], "deepseek")
         self.assertEqual(settings.effective_relay()[:2], ("", ""))
+
+    def test_missing_deepseek_key_never_falls_back_to_relay(self):
+        self.seed()
+        self.path.write_text(json.dumps({**json.loads(self.path.read_text()), "mode": "auto"}))
+        with mock.patch.object(weekly, "DS_API_KEY", ""), \
+             mock.patch.object(heal_runner, "DS_API_KEY", ""), \
+             mock.patch.object(backfill, "DS_API_KEY", ""), \
+             mock.patch.object(settings.urllib.request.OpenerDirector, "open") as call:
+            self.assertEqual(weekly.translation_provider(), ("", ""))
+            self.assertEqual(weekly.translation_provider_candidates(), [])
+            with self.assertRaisesRegex(RuntimeError, "not configured"):
+                weekly.translate_title_once("TEST-001", "日本語の物語タイトル")
+            self.assertFalse(heal_runner.probe_translation()[0])
+            self.assertFalse(backfill.translate_title({"id": "TEST-001", "title": "日本語の物語タイトル"}))
+            call.assert_not_called()
 
     def test_deepseek_weekly_candidates_exclude_saved_and_environment_relay(self):
         with mock.patch.object(weekly, "DS_API_KEY", DEEP_SECRET):

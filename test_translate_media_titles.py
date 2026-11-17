@@ -126,18 +126,14 @@ class RefusalNfoSafetyTest(unittest.TestCase):
                 self.assertEqual(list(folder.iterdir()), [video])
                 self.assertEqual(video.read_bytes(), b"test-video-placeholder")
 
-    def test_fallback_translation_writes_marked_nfo_with_original_title(self):
+    def test_deepseek_prompt_retry_writes_marked_nfo_with_original_title(self):
         import weekly_updater
 
-        providers = [
-            ("relay", "https://relay.example/v1", "fake-key", "relay-model"),
-            ("deepseek", "https://deepseek.example/v1", "fake-key", "fallback-model"),
-        ]
+        providers = [("deepseek", "https://api.deepseek.com", "fake-key", "test-model")]
         original = "ABF-123 はじめてのデート"
         with tempfile.TemporaryDirectory() as tmp, \
              mock.patch.object(weekly_updater, "translation_provider_candidates", return_value=providers), \
-             mock.patch.object(weekly_updater, "_chat_completion", side_effect=lambda base, *args, **kwargs:
-                               "Unable to translate 中文标题" if base == providers[0][1] else "第一次约会"), \
+             mock.patch.object(weekly_updater, "_chat_completion", side_effect=["Unable to translate 中文标题", "第一次约会"]), \
              mock.patch("src.status_report.record_deepseek_usage"):
             folder = Path(tmp) / "ABF-123"
             folder.mkdir()

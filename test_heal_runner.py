@@ -9,7 +9,7 @@ import heal_runner as h
 
 
 class TestHealRunner(unittest.TestCase):
-    def test_translation_probe_uses_relay_when_configured(self):
+    def test_translation_probe_only_uses_deepseek(self):
         class Response:
             def __enter__(self):
                 return self
@@ -20,16 +20,17 @@ class TestHealRunner(unittest.TestCase):
             def read(self):
                 return b'{"choices":[{"message":{"content":"pong"}}]}'
 
-        with mock.patch.object(h, "TRANSLATE_API_BASE", "https://relay.example/v1"), \
-             mock.patch.object(h, "TRANSLATE_API_KEY", "relay-key"), \
-             mock.patch.object(h, "TRANSLATE_MODEL", "gpt-5.4"), \
+        with mock.patch.dict(os.environ, {"TRANSLATE_API_BASE": "https://relay.example/v1",
+                                          "TRANSLATE_API_KEY": "relay-key", "TRANSLATE_MODEL": "relay-model"}), \
+             mock.patch.object(h, "DS_API_KEY", "deepseek-key"), \
+             mock.patch("src.status_report.record_deepseek_usage"), \
              mock.patch.object(h, "open_translation_request", return_value=Response()) as urlopen:
             ok, msg = h.probe_translation()
         self.assertTrue(ok)
-        # Probe labels were renamed to 翻译中继 / DeepSeek by the approved relay
-        # fallback change (see CHANGELOG "relay-to-DeepSeek fallback").
-        self.assertEqual(msg, "翻译中继 · model=gpt-5.4")
-        self.assertIn("relay.example/v1/chat/completions", urlopen.call_args.args[0].full_url)
+        self.assertEqual(msg, "DeepSeek · model=" + h.DS_MODEL)
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(urlopen.call_args.args[0].full_url, "https://api.deepseek.com/chat/completions")
+        self.assertEqual(urlopen.call_args.args[0].get_header("Authorization"), "Bearer deepseek-key")
 
     def test_count_titlezh_gaps(self):
         items = [

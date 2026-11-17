@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.weekly import actresses as actress_util, sources, javbus, sukebei, merge, artwork, enrich, chinese_forum, blocking
 from weekly_store import atomic_write_json, weekly_update_lock
-from translate_settings import effective_relay, redact_credentials, TRANSLATION_MAX_TOKENS
+from translate_settings import redact_credentials, TRANSLATION_MAX_TOKENS
 from weekly_watched_store import load_records, mark_many, mark_watched
 
 SAVE_PATH = os.environ.get("SAVE_PATH", "/data")
@@ -26,11 +26,6 @@ DS_MODEL = {
     "deepseek-chat": "deepseek-v4-flash",
     "deepseek-reasoner": "deepseek-v4-pro",
 }.get(_DS_MODEL_RAW, _DS_MODEL_RAW)
-# Prefer the configured OpenAI-compatible relay (for example Hermes/code77).
-# DeepSeek remains a compatibility fallback for installations without relay settings.
-TRANSLATE_API_BASE = os.environ.get("TRANSLATE_API_BASE", "").strip().rstrip("/")
-TRANSLATE_API_KEY = os.environ.get("TRANSLATE_API_KEY", "").strip()
-TRANSLATE_MODEL = (os.environ.get("TRANSLATE_MODEL") or "gpt-5.4").strip()
 # Per-title retries + exponential backoff on 429/5xx
 DS_TRANSLATE_RETRIES = int(os.environ.get("DS_TRANSLATE_RETRIES", "4"))
 DS_TRANSLATE_TIMEOUT = float(os.environ.get("DS_TRANSLATE_TIMEOUT", "45"))
@@ -50,20 +45,14 @@ def _http_status(exc):
 
 def translation_provider():
     """Return the provider name and model used by Weekly translation."""
-    base, key, model = effective_relay((TRANSLATE_API_BASE, TRANSLATE_API_KEY, TRANSLATE_MODEL))
-    if base and key:
-        return "relay", model
     if DS_API_KEY:
         return "deepseek", DS_MODEL
     return "", ""
 
 
 def translation_provider_candidates():
-    """Return translation providers in preference order."""
+    """Only DeepSeek is allowed, regardless of legacy settings or environment."""
     providers = []
-    base, key, model = effective_relay((TRANSLATE_API_BASE, TRANSLATE_API_KEY, TRANSLATE_MODEL))
-    if base and key:
-        providers.append(("relay", base, key, model))
     if DS_API_KEY:
         providers.append(("deepseek", "https://api.deepseek.com", DS_API_KEY, DS_MODEL))
     return providers

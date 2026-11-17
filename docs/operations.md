@@ -34,7 +34,7 @@
 - 出站刮削依赖 `PROXY`（mihomo mixed-port）；javdatabase / MGS / DMM 走固定 rules（日本组等）
 - mihomo：**订阅** `Clash_sub_v2.yaml` vs **固定** `config.yaml`（groups/rules）。98堂 `url-test` 组与 `kpqq4.com`/`plwt` 规则见 [`docs/mihomo-fixed-snippet.yaml`](../docs/mihomo-fixed-snippet.yaml)；勿用订阅覆盖固定配置
 - 前台系统日志默认只读 `av-garden.log`（入队/开始/完成/失败）；明细在 loguru 日文件 / docker logs，`/api/logs?debug=1` 可看全量；日志保留约 **30 天**
-- **自愈** `heal_runner.py`（launcher 默认每 1h）：补缺 `titleZh`、队列/qB 状态对齐、qB/翻译服务/98堂/115 Cookie 探活告警。翻译服务按 `TRANSLATE_*` 中继优先、DeepSeek 回退。115 Cookie 失效只黄不红，前台 `/api/p115/config` 带 120s 缓存活探测。**不**次日自动重刮、**不**自动删种。开关：`HEAL_ENABLE`、`HEAL_TITLEZH`、`HEAL_QUEUE_SYNC`、`HEAL_PROBE`、`HEAL_INTERVAL_H`
+- **自愈** `heal_runner.py`（launcher 默认每 1h）：补缺 `titleZh`、队列/qB 状态对齐、qB/翻译服务/98堂/115 Cookie 探活告警。翻译及探测只使用 DeepSeek（`DEEPSEEK_API_KEY`），中继选项已移除，`TRANSLATE_*` 中继配置不生效。115 Cookie 失效只黄不红，前台 `/api/p115/config` 带 120s 缓存活探测。**不**次日自动重刮、**不**自动删种。开关：`HEAL_ENABLE`、`HEAL_TITLEZH`、`HEAL_QUEUE_SYNC`、`HEAL_PROBE`、`HEAL_INTERVAL_H`
 - mihomo **98堂** url-test 候选含日本（暂时失败的节点会被测活跳过）
 - 一次性存储清理只能通过 `tools/maintenance/storage_cleanup.py` 的 dry-run manifest → apply 两阶段执行；日常 Weekly 图片清理使用 `weekly_cache_maintenance.py`，默认只处理不在当前 JSON 且超过 30 天的直接子目录。两者都必须保留 manifest/结果并在应用前重新验证签名和运行态。
 
