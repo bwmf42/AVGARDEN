@@ -406,7 +406,9 @@ def extract_thread_images(value: str, base: str = BASE) -> List[str]:
 class ForumClient:
     """带安全门的串行客户端。"""
 
-    def __init__(self, base: str = BASE, fid: str = FID):
+    def __init__(self, base: str = BASE, fid: str = FID, coordinated_requests: bool = False):
+        self.coordinated_requests = coordinated_requests
+        self.request_failed = False
         self.base = base.rstrip("/")
         self.fid = str(fid)
         self.session = requests.Session()
@@ -471,13 +473,7 @@ class ForumClient:
         for attempt in range(MAX_PAGE_RETRIES + 1):
             imp = self._impersonates()[attempt % len(self._impersonates())]
             try:
-                r = self.session.get(
-                    url,
-                    headers=self._headers(self.base + "/"),
-                    proxies=_proxies(),
-                    impersonate=imp,
-                    timeout=30,
-                )
+                r = self._raw_get(url, referer=self.base + "/", impersonate=imp)
                 hard_ssl = 0
                 html = r.text or ""
                 if not self._is_safe_gate(html) and "Discuz" in html:
@@ -562,6 +558,14 @@ class ForumClient:
         if ck:
             h["Cookie"] = ck
         imp = impersonate or IMPERSONATE
+        # Only opt-in library scans acquire per-request slots. Search callers already
+        # hold this same lock around search_exact_chinese; do not nest locks there.
+        if self.coordinated_requests:
+            from download_source import _plwt_search_slot
+            with _plwt_search_slot():
+                return self.session.get(
+                    url, headers=h, proxies=_proxies(), impersonate=imp, timeout=30,
+                )
         return self.session.get(
             url,
             headers=h,
@@ -611,6 +615,7 @@ class ForumClient:
                 except Exception:
                     pass
                 time.sleep(min(30.0, 2 ** attempt + random.uniform(1, 4)))
+        self.request_failed = True
         _log(f"get failed {url}: {last_err}")
         return None
 

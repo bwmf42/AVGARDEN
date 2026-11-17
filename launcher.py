@@ -298,7 +298,7 @@ def signal_handler(sig, frame):
 
 
 def merge_watcher():
-    """每天一轮中文版合并/清理，定时逻辑与每日推荐一致（13:00–18:00 随机）。
+    """每天一轮中文版合并、库内扫描与替换，定时逻辑与每日推荐一致（13:00–18:00 随机）。
 
     关闭：MERGE_ENABLE=0
     """
@@ -328,14 +328,15 @@ def merge_watcher():
             continue
 
         try:
-            log("Checking Chinese torrent merge (daily)...")
+            log("Checking Chinese library replacements (daily)...")
             rc = importlib.import_module("replace_chinese")
-            rc.merge_completed_chinese()
+            if rc.main(daily=True) != 0:
+                raise RuntimeError("Chinese library scan incomplete")
             mark_merge_completed(run_day)
-            log_write("ReplaceCN", f"每日中文合并完成 ({run_day})")
+            log(f"Chinese library scan completed ({run_day})")
         except Exception as e:
             log(f"Merge watcher error: {e}")
-            log_write("ReplaceCN", f"每日中文合并失败: {e}")
+            log_write("ReplaceCN", f"每日中文替换扫描失败: {e}")
             # 失败不 mark，当天窗口内可再排一次
             time.sleep(3600)
 

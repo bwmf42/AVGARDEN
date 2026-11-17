@@ -14,7 +14,8 @@
 ## 每日推荐列表与图片刮削规则
 
 - **列表源（默认）**：98堂 `https://plwt.kpqq4.com/forum-37-1.html`（`WEEKLY_FORUM_FID=37`，默认 **3 页** `WEEKLY_MAX_PAGES`）。实现：`sources.get_recent` → `chinese_forum.get_weekly_list`。
-- **未看中文补链**：`weekly_updater.py` 成功后逐个精确搜索 `forum-103`，复用跨进程 31/60 秒槽位，只回写 `weekly.json` 的中文磁链字段；不创建下载任务。库内 `replace_chinese` 仍由独立 `merge_watcher` 调度，不属于刮削流水线。
+- **未看中文补链**：`weekly_updater.py` 成功后逐个精确搜索 `forum-103`，复用跨进程 31/60 秒槽位，只回写 `weekly.json` 的中文磁链字段；不创建下载任务。库内 `replace_chinese.main(daily=True)` 由独立 `merge_watcher` 每天调度，不属于刮削流水线：先合并已完成任务，再扫库，默认列 forum-103 最新 2 页（`CHINESE_FORUM_DAILY_PAGES`），只为精确命中的缺中文番号进帖并加入 qB。当日成功才记完成；论坛失败或添加失败不记完成，稍后重试。每次以 `ReplaceCN` 记录 list/hits/added/skip/失败摘要；无缺中文或安全门失败前也已先执行合并。
+- **库内中文回补**：`CHINESE_FORUM_BACKFILL=1` 配合 `CHINESE_FORUM_BACKFILL_SINCE=YYYY-MM-DD`，按帖子发帖日期（含当天）停止翻页，覆盖库内最早 NFO 作品日；未指定 SINCE 才使用最早作品日。非法日期或未开启 BACKFILL 却指定 SINCE 均报错退出。日常调度固定使用日常模式，不继承一次性回补/演练开关。先用 `CHINESE_FORUM_DRY_RUN=1` 输出将新增的番号、目标目录、磁链前缀及最终 hits/added/skip；演练不合并、不暂停或添加 qB、不写 pending/weekly。命令和请求预算见 [运维规则](operations.md#库内中文替换回补)。
 - JavBus 访问代码保留但当前不参与下载磁链候选。手动/搜索下载磁链按 98堂 forum-103 精确搜索 → Sukebei 选择规则执行；每日中文替换仍按 forum-103 列表命中后进帖。
 - 每日推荐封面和详情预览图应尽量本地化到 `/data/__weekly__/{番号}/`，前端优先使用 `/file/__weekly__/...`，避免用户浏览时再等外站图片。
 - 标题补全或规范化没有产生实际变化时不得重写 `weekly.json`，避免无意义失效缓存和已审核的维护 manifest。

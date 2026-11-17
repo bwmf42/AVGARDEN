@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Restore daily library Chinese replacement scanning lost since the 2026-08-13 scrape-pipeline change: merge first, scan forum-103, then add exact missing-Chinese hits, with daily completion/retry and ReplaceCN counters. Allow completed original qB tasks backed by valid local video through the existing superseded-task pause path while retaining active/Chinese duplicate guards. Add strict `CHINESE_FORUM_BACKFILL_SINCE` post-date backfill, read-only dry-run targets/counts, and per-request shared 31/60-second forum slots.
+
 - Restrict `/file/` to exclude skipped media roots and `incomplete`, checking both requested and resolved directory names while preserving Weekly/online artwork and video Range access; Weekly, genre browsing, and online search now show locally downloaded main videos ahead of `submitted_to_115` history, with other queue-state priorities unchanged.
 - `tools/build_identity.sh` pins `LC_ALL=C`, so `tree_hash` no longer depends on the caller's locale (a zh_CN terminal and a C shell produced different hashes for the same tree and `check_version.sh` reported a false mismatch).
 - Audit fixes: bake the real `BUILD_INFO.json` into the server image (`COPY VERSION BUILD_INFO.jso[n]`) so rebuilt containers keep `tree_hash`; `tools/build_identity.sh` now fails with the unreadable path on stderr instead of hashing a partial tree, and `check_version.sh --nas-tree` shows the remote stderr plus a permission hint; weekly artwork never hands a local `/file/` cover to the downloader (logs one skip per code per process); Worker loop errors back off 30s doubling to 10 minutes and reset on recovery, with log failures tolerated; the home status bar shows the real failure message (truncated, full text in the tooltip).

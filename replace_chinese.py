@@ -3,20 +3,20 @@
 
 模式：
 - 日常（默认）：论坛最新 CHINESE_FORUM_DAILY_PAGES 页（默认 2），命中缺中文则进帖拿链
-- 一次性回补 CHINESE_FORUM_BACKFILL=1：按库 NFO 最早作品日停列表，再定向进帖
+- 一次性回补 CHINESE_FORUM_BACKFILL=1：按 BACKFILL_SINCE（或库 NFO 最早作品日）停列表，再定向进帖
 不再使用 sukebei 搜中文字幕。
 """
 import base64, json, os, re, time, random, shutil, subprocess, sys, urllib.parse, urllib.request
 from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from src.log_writer import write as log_write, cleanup as log_cleanup
+from src.log_writer import write as log_write
 from src.media_dates import preserve_directory, preserve_library_dates
 from main_video import (
     collect_main_video_candidates,
     find_main_video,
 )
 from qb_file_selection import select_strict_largest_video, strict_priority_plan
-from qb_task_guard import matching_qb_tasks
+from qb_task_guard import DONE_QB_STATES, matching_qb_tasks
 from video_id import normalize_local_video_id
 from weekly_watched_store import load_records as load_watched_records
 from weekly_store import atomic_write_json as atomic_write_weekly_json
@@ -30,6 +30,7 @@ QB_URL = os.environ.get("QBITTORRENT_URL", "http://127.0.0.1:8080")
 QB_USER = os.environ.get("QBITTORRENT_USERNAME", "admin")
 QB_PASS = os.environ.get("QBITTORRENT_PASSWORD", "")
 PENDING_FILE = os.environ.get("CHINESE_PENDING_FILE", "/db/chinese_pending.json")
+QUEUE_FILE = "/db/queue_state.json"
 WEEKLY_WATCHED_FILE = os.environ.get("WEEKLY_WATCHED_FILE", "/db/weekly_watched.json")
 MEDIA_PROVENANCE_FILE = ".av_garden_media.json"
 BACKFILL = os.environ.get("CHINESE_FORUM_BACKFILL", "").strip().lower() in ("1", "true", "yes", "on")
@@ -443,38 +444,46 @@ def qb_has_cn_avid(avid):
         return False
 
 
-def avid_exists_in_system(avid):
-    """检查番号是否已在系统中（队列 + qB 任何版本）。
+def avid_exists_in_system(avid, target_dir=None):
+    """库内替换查重：活动队列、中文任务或未完成原版会阻止新增。
 
     返回: (exists: bool, location: str|None, reason: str)
     """
     avid_upper = avid.upper()
 
     # 1. 检查队列
-    queue_path = "/db/queue_state.json"
+    queue_path = QUEUE_FILE
     try:
         if os.path.exists(queue_path):
             with open(queue_path) as f:
                 queue = json.load(f)
                 for item in queue:
                     item_code = (item.get("code") or "").upper()
-                    if item_code == avid_upper:
+                    if item_code == avid_upper and item.get("status") in ("queued", "pending", "processing", "downloading"):
                         status = item.get("status", "unknown")
                         return True, "queue", f"status={status}"
     except Exception as exc:
-        log(f"  Warning: could not check queue for {avid}: {exc}")
+        raise RuntimeError(f"Could not check replacement queue for {avid}") from exc
 
-    # 2. 检查 qBittorrent（任何版本，不限中文）
+    # 2. 只放行非中文完成态，且本地仍有有效主视频；校验态一律阻止。
     try:
         opener = qb_login()
         resp = opener.open(urllib.request.Request(f"{QB_URL}/api/v2/torrents/info"), timeout=10)
         torrents = json.loads(resp.read().decode())
+        pending = load_pending()
         for torrent in matching_qb_tasks(torrents, avid, include_broken=True):
+            if (not torrent_is_known_chinese(torrent, pending, avid)
+                    and torrent.get("state") in DONE_QB_STATES
+                    and any(collect_main_video_candidates(path) for path in (
+                        str(torrent.get("content_path") or ""),
+                        os.path.join(SAVE_PATH, target_dir or avid),
+                    ) if path)):
+                continue
             torrent_hash = torrent.get("hash", "")[:12]
             state = torrent.get("state", "unknown")
             return True, "qbittorrent", f"hash={torrent_hash} state={state}"
     except Exception as exc:
-        log(f"  Warning: could not check qBittorrent for {avid}: {exc}")
+        raise RuntimeError(f"Could not check replacement qB tasks for {avid}") from exc
 
     return False, None, ""
 
@@ -1231,16 +1240,48 @@ def _refill_weekly_gaps():
     return refilled
 
 
-def main():
+def main(*, daily=False):
+    """Return nonzero on an incomplete scan so the daily watcher can retry."""
+    backfill = BACKFILL and not daily
+    dry_run = DRY_RUN and not daily
+    since = os.environ.get("CHINESE_FORUM_BACKFILL_SINCE", "").strip()
+    if since and not daily:
+        if not backfill:
+            raise ValueError("CHINESE_FORUM_BACKFILL_SINCE requires CHINESE_FORUM_BACKFILL=1")
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", since):
+            raise ValueError("CHINESE_FORUM_BACKFILL_SINCE must be YYYY-MM-DD")
+        try:
+            datetime.strptime(since, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("Invalid CHINESE_FORUM_BACKFILL_SINCE date") from exc
+    mode = "backfill" if backfill else "daily"
+    stats = dict(list=0, hits=0, added=0, skip=0, weekly_updated=0, no_magnet=0, fail=0)
+    result = 1
+    try:
+        result = _run_replacement(backfill, dry_run, since if backfill else "", stats)
+        return result
+    except Exception:
+        stats["fail"] += 1
+        raise
+    finally:
+        summary = f"mode={mode} dry_run={dry_run} result={result} " + " ".join(
+            f"{key}={value}" for key, value in stats.items()
+        )
+        log(f"=== Done {summary} ===")
+        if not dry_run:
+            log_write("ReplaceCN", summary)
+
+
+def _run_replacement(backfill, dry_run, since, stats):
     from src.weekly import chinese_forum  # lazy: merge/sweep 不依赖论坛模块
 
-    mode = "backfill" if BACKFILL else "daily"
-    log(f"=== Start mode={mode} dry_run={DRY_RUN} ===")
+    mode = "backfill" if backfill else "daily"
+    log(f"=== Start mode={mode} dry_run={dry_run} ===")
     log(f"SAVE_PATH={SAVE_PATH}")
     chinese_forum.set_proxy(PROXY)
 
     # 0. 先合并已完成的中文字幕版
-    if not DRY_RUN:
+    if not dry_run:
         merge_completed_chinese()
     else:
         log("DRY_RUN: skip merge_completed_chinese")
@@ -1258,41 +1299,33 @@ def main():
 
     if not missing:
         log("No missing Chinese items in library; done")
-        try:
-            log_write("ReplaceCN", f"mode={mode} 无缺中文条目")
-            log_cleanup()
-        except Exception:
-            pass
-        return
+        return 0
 
     # 2. 论坛列表
     stop_date = None
     max_pages = DAILY_PAGES
-    if BACKFILL:
-        if earliest is None:
-            log("BACKFILL abort: no NFO premiered dates in library (cannot set stop date)")
-            try:
-                log_write("ReplaceCN", "backfill中止: 库内无NFO作品日")
-                log_cleanup()
-            except Exception:
-                pass
-            return
-        stop_date = earliest.isoformat()
+    if backfill:
+        if not since and earliest is None:
+            log("BACKFILL abort: no NFO premiered dates and no BACKFILL_SINCE")
+            return 1
+        stop_date = since or earliest.isoformat()
         max_pages = BACKFILL_MAX_PAGES  # 0 = only stop by date
         log(f"BACKFILL: list until postDate >= {stop_date}, max_pages={max_pages or 'unlimited'}")
     else:
         log(f"DAILY: list first {max_pages} page(s)")
 
-    client = chinese_forum.ForumClient()
+    client = chinese_forum.ForumClient(fid="103", coordinated_requests=True)
     if not client.ensure_safe():
         log("Forum safe gate failed; abort")
-        return
+        stats["fail"] += 1
+        return 1
 
     list_items = chinese_forum.get_list_until(
         stop_date=stop_date,
         max_pages=max_pages,
         client=client,
     )
+    stats["list"] = len(list_items)
     log(f"Forum list unique codes: {len(list_items)}")
 
     # 3. 列表 ∩ 缺中文
@@ -1311,6 +1344,7 @@ def main():
             continue
         seen.add(avid)
         unique_hits.append(item)
+    stats["hits"] = len(unique_hits)
     log(f"Forum hits for missing_cn: {len(unique_hits)}")
 
     # 4. 定向进帖拿 magnet
@@ -1335,25 +1369,24 @@ def main():
             no_magnet += 1
             continue
         magnet = info["magnet"]
-        if DRY_RUN:
-            log(f"DRY_RUN would add {avid}: {magnet[:70]}...")
-            added += 1
-            continue
         if qb_has_cn_avid(avid):
             existing_qb += 1
             log(f"  Skip {avid}: already has Chinese version in qB")
             continue
 
-        # 新增：检查是否已在系统中（队列 + qB 任何版本）
-        exists, location, reason = avid_exists_in_system(avid)
+        exists, location, reason = avid_exists_in_system(avid, target_dirname)
         if exists:
             log(f"  Skip {avid}: already in {location} ({reason})")
             # 尝试更新 Weekly 未看磁链（不添加下载）
-            updated, update_reason = update_weekly_magnet_if_unwatched(avid, magnet)
+            updated, update_reason = (False, "dry run") if dry_run else update_weekly_magnet_if_unwatched(avid, magnet)
             if updated:
                 weekly_updated += 1
                 log(f"    → Updated weekly magnet for {avid}")
             existing_qb += 1
+            continue
+        if dry_run:
+            log(f"DRY_RUN would add {avid}: target={os.path.join(SAVE_PATH, target_dirname)} magnet={magnet[:70]}...")
+            added += 1
             continue
         paused_hashes = []
         try:
@@ -1394,29 +1427,13 @@ def main():
             log(f"  {avid}: failed to add to qB")
         time.sleep(random.uniform(2, 5))
 
-    log(
-        f"=== Done mode={mode}: list={len(list_items)} hits={len(unique_hits)} "
-        f"added={added} qb_skip={existing_qb} weekly_updated={weekly_updated} "
-        f"no_magnet={no_magnet} fail={add_failed} ==="
-    )
-
-    # 6. 可选 weekly 补字段（回补时默认跳过以省时间，可用 env 打开）
-    refilled = 0
-    if not BACKFILL and not DRY_RUN:
-        refilled = _refill_weekly_gaps()
-
-    try:
-        summary = (
-            f"mode={mode} 缺中文{len(missing)} 论坛列表{len(list_items)} 命中{len(unique_hits)} "
-            f"新增任务{added} qB已有{existing_qb} Weekly更新{weekly_updated} "
-            f"无磁链{no_magnet} 失败{add_failed} "
-            f"earliest={earliest.isoformat() if earliest else '-'} 补刮{refilled}"
-        )
-        log_write("ReplaceCN", summary)
-        log_cleanup()
-    except Exception:
-        pass
+    stats.update(added=added, skip=existing_qb, weekly_updated=weekly_updated,
+                 no_magnet=no_magnet, fail=add_failed)
+    # Weekly 元数据仍由原有每日路径补齐；回补/演练不写入。
+    if not backfill and not dry_run:
+        _refill_weekly_gaps()
+    return 1 if add_failed or getattr(client, "request_failed", False) else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
