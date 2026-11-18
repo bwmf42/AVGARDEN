@@ -94,7 +94,10 @@ _CATEGORY = re.compile(
     r'filter=typeid[^>]*>\s*(有码高清|无码高清)\s*<',
     re.I,
 )
-_DATE_TITLE = re.compile(r'<span[^>]+title="(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?)"', re.I)
+# 作者列（第一个 td.by）的 <em>：近几天是 <span title="2026-11-16">3 天前</span>，更早是 <span>2026-10-05</span>。
+# 不能在整行里找 title 日期：老帖会匹配到最后回复列的「昨天」。
+_AUTHOR_EM = re.compile(r'<td[^>]*class="by"[^>]*>.*?<em>(.*?)</em>', re.I | re.S)
+_DATE_TEXT = re.compile(r'(\d{4})-(\d{1,2})-(\d{1,2})')
 _CODE_CANDIDATE = re.compile(
     r"(?i)\b("
     r"FC2(?:\s*[-_]?\s*PPV)?\s*[-_]?\s*\d{5,8}"
@@ -167,6 +170,15 @@ def _save_safe_token(base: str, token: str):
             os.unlink(tmp)
         except OSError:
             pass
+
+
+def _post_date(body: str) -> str:
+    em = _AUTHOR_EM.search(body or "")
+    if not em:
+        return ""
+    titled = re.search(r'title="([^"]+)"', em.group(1))
+    m = _DATE_TEXT.search(titled.group(1) if titled else _strip_tags(em.group(1)))
+    return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}" if m else ""
 
 
 def _strip_tags(html: str) -> str:
@@ -267,9 +279,7 @@ def parse_list_html(
 
         cat_m = _CATEGORY.search(body)
         category = cat_m.group(1) if cat_m else ""
-        dates = _DATE_TITLE.findall(body)
-        # 作者列第一个 title 日期 = 发帖日（非最后回复）
-        post_date = dates[0][:10] if dates else today
+        post_date = _post_date(body) or today
 
         if purpose == "weekly":
             item = {
@@ -758,6 +768,7 @@ def get_list_until(
 
     by_id: Dict[str, dict] = {}
     consec_fail = 0
+    consec_no_new = 0
     pages_ok = 0
     page = 0
     hard_cap = max_pages if max_pages > 0 else 5000  # 安全硬顶
@@ -815,6 +826,12 @@ def get_list_until(
             # 本页已裁切完更旧条目
             if oldest_on_page < stop:
                 break
+
+        # 翻过最后一页时站点会重复返回最后一页：连续几页都没有新番号就停。
+        consec_no_new = consec_no_new + 1 if new_on_page == 0 and not reached_stop else 0
+        if consec_no_new >= 3:
+            _log(f"stop: {consec_no_new} consecutive pages without new codes")
+            break
 
         # 若整页都没有可解析日期且无条目，避免死循环
         if stats["with_id"] == 0 and not page_dates:

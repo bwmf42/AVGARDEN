@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Fix forum-103 list post dates: read the author column only (`title` for recent posts, plain text such as `2026-10-05` for older ones). Posts older than a week used to take the last-reply date or today, so a `CHINESE_FORUM_BACKFILL_SINCE` backfill never reached its stop date (a dry run paged 3651 pages over 34 hours). Listing also stops after 3 consecutive pages without new codes, since the site repeats its last page.
+
 - 按 Vigo 2026-11-16 的决定，标题/文本翻译锁定只用 DeepSeek；服务端拒绝 `mode=auto`，旧模式和环境变量均不能启用中继。Weekly、详情回填和自愈探测移除中继分支；旧 base/key/model 仅兼容保存并明确标注不生效，补充离线替身回归测试。
 - Restore daily library Chinese replacement scanning lost since the 2026-08-13 scrape-pipeline change: merge first, scan forum-103, then add exact missing-Chinese hits, with daily completion/retry and ReplaceCN counters. Allow completed original qB tasks backed by valid local video through the existing superseded-task pause path while retaining active/Chinese duplicate guards. Add strict `CHINESE_FORUM_BACKFILL_SINCE` post-date backfill, read-only dry-run targets/counts, and per-request shared 31/60-second forum slots.
 
